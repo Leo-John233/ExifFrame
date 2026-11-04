@@ -1,0 +1,10 @@
+# Source and template conventions
+- Python uses four-space indentation, snake_case functions/variables, PascalCase classes, uppercase constants. Existing code mixes built-in and typing collection annotations and quote styles; follow nearby code rather than imposing repository-wide formatting.
+- Comments and docstrings are predominantly Chinese; nontrivial public functions commonly document Args/Returns. UI and shipped template names are Chinese. Preserve UTF-8 and existing asset names.
+- Prefer `core.logger.logger` (Loguru) over new print-based logging.
+- Processor API: argument-free construction; `process(ctx: PipelineContext)`; stable snake_case `name()` used as JSON `processor_name`; category supplied by filter/generator/merger base classes. Registry and discovery rules: `mem:processor/core`.
+- Access pipeline parameters through `ctx.get/getint/getcolor/getenum`; filters/generators/mergers update image lists through `ctx.update_buffer(...)`, generally chaining `.save_buffer(self.name()).success()`.
+- Runtime templates are Jinja source stored as `.json`; only rendered text is parsed as JSON. Preserve Jinja expressions and JSON escaping. `select` is currently a JSON-encoded string, e.g. `"[0,1]"`, not an array.
+- `vw(percent)` / `vh(percent)` calculate integer pixels from EXIF ImageWidth/ImageHeight; `auto_logo()` resolves by EXIF Make (or explicit brand) against config/logos. EXIF keys strip whitespace and '/' and values are filtered to ASCII by the extractor.
+- Relative nonempty font paths are prepended with `config/fonts` by `load_font`; use filenames relative to that directory. Missing fonts can silently fall back, so rendering must be checked visually.
+- Keep browser request/stream consumers and corresponding `/api/v1` routes consistent. Frontend logic lives in templates/index.html, without a separate compiled app.

@@ -1,0 +1,14 @@
+# ExifFrame project map
+- Windows is the only supported operating system. Workspace is named ExifFrame; existing product/docs/package names remain Semi-Utils / semi-photo-utils. Do not infer a completed product rename from the folder name.
+- `app.py`: Flask instance `api`, configuration/template/file APIs, batch orchestration and streamed progress. `templates/index.html`: browser UI and embedded JavaScript.
+- `core/`: config/resource paths, external EXIF extraction, template loading/Jinja helpers, Loguru setup. `processor/`: extensible Pillow processing pipeline.
+- Runtime assets live under `config/` (INI, JSON/Jinja templates, fonts, logos); `static/` includes example templates/previews. Runtime template lookup uses `config/templates`, not the example files.
+- Paths to config, project metadata, fonts/logos/templates and bundled ExifTool are relative to the working directory. Run from project root; packaging must preserve external resource layout.
+- Batch flow: load chosen template -> render separately for each photo with `exif`, `filename`, `file_dir`, `file_path`, `files` -> JSON parse -> pipeline. Output mirrors the input-relative directory; existing output is skipped unless overwrite is enabled.
+- Processing progress is a POST response with `text/event-stream`; browser consumes it through streaming fetch. Thread pool runs up to four files concurrently. Preserve event format when changing backend/UI.
+- For registry, image buffers and processor extension invariants: `mem:processor/core`.
+- For interpreter/dependencies, frontend libraries and Windows packaging: `mem:tech_stack`.
+- For environment setup, run/build commands and PowerShell usage: `mem:suggested_commands`.
+- For naming, configuration representation and extension style: `mem:conventions`.
+- For available validation and completion checks: `mem:task_completion`.
+- For memory naming, references and maintenance thresholds: `mem:memory_maintenance`.

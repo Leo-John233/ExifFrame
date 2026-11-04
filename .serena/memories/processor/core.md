@@ -1,0 +1,12 @@
+# Image processing pipeline
+- `processor/core.py` owns PipelineContext (MutableMapping), ImageProcessor, registry and start_process. Filters/generators/mergers are separate modules; processor/types.py provides Alignment (and another Direction enum).
+- Importing `processor` explicitly imports `processor.filters`, `processor.generators`, `processor.mergers` and registers pillow-heif. New modules must be added to that import list; this is not arbitrary filesystem plugin discovery.
+- `ImageProcessor.__init_subclass__` wraps process for timing and constructs the subclass to register it under name(). Keep concrete subclasses constructible with zero arguments; registered names are external template identifiers.
+- `PipelineContext` holds the supplied dictionary by reference; processing mutates it. Batch renders/parses template JSON per input file. Avoid sharing mutable node dictionaries across concurrent runs.
+- Buffers are lists of Pillow images. Lazy file loading uses ImageOps.exif_transpose. start_process accepts input_path or initial_buffer; nonempty node lists are assumed.
+- `all_buffer[0]` is the initial input; each processor appends its result, so output of zero-based node i is at i+1. Explicit `select` is parsed with json.loads and flattens the chosen buffer lists.
+- Without select: non-mergers receive previous output; mergers gather outputs since the previous implicit merger. Preserve these indexing semantics for existing templates.
+- Nodes may override buffer_path to load an independent source. get_buffer only loads when buffer_loaded is false; update_buffer does not itself set that flag.
+- EXIF is inserted into node contexts when an input file is supplied and the node lacks it. Output writing converts the final first image to RGB and uses configured quality/subsampling; return value is the final first Pillow image.
+- `save_buffer` / `success` participate in node completion/debug flow; inspect their implementations before changing processing lifecycle.
+- For caller/template context and batch event flow: `mem:core`. For processor/template coding representation: `mem:conventions`.
