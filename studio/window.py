@@ -25,7 +25,7 @@ from .files import FileBrowser
 from .i18n import bind_static_texts, install_qt_translations, language, localize_error, set_language, tr, translator
 from .template_editor import TemplateEditor
 from .workers import ImageTask, WorkerSignals
-from .pixmaps import preview_pixmap
+from .pixmaps import TemplateThumbnail
 
 
 class FooterMetadataTask(QRunnable):
@@ -313,11 +313,10 @@ class MainWindow(QMainWindow):
         self.template_combo = QComboBox()
         self.template_combo.setObjectName("templateCombo")
         template_layout.addWidget(self.template_combo)
-        self.template_preview = QLabel()
+        self.template_preview = TemplateThumbnail()
         self.template_preview.setObjectName("templatePreview")
-        self.template_preview.setFixedHeight(95)
         self.template_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        template_layout.addWidget(self.template_preview)
+        template_layout.addWidget(self.template_preview, 0, Qt.AlignmentFlag.AlignHCenter)
         self.template_description = QLabel()
         self.template_description.setWordWrap(True)
         self.template_description.setObjectName("secondaryText")
@@ -471,10 +470,8 @@ class MainWindow(QMainWindow):
             return
         preset = self.presets[index]
         self.template_description.setText(tr(preset.description))
-        self.template_preview.clear()
-        if preset.thumbnail:
-            self.template_preview.setPixmap(preview_pixmap(preset.thumbnail, 255, 91))
-        else:
+        self.template_preview.set_source(preset.thumbnail)
+        if not preset.thumbnail:
             self.template_preview.setText(tr("自定义模板"))
         self.border_slider.setEnabled(preset.supports_footer)
         self.background_button.setEnabled(preset.supports_footer)
@@ -1244,8 +1241,7 @@ class MainWindow(QMainWindow):
             self._record_errors("无法读取当前组合", [str(exc)])
             return
         wizard = TemplateWizard(self, current_template=self.settings.template_name, current_source=current_source,
-                                photo_path=self._current_path(), settings=deepcopy(self.settings),
-                                **self._template_context())
+                                settings=deepcopy(self.settings))
         self._active_wizard = wizard
         self._refresh_footer_examples()
         if wizard.exec() == QDialog.DialogCode.Accepted:

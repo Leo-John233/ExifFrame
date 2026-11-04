@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.desktop_service import list_presets, read_template, validate_template, _template_path
+from core.sample_photo import example_photo_path
 from studio.footer_editor import FooterPanel, _fit_editor_window
 from studio.i18n import bind, tr, register_translations, translator, localize_error
 from studio.template_editor import TemplateHighlighter
@@ -78,7 +79,8 @@ class TemplateWizard(QDialog):
         self._composition_error = None
         self._loading = True
         self._context = dict(metadata=metadata, filename=filename, file_dir=file_dir)
-        self._preview_path, self._preview_settings = photo_path, settings
+        self._preview_path = photo_path if photo_path is not None else example_photo_path()
+        self._preview_settings = settings
         self._presets = [preset for preset in list_presets() if preset.name in self.BUILT_INS]
         self.setObjectName('templateWizard')
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowTitleHint |
@@ -152,6 +154,7 @@ class TemplateWizard(QDialog):
         self.description = QLabel()
         self.description.setWordWrap(True)
         self.description.setObjectName('secondaryText')
+        self.description.hide()
         choices.addWidget(self.description)
         self.preview = TemplatePreview(self, photo_path=self._preview_path, settings=self._preview_settings)
         self.preview.setObjectName('templateWizardPreview')
@@ -159,8 +162,8 @@ class TemplateWizard(QDialog):
         self.splitter.addWidget(left)
 
         right = QWidget()
-        right.setMinimumWidth(335)
-        right.setMaximumWidth(430)
+        right.setMinimumWidth(300)
+        right.setMaximumWidth(380)
         content = QVBoxLayout(right)
         content.setContentsMargins(8, 0, 0, 0)
         content.setSpacing(8)
@@ -183,9 +186,9 @@ class TemplateWizard(QDialog):
         self.panel_scroll.setWidget(self.footer_panel)
         content.addWidget(self.panel_scroll, 1)
         self.splitter.addWidget(right)
-        self.splitter.setStretchFactor(0, 1)
-        self.splitter.setStretchFactor(1, 0)
-        self.splitter.setSizes([660, 390])
+        self.splitter.setStretchFactor(0, 3)
+        self.splitter.setStretchFactor(1, 2)
+        self.splitter.setSizes([700, 340])
         layout.addWidget(self.splitter, 1)
 
         bottom = QHBoxLayout()
@@ -306,7 +309,7 @@ class TemplateWizard(QDialog):
         else:
             style = tr(self.current_template) if mode == '复制当前模板' else tr(mode)
             self.description.setText(tr('保留当前模板的完整样式和处理步骤' if mode == '复制当前模板' else '从空白边框开始，按需组合每个文字区域'))
-        self.styles.setToolTip(style)
+        self.styles.setToolTip(style + '\n' + self.description.text())
         error = ''
         source_valid = False
         try:

@@ -477,7 +477,7 @@ class FooterPanel(QWidget):
         if file_dir is not None:
             self._file_dir = file_dir
         self.preview_group.setTitle(tr('示例预览' if self._metadata is None else '照片信息预览'))
-        self._refresh_preview()
+        self._refresh_items(self.items.currentRow())
 
     def composed_source(self) -> str:
         if self._load_error is not None:
@@ -542,10 +542,22 @@ class FooterPanel(QWidget):
     def _row(self):
         return self._layout.get('rows', {}).get(self._region, {})
 
+    def _item_preview(self, item):
+        """使用当前照片生成字段显示值，尚未读取照片时才使用示例"""
+        field = self._fields.get(item.get('field'))
+        if self._metadata is None and field:
+            return f"{item.get('prefix', field.prefix)}{field.example}{item.get('suffix', field.suffix)}"
+        region = self._region or 'left_top'
+        model = {'kind': self._layout.get('kind', 'footer'), 'regions': [region],
+                 'rows': {region: {'items': [item], 'separator': ''}},
+                 'missing': self._layout.get('missing', 'hide')}
+        values = preview_rows(model, self._metadata, self._filename, self._file_dir)
+        return values.get(region, '') or '—'
+
     def _item_label(self, item):
         field = self._fields.get(item.get('field'))
         if field:
-            return f"{tr(field.label)}    {item.get('prefix', field.prefix)}{field.example}{item.get('suffix', field.suffix)}"
+            return f"{tr(field.label)}    {self._item_preview(item)}"
         if 'text' in item:
             return f"{tr('自定义文字')}    {item['text']}"
         return tr('自定义内容')
@@ -609,7 +621,7 @@ class FooterPanel(QWidget):
         self.suffix_input.setText(str(item.get('suffix', field.suffix if field else '')) if item else '')
         self.text_input.setText(str(item.get('text', '')) if item else '')
         if field:
-            self.item_hint.setText(tr('示例：{value}', value=f"{item.get('prefix', field.prefix)}{field.example}{item.get('suffix', field.suffix)}"))
+            self.item_hint.setText(tr('示例：{value}', value=self._item_preview(item)))
         elif text_item:
             self.item_hint.setText(tr('自定义文字'))
         elif item:
@@ -699,7 +711,7 @@ class FooterPanel(QWidget):
         entry.setToolTip(self._item_label(values[index]))
         entry.setData(Qt.ItemDataRole.UserRole, deepcopy(values[index]))
         if field:
-            self.item_hint.setText(tr('示例：{value}', value=f"{values[index].get('prefix', field.prefix)}{field.example}{values[index].get('suffix', field.suffix)}"))
+            self.item_hint.setText(tr('示例：{value}', value=self._item_preview(values[index])))
         self._changed()
 
     def move_item(self, direction):

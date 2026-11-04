@@ -9,10 +9,12 @@ from threading import Event
 
 from PIL import Image
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal, Slot
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QApplication, QFileDialog, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget
 
 from core.desktop_service import WatermarkSettings, _metadata, list_presets, render_photo
 from core.metadata import merge_overrides, metadata_key
+from core.sample_photo import example_photo_path
 from studio.i18n import bind, localize_error, register_translations, tr, translator
 from studio.workers import qt_image
 
@@ -30,6 +32,7 @@ register_translations({
     '预览失败，保留上次结果：{error}': 'Preview failed; previous result retained: {error}',
     '预览已停止': 'Preview stopped',
     '预览照片：{name}': 'Preview photo: {name}',
+    '示例照片': 'Example photo',
     '照片 (*.jpg *.jpeg *.png *.heic *.heif)': 'Photos (*.jpg *.jpeg *.png *.heic *.heif)',
 })
 
@@ -159,28 +162,20 @@ class TemplatePreview(QWidget):
         self.fit_button = bind(QPushButton(), '适应')
         self.actual_button = QPushButton('100%')
         self.detail_button = bind(QPushButton(), '水印细节')
-        self.choose_button = bind(QPushButton(), '选择照片')
-        self.choose_button.setObjectName('templatePreviewChoosePhoto')
         self.fit_button.clicked.connect(self.view.fit_photo)
         self.actual_button.clicked.connect(self.view.actual_size)
         self.detail_button.clicked.connect(self.view.footer_detail)
-        self.choose_button.clicked.connect(self._choose_photo)
         for button in (self.fit_button, self.actual_button, self.detail_button):
             button.setAutoDefault(False)
             tools.addWidget(button)
         tools.addStretch()
-        self.choose_button.setAutoDefault(False)
         layout.addLayout(tools)
         self.filename_label = QLabel()
         self.filename_label.setObjectName('secondaryText')
         self.filename_label.setMinimumWidth(0)
         self.filename_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.filename_label.setTextFormat(Qt.TextFormat.PlainText)
-        file_row = QHBoxLayout()
-        file_row.setSpacing(6)
-        file_row.addWidget(self.filename_label, 1)
-        file_row.addWidget(self.choose_button)
-        layout.addLayout(file_row)
+        tools.addWidget(self.filename_label, 1)
         self.stack = QStackedWidget()
         empty = QWidget()
         empty_layout = QVBoxLayout(empty)
@@ -190,12 +185,19 @@ class TemplatePreview(QWidget):
         self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         empty_layout.addWidget(self.empty_label)
         self.empty_choose = bind(QPushButton(), '选择照片')
+        self.empty_choose.setObjectName('templatePreviewChoosePhoto')
+        self.choose_button = self.empty_choose
         self.empty_choose.setAutoDefault(False)
         self.empty_choose.clicked.connect(self._choose_photo)
         empty_layout.addWidget(self.empty_choose, alignment=Qt.AlignmentFlag.AlignHCenter)
         empty_layout.addStretch()
         self.stack.addWidget(empty)
         self.stack.addWidget(self.view)
+        # 画面中不重复摆放选图按钮，需要换图时可使用照片右键菜单
+        self.choose_action = bind(QAction(self.view), '选择照片')
+        self.choose_action.triggered.connect(self._choose_photo)
+        self.view.addAction(self.choose_action)
+        self.view.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu)
         layout.addWidget(self.stack, 1)
         self.status_label = QLabel()
         self.status_label.setObjectName('secondaryText')
@@ -218,7 +220,12 @@ class TemplatePreview(QWidget):
 
     @property
     def settings(self):
-        return deepcopy(replace(self._settings, template_source=self._source, use_template_styles=True))
+        snapshot = replace(self._settings, template_source=self._source, use_template_styles=True)
+        if self._photo_path == example_photo_path():
+            # 示例仅使用自己的照片和拍摄信息，不混入用户队列与临时 EXIF 修改
+            snapshot = replace(snapshot, input_files=(str(self._photo_path),), metadata_overrides={},
+                               input_dir='', output_dir='')
+        return deepcopy(snapshot)
 
     def set_source(self, source: str):
         """有效源码去抖渲染，父编辑器对无效源码调用 set_error"""
@@ -247,10 +254,12 @@ class TemplatePreview(QWidget):
         self._retranslate()
 
     def set_photo(self, path):
-        """照片仅来自调用方或文件选择器，不使用模板样图"""
+        """选择原片或项目示例，不使用已经叠加水印的模板样图"""
         if self._closed:
             return
         selected = Path(path).expanduser().absolute() if path else None
+        if self._photo_path == example_photo_path() and selected and selected != self._photo_path:
+            self._settings.input_files = (str(selected),)
         changed = selected != self._photo_path
         self._photo_path = selected
         self._failed = False
@@ -348,7 +357,10 @@ class TemplatePreview(QWidget):
 
     @Slot()
     def _retranslate(self):
-        self.filename_label.setText(tr('预览照片：{name}', name=self._photo_path.name) if self._photo_path else tr('未选择照片'))
+        is_example = self._photo_path == example_photo_path()
+        self.filename_label.setText(tr('示例照片') if is_example else
+                                    tr('预览照片：{name}', name=self._photo_path.name) if self._photo_path else '')
+        self.filename_label.setVisible(bool(self._photo_path))
         self.filename_label.setToolTip(str(self._photo_path) if self._photo_path else '')
         self.empty_label.setText(tr('选择一张照片查看实际水印效果' if not self._photo_path else '模板有效后显示照片预览'))
         self._render_status()
