@@ -8,6 +8,7 @@ from jinja2 import Environment
 
 from core.jinja2renders import auto_logo, vh, vw
 from core.footer import footer_row, footer_segments
+from core.geography import format_location
 
 
 def _json_string(value):
@@ -70,5 +71,6 @@ def compiled_template(source: str, logo=auto_logo):
     """不可变编译结果可由后台任务共享，照片变量仍逐次传入"""
     environment = Environment(autoescape=False)
     environment.filters['json_string'] = _json_string
-    environment.globals.update(vh=vh, vw=vw, auto_logo=logo, footer_row=footer_row, footer_segments=footer_segments)
+    environment.globals.update(vh=vh, vw=vw, auto_logo=logo, footer_row=footer_row,
+                               footer_segments=footer_segments, geo_location=format_location)
     return environment.from_string(_escape_string_variables(_prepare_footer_calls(source)))

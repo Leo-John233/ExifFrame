@@ -2,6 +2,7 @@
 
 import configparser
 import json
+import math
 import re
 from dataclasses import asdict, dataclass, fields, field
 from functools import lru_cache
@@ -16,6 +17,7 @@ from core import CONFIG_PATH
 from core.jinja2renders import auto_logo, vh, vw
 from core.util import find_exiftool, get_exif
 from core.metadata import merge_overrides, metadata_key
+from core.geography import coordinate_degrees
 from core.template_render import compiled_template, _prepare_footer_calls
 from processor.core import start_process
 
@@ -257,6 +259,10 @@ def _cached_metadata(source: str, modified: int, tool_signature) -> dict:
             details.update(exif.get_ifd(34665))
         except (KeyError, TypeError, ValueError, OSError):
             pass
+        try:
+            gps = exif.get_ifd(34853)
+        except (KeyError, TypeError, ValueError, OSError):
+            gps = {}
         shutter = details.get(33434)
         aperture = details.get(33437)
         focal = details.get(37386)
@@ -270,6 +276,15 @@ def _cached_metadata(source: str, modified: int, tool_signature) -> dict:
             'ISO': str(details.get(34855, '-')),
             'DateTimeOriginal': str(details.get(36867) or details.get(306) or '未记录时间'),
         }
+        # 没有外部工具时仍读取 GPS 子目录，保持位置字段可用
+        for tag, reference, value_tag, ref_tag, latitude in (
+                ('GPSLatitude', 'GPSLatitudeRef', 2, 1, True),
+                ('GPSLongitude', 'GPSLongitudeRef', 4, 3, False)):
+            coordinate = coordinate_degrees(gps.get(value_tag), gps.get(ref_tag), latitude=latitude)
+            if coordinate is not None:
+                result[tag] = f'{abs(coordinate):.12g}'
+                positive, negative = ('N', 'S') if latitude else ('E', 'W')
+                result[reference] = negative if math.copysign(1, coordinate) < 0 else positive
     # 清理相机写入的字符串终止符并统一回退时间格式
     result = {key: str(value).replace('\x00', '').strip() for key, value in result.items()}
     result['DateTimeOriginal'] = re.sub(r'^(\d{4}):(\d{2}):(\d{2})', r'\1-\2-\3', result['DateTimeOriginal'])

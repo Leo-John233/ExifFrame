@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 
 from jinja2 import Environment, nodes, pass_context
+from core.geography import format_location
 
 
 @dataclass(frozen=True)
@@ -40,8 +41,7 @@ FIELD_CATALOG = (
     FooterField('time', '拍摄时间', '时间与位置', '11:11:39', _DATE + '[11:19]'),
     FooterField('datetime', '日期与时间', '时间与位置', '2026-10-05 11:11', _DATE + '[:16]'),
     FooterField('timezone', '时区偏移', '时间与位置', '+08:00', "exif.OffsetTimeOriginal|default('')"),
-    FooterField('gps_latitude', '纬度', '时间与位置', '30.5', "exif.GPSLatitude|default('')"),
-    FooterField('gps_longitude', '经度', '时间与位置', '104.2', "exif.GPSLongitude|default('')"),
+    FooterField('location', '地理位置', '时间与位置', '26°9\'12"N 119°17\'8"E', 'geo_location(exif)'),
     FooterField('gps_altitude', '海拔', '时间与位置', '100', "exif.GPSAltitude|default('')", '', ' m'),
     FooterField('photographer', '摄影师', '作者与文字', 'Alice', "exif.Artist|default('')"),
     FooterField('author', '作者', '作者与文字', 'Alice', "exif.Author|default('')"),
@@ -54,6 +54,10 @@ FIELD_CATALOG = (
     FooterField('folder', '文件夹名称', '文件', 'Travel', "file_dir.replace('\\\\', '/').split('/')[-1]"),
 )
 _FIELDS = {item.key: item for item in FIELD_CATALOG}
+_FIELDS.update({
+    'gps_latitude': FooterField('gps_latitude', '纬度（旧字段）', '时间与位置', '30.5', "exif.GPSLatitude|default('')"),
+    'gps_longitude': FooterField('gps_longitude', '经度（旧字段）', '时间与位置', '104.2', "exif.GPSLongitude|default('')"),
+})
 REGION_LABELS = {'left_top': '左上', 'left_bottom': '左下', 'right_top': '右上', 'right_bottom': '右下'}
 _TEXT_TYPES = {'rich_text', 'multi_rich_text', 'watermark_with_timestamp'}
 _STYLE_KEYS = {'font_path', 'color', 'is_bold', 'trim'}
@@ -74,6 +78,11 @@ _ALIASES = {
 
 class FooterError(ValueError):
     """可由界面统一翻译的组合错误"""
+
+
+def get_footer_field(key):
+    """已保存的旧坐标项仍可读取，新字段库只提供合并位置"""
+    return _FIELDS.get(key)
 
 
 def _load(source):
@@ -118,6 +127,8 @@ def _generated_row(text):
 
 
 def _field_key(expression):
+    if 'geo_location(exif)' in expression and not re.search(r'exif\.', expression):
+        return 'location'
     if 'footer_row' in expression or 'footer_segments' in expression:
         return None
     if re.search(r'file_dir|file_path.*parent', expression):
@@ -391,13 +402,15 @@ def preview_rows(layout: dict, metadata=None, filename='', file_dir='') -> dict[
         metadata = {'CameraModelName': 'NIKON Z f', 'Make': 'NIKON', 'LensModel': 'NIKKOR Z 24-200mm',
                     'FocalLength': '24 mm', 'FocalLengthIn35mmFormat': '24 mm', 'FNumber': '5.0',
                     'ShutterSpeed': '1/250', 'ISO': '160', 'Artist': 'Alice', 'Copyright': 'All rights reserved',
-                    'DateTimeOriginal': '2026-10-05 11:11:39'}
+                    'DateTimeOriginal': '2026-10-05 11:11:39',
+                    'GPSLatitude': '26.1533333333333', 'GPSLatitudeRef': 'N',
+                    'GPSLongitude': '119.285555555556', 'GPSLongitudeRef': 'E'}
         for field in FIELD_CATALOG:
             match = re.search(r'exif\.([A-Za-z0-9_]+)', field.expression)
             if match:
                 metadata.setdefault(match.group(1), field.example)
     environment = Environment(autoescape=False)
-    environment.globals.update(footer_row=footer_row, footer_segments=footer_segments)
+    environment.globals.update(footer_row=footer_row, footer_segments=footer_segments, geo_location=format_location)
     output = {}
     for region, row in layout['rows'].items():
         try:
