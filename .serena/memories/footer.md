@@ -1,5 +1,6 @@
 # Visual footer composition
 - core/footer.py provides FIELD_CATALOG (independent exposure/creator/time/file fields), read_layout/write_layout/normalize_layout/preview_rows. Footer layouts use four watermark regions or the actual standalone text-node regions; do not silently force overlay templates into footer geometry.
+- The public picker offers one location field (地理位置 / Location), formatted as 26°9'12"N 119°17'8"E. core/geography.py handles decimal/DMS/rationals, hemisphere refs, carry rounding and invalid/incomplete coordinates. Legacy gps_latitude/gps_longitude remain runtime-compatible; explicit per-region merging preserves unrelated fields/styles, never auto-rewrites on opening.
 - Items support field, literal text and preserved raw content; expressions/style/segments carry legacy formatting and colored Nikon Z spans. Separators are per region, missing-value policy skips orphan units/separators, prefix/suffix are independently editable.
 - write_layout returns source unchanged for untouched layouts and rewrites only edited regions. Unrecognized advanced structures stay available through advanced source, not erased or converted to an empty layout.
 - Generated Jinja footer_row/footer_segments calls carry the model as constant arguments. footer_segments returns JSON for the multi-text processor to parse; lists remain supported for older templates.
