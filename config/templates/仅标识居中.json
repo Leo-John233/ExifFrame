@@ -1,0 +1,28 @@
+[
+  {
+    "processor_name": "watermark",
+    "center_logo": "{{auto_logo()}}",
+    "center_logo_height": "{{vh(9)}}",
+    "center_logo_padding": "{{vh(0.5)}}",
+    "bottom_margin": "{{vh(10)}}",
+    "top_margin": "{{vh(2)}}",
+    "left_margin": "{{vh(2)}}",
+    "right_margin": "{{vh(2)}}",
+    "left_top": {
+      "processor_name": "rich_text",
+      "text": ""
+    },
+    "left_bottom": {
+      "processor_name": "rich_text",
+      "text": ""
+    },
+    "right_top": {
+      "processor_name": "rich_text",
+      "text": ""
+    },
+    "right_bottom": {
+      "processor_name": "rich_text",
+      "text": ""
+    }
+  }
+]

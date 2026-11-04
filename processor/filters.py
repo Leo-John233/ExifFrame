@@ -295,12 +295,26 @@ class WatermarkFilter(FilterProcessor):
             # 四周预留空间并同时限制宽高，完整展示宽标识和底部文字
             padding = max(1, ctx.getint('center_logo_padding', round(bottom_margin * .12)))
             available_width = max(1, canvas_width - left_margin - right_margin - padding * 2)
+            if ctx.get('fit_center_columns', False):
+                available_width = min(available_width, max(1, round(canvas_width * .18)))
             available_height = max(1, bottom_margin - padding * 2)
             logo_height = min(center_logo_height or available_height, available_height)
             center_logo = resized_logo(center_logo, (available_width, max(1, logo_height)), contain=True)
             center_x = (canvas.width - center_logo.width) // 2
             center_y = footer_start_y + ((canvas.height - footer_start_y) - center_logo.height) // 2
             canvas.paste(center_logo, (center_x, center_y), mask=center_logo if center_logo.mode == 'RGBA' else None)
+
+        if ctx.get('fit_center_columns', False) and isinstance(center_logo, Image.Image):
+            # 两侧信息限定在独立栏内，长名称和竖图不会侵入中间标识
+            left_width = max(1, center_x - left_margin - left_logo_width - common_spacing * 2)
+            right_width = max(1, canvas_width - right_margin - center_x - center_logo.width - common_spacing * 2)
+            def fit_column(text_image, width):
+                if text_image.width <= width:
+                    return text_image
+                height = max(1, round(text_image.height * width / text_image.width))
+                return text_image.resize((width, height), Image.Resampling.LANCZOS)
+            left_top, left_bottom = (fit_column(item, left_width) for item in (left_top, left_bottom))
+            right_top, right_bottom = (fit_column(item, right_width) for item in (right_top, right_bottom))
 
         # 文本处理
         elem_height = max(left_top.height + left_bottom.height, right_top.height + right_bottom.height) + middle_spacing

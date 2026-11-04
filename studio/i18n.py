@@ -15,6 +15,11 @@ from PySide6.QtCore import QCoreApplication, QLibraryInfo, QLocale, QObject, QTr
 
 PREFERENCES_PATH = Path("config/ui.json")
 _messages = {}
+_messages.update({
+    '仅标识居中': 'Centered logo only', '仅品牌标识': 'Logo only',
+    '品牌标识居中，两侧显示相机、镜头与拍摄参数': 'Centered logo with camera, lens and exposure details on both sides',
+    '底部仅显示品牌标识，适合简洁展示': 'A compact footer containing only the brand logo',
+})
 _language = "zh_CN"
 try:
     _stored = json.loads(PREFERENCES_PATH.read_text(encoding="utf-8"))
