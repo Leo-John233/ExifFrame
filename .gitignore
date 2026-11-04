@@ -10,6 +10,7 @@ dist
 logs
 tmp
 config/desktop.json
+config/ui.json
 config/desktop.json.tmp
 config/*.tmp
 /test/

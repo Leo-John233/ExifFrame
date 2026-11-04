@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QFileDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton,
     QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QStyle,
 )
+from .i18n import bind_static_texts, tr, translator
 
 
 class FileBrowser(QWidget):
@@ -32,6 +33,7 @@ class FileBrowser(QWidget):
         self.trees, self.paths = {}, {}
         self._changing = False
         self._scan_checks = {"import": {}, "output": {}}
+        self._selected_count = 0
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(self.tabs)
@@ -50,7 +52,7 @@ class FileBrowser(QWidget):
             path_row.addWidget(path, 1)
             browse = QPushButton("…")
             browse.setFixedWidth(27)
-            browse.setToolTip(f"选择{title}目录")
+            browse.setToolTip("选择输入目录" if kind == "import" else "选择输出目录")
             browse.clicked.connect(lambda checked=False, which=kind: self._browse(which))
             path_row.addWidget(browse)
             refresh = QPushButton()
@@ -94,9 +96,26 @@ class FileBrowser(QWidget):
         outer.addWidget(self.count_label)
         self.input_tree, self.output_tree = self.trees["import"], self.trees["output"]
         self.input_path, self.output_path = self.paths["import"], self.paths["output"]
+        bind_static_texts(self, exclude=(self.count_label,))
+        translator.language_changed.connect(self._retranslate_ui)
+        self._retranslate_ui()
+
+    def _retranslate_ui(self):
+        """保留目录节点和勾选状态，仅替换界面标签"""
+        was_changing, self._changing = self._changing, True
+        self.tabs.setTabText(0, tr("输入"))
+        self.tabs.setTabText(1, tr("输出"))
+        for kind, tree in self.trees.items():
+            tree.setHeaderLabels([tr("文件名"), tr("尺寸")])
+            manual = self.folders[kind].get(("\x00manual",))
+            if manual:
+                manual.setText(0, tr("手动添加"))
+        self._changing = was_changing
+        self._update_count(emit=False, recount=False)
 
     def _browse(self, kind):
-        folder = QFileDialog.getExistingDirectory(self, "选择目录", self.paths[kind].text())
+        folder = QFileDialog.getExistingDirectory(self, tr("选择目录"), self.paths[kind].text(),
+                                                  QFileDialog.Option.DontUseNativeDialog)
         if folder:
             self.paths[kind].setText(folder)
             self._request(kind)
@@ -116,8 +135,10 @@ class FileBrowser(QWidget):
         self.items[kind].clear()
         self.folders[kind].clear()
         self.roots[kind] = root
+        if kind == "import":
+            self._selected_count = 0
         self._changing = False
-        self._update_count()
+        self._update_count(recount=False)
 
     def add_file(self, kind, data):
         path, image, width, height = data
@@ -133,12 +154,12 @@ class FileBrowser(QWidget):
             try:
                 parts = path.relative_to(root).parts[:-1]
             except ValueError:
-                parts = ("手动添加",)
+                parts = ("\x00manual",)
             key = ()
             for part in parts:
                 key += (part,)
                 if key not in self.folders[kind]:
-                    folder = QTreeWidgetItem(parent, [part])
+                    folder = QTreeWidgetItem(parent, [tr("手动添加") if part == "\x00manual" else part])
                     folder.setIcon(0, self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon))
                     folder.setExpanded(True)
                     if kind == "import":
@@ -153,10 +174,13 @@ class FileBrowser(QWidget):
         item.setToolTip(0, str(path))
         if kind == "import":
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(0, Qt.CheckState.Checked if self._scan_checks[kind].get(identity, True) else Qt.CheckState.Unchecked)
+            checked = self._scan_checks[kind].get(identity, True)
+            item.setCheckState(0, Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
+            item.setData(0, Qt.ItemDataRole.UserRole + 1, checked)
+            self._selected_count += int(checked)
         self.items[kind][identity] = item
         self._changing = False
-        self._update_count()
+        self._update_count(recount=False)
         if not self.trees[kind].currentItem():
             self.trees[kind].setCurrentItem(item)
 
@@ -181,12 +205,30 @@ class FileBrowser(QWidget):
         self._selected(kind, self.trees[kind].currentItem())
 
     def _item_changed(self, item, column):
-        if not self._changing:
-            self._update_count()
+        if self._changing or not item.data(0, Qt.ItemDataRole.UserRole):
+            return
+        checked = item.checkState(0) == Qt.CheckState.Checked
+        previous = bool(item.data(0, Qt.ItemDataRole.UserRole + 1))
+        if checked != previous:
+            self._selected_count += int(checked) - int(previous)
+            self._changing = True
+            item.setData(0, Qt.ItemDataRole.UserRole + 1, checked)
+            self._changing = False
+            self._update_count(recount=False)
 
-    def _update_count(self):
-        self.count_label.setText(f"输入 {len(self.items['import'])} 张 / 已选 {len(self.selected_paths())} 张 / 输出 {len(self.items['output'])} 张")
-        self.selection_changed.emit()
+    def _update_count(self, emit=True, recount=True):
+        # 增量导入只更新计数，避免每张照片都遍历整个文件树
+        if recount:
+            self._selected_count = len(self.selected_paths())
+            self._changing = True
+            for item in self.items["import"].values():
+                item.setData(0, Qt.ItemDataRole.UserRole + 1, item.checkState(0) == Qt.CheckState.Checked)
+            self._changing = False
+        self.count_label.setText(tr("输入 {total} 张 / 已选 {selected} 张 / 输出 {output} 张",
+                                   total=len(self.items["import"]), selected=self._selected_count,
+                                   output=len(self.items["output"])))
+        if emit:
+            self.selection_changed.emit()
 
     def remove_current(self):
         item = self.input_tree.currentItem()

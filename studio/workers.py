@@ -11,6 +11,7 @@ from PySide6.QtCore import QObject, QRunnable, Signal
 from PySide6.QtGui import QImage
 
 from core.desktop_service import SUPPORTED_SUFFIXES, export_photo, render_photo
+from core.image_cache import photo_thumbnail
 
 
 def qt_image(image: Image.Image) -> QImage:
@@ -50,6 +51,7 @@ class ImageTask(QRunnable):
             else:
                 if self.kind == "original":
                     with Image.open(self.paths[0]) as source:
+                        source.draft("RGB", (1600, 1600))
                         source.thumbnail((1600, 1600))
                         photo = ImageOps.exif_transpose(source).convert("RGB")
                 else:
@@ -77,13 +79,9 @@ class ImageTask(QRunnable):
                     continue
                 seen.add(identity)
                 try:
-                    with Image.open(path) as source:
-                        width, height = source.size
-                        # 缩略图先缩小再修正方向以控制内存
-                        if source.getexif().get(274, 1) in (5, 6, 7, 8):
-                            width, height = height, width
-                        source.thumbnail((144, 112))
-                        thumb = qt_image(ImageOps.exif_transpose(source))
+                    # 刷新目录时复用按文件修改时间区分的小图缓存
+                    photo, width, height = photo_thumbnail(path)
+                    thumb = qt_image(photo)
                     if self.cancel.is_set():
                         return errors
                     self.signals.item.emit(self.token, (path.resolve(), thumb, width, height))

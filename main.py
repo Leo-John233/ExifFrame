@@ -2,6 +2,7 @@
 
 import os
 import sys
+import json
 from pathlib import Path
 
 
@@ -16,10 +17,20 @@ def prepare_windows_runtime():
     return None
 
 
+def _startup_text(chinese, english):
+    """Qt 尚未加载时也按已保存语言显示启动错误"""
+    root = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent
+    try:
+        preference = json.loads((root / 'config/ui.json').read_text(encoding='utf-8'))
+        return english if preference.get('language') == 'en_US' else chinese
+    except (OSError, ValueError, AttributeError):
+        return chinese
+
+
 def main() -> int:
     """统一资源目录后启动桌面应用"""
     if sys.platform != 'win32':
-        raise SystemExit('ExifFrame 桌面版仅支持 Windows')
+        raise SystemExit(_startup_text('ExifFrame 桌面版仅支持 Windows', 'ExifFrame desktop is available on Windows only'))
     root = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent
     os.chdir(root)
     # 保留句柄直到事件循环退出，不改动环境中的动态库
@@ -34,7 +45,9 @@ def main() -> int:
     except ImportError:
         # 无控制台启动时也能看到依赖安装提示
         import ctypes
-        ctypes.windll.user32.MessageBoxW(0, '缺少桌面依赖，请先使用当前 Python 环境安装 requirements.txt', 'ExifFrame', 16)
+        message = _startup_text('缺少桌面依赖，请先使用当前 Python 环境安装 requirements.txt',
+                                'Desktop dependencies are missing. Install requirements.txt in the current Python environment.')
+        ctypes.windll.user32.MessageBoxW(0, message, 'ExifFrame', 16)
         return 1
 
     application = QApplication(sys.argv)
@@ -42,9 +55,11 @@ def main() -> int:
     application.setOrganizationName('ExifFrame')
     application.setWindowIcon(QIcon(str(root / 'static/logo.ico')))
     try:
+        from studio.i18n import install_qt_translations, localize_error, tr
         from studio.theme import apply_theme
         from studio.window import MainWindow
 
+        install_qt_translations()
         apply_theme(application)
         window = MainWindow()
         window.show()
@@ -59,7 +74,10 @@ def main() -> int:
     except Exception as error:
         # 桌面打包隐藏控制台，错误通过原生提示框展示
         if not smoke_test:
-            QMessageBox.critical(None, '窗口启动失败', f'请检查 config 和 static 资源目录\n\n{error}')
+            title = _startup_text('窗口启动失败', 'Unable to start ExifFrame')
+            message = _startup_text('请检查 config 和 static 资源目录', 'Check the config and static resource folders')
+            detail = localize_error(error) if 'localize_error' in locals() else str(error)
+            QMessageBox.critical(None, title, f'{message}\n\n{detail}')
         return 1
 
 

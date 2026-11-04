@@ -3,25 +3,28 @@
 from __future__ import annotations
 
 import os
+from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, QThreadPool, QTimer, QUrl, Slot
-from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QKeySequence, QPainter, QPixmap
+from PySide6.QtGui import QAction, QActionGroup, QColor, QDesktopServices, QIcon, QKeySequence, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox,
     QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-    QMainWindow, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
+    QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
     QSizePolicy, QSlider, QSpinBox, QSplitter, QStyle, QToolBar, QVBoxLayout, QWidget,
 )
 
 from core.desktop_service import (
     SUPPORTED_SUFFIXES, list_presets, load_settings, read_template,
-    save_settings, save_workspace_settings,
+    save_settings, save_workspace_settings, write_template,
 )
 from .files import FileBrowser
+from .i18n import bind_static_texts, install_qt_translations, language, localize_error, set_language, tr, translator
 from .template_editor import TemplateEditor
 from .workers import ImageTask
+from .pixmaps import preview_pixmap
 
 
 class PhotoView(QWidget):
@@ -32,6 +35,7 @@ class PhotoView(QWidget):
         self.pixmap = QPixmap()
         self.setMinimumSize(220, 200)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        translator.language_changed.connect(self.update)
 
     def set_image(self, image):
         """保留原始预览像素供窗口缩放时重新绘制"""
@@ -43,7 +47,7 @@ class PhotoView(QWidget):
         painter.fillRect(self.rect(), QColor("#1C1C1C"))
         if self.pixmap.isNull():
             painter.setPen(QColor("#989898"))
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "选择照片以预览\n\n可拖入 JPG、PNG、HEIC 文件或文件夹")
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, tr("选择照片以预览\n\n可拖入 JPG、PNG、HEIC 文件或文件夹"))
             return
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         bounds = self.rect().adjusted(16, 16, -16, -16)
@@ -62,7 +66,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1080, 680)
         self.setAcceptDrops(True)
         self.settings = load_settings()
-        self._saved = replace(self.settings)
+        self._saved = deepcopy(self.settings)
         self.presets = list_presets()
         self._tasks, self._drafts, self._editors = {}, {}, []
         self._serial = self._generation = 0
@@ -70,6 +74,13 @@ class MainWindow(QMainWindow):
         self._dirty = self._locked = False
         self._current_data, self._current_kind = None, "import"
         self._last_output, self._errors = None, []
+        self._metadata_editors = []
+        self._error_dialogs = []
+        self._counts = {"completed": 0, "errors": 0, "skipped": 0}
+        self._status_source, self._status_values = "就绪", {}
+        self._preview_source, self._preview_values = "未选择照片", {}
+        self._preview_error = ""
+        self._metadata_close_job = None
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(2)
         self.timer = QTimer(self)
@@ -78,9 +89,17 @@ class MainWindow(QMainWindow):
         self.timer.timeout.connect(self._render_preview)
         self._build_actions()
         self._build_ui()
+        # 固定控件绑定一次，动态内容在语言信号到达后原地更新
+        bind_static_texts(self, exclude=(self.canvas_name, self.preview_status, self.summary_label,
+                                        self.saved_label, self.mode_label, self.template_description,
+                                        self.template_preview, self.lock_button, self.files.count_label,
+                                        self.background_button, self.text_button))
         self._restore_controls()
         self._bind_controls()
         self._update_actions()
+        translator.language_changed.connect(self._retranslate_ui)
+        install_qt_translations()
+        self._retranslate_ui()
         QTimer.singleShot(0, self._load_directories)
 
     def _action(self, text, callback, shortcut=None, icon=None, checkable=False):
@@ -114,11 +133,16 @@ class MainWindow(QMainWindow):
         self.new_template_action = self._action("新建模板…", self._new_template, "Ctrl+N", icons.SP_FileIcon)
         self.copy_template_action = self._action("模板另存为…", self._copy_template, "Ctrl+Shift+S", icons.SP_DialogSaveButton)
         self.edit_template_action = self._action("编辑模板源码…", self._edit_template, "Ctrl+E", icons.SP_FileDialogDetailedView)
+        self.metadata_action = self._action("编辑照片信息…", self._edit_metadata, "Ctrl+I", icons.SP_FileDialogInfoView)
+        self.metadata_batch_action = self._action("编辑选中照片信息…", self._edit_checked_metadata, icon=icons.SP_FileDialogListView)
         self.original_action = self._action("显示原图", self._view_changed, "Ctrl+Tab", checkable=True)
         self.lock_action = self._action("锁定配置", self._set_locked, checkable=True)
         file_menu = self.menuBar().addMenu("文件(&F)")
         for action in (self.add_action, self.directory_action, self.refresh_action):
             file_menu.addAction(action)
+        file_menu.addSeparator()
+        file_menu.addAction(self.metadata_action)
+        file_menu.addAction(self.metadata_batch_action)
         file_menu.addSeparator()
         file_menu.addAction(self.save_action)
         file_menu.addAction(self.reset_action)
@@ -134,6 +158,14 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.original_action)
         view_menu.addAction(self.lock_action)
         view_menu.addAction(self._action("错误详情…", self._show_error_details))
+        self.language_menu = view_menu.addMenu("语言")
+        self.language_actions = {}
+        group = QActionGroup(self)
+        for code, title in (("zh_CN", "中文"), ("en_US", "英文")):
+            action = self._action(title, lambda checked=False, value=code: set_language(value), checkable=True)
+            group.addAction(action)
+            self.language_menu.addAction(action)
+            self.language_actions[code] = action
         self.toolbar = QToolBar("常用操作")
         self.toolbar.setMovable(False)
         self.toolbar.setIconSize(QSize(16, 16))
@@ -143,6 +175,7 @@ class MainWindow(QMainWindow):
         self.toolbar.addSeparator()
         self.toolbar.addAction(self.save_action)
         self.toolbar.addAction(self.edit_template_action)
+        self.toolbar.addAction(self.metadata_action)
         self.toolbar.addSeparator()
         self.toolbar.addAction(self.export_action)
         self.toolbar.addAction(self.cancel_action)
@@ -154,7 +187,7 @@ class MainWindow(QMainWindow):
         self.files.directory_requested.connect(self._directory_requested)
         self.files.file_selected.connect(self._file_selected)
         self.files.selection_changed.connect(self._update_actions)
-        self.files.selection_changed.connect(self._schedule_preview)
+        self.files.selection_changed.connect(self._queue_selection_changed)
         self.files.clear_requested.connect(self._clear_photos)
         self.input_tree, self.output_tree = self.files.input_tree, self.files.output_tree
         self.input_input, self.output_input = self.files.input_path, self.files.output_path
@@ -205,7 +238,7 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self.summary_label)
         self.statusBar().addPermanentWidget(self.error_button)
         self.statusBar().addPermanentWidget(self.open_button)
-        self.statusBar().showMessage("就绪")
+        self._set_status("就绪")
 
     def _build_inspector(self):
         panel = QWidget()
@@ -276,12 +309,15 @@ class MainWindow(QMainWindow):
             fields.addRow(caption, row)
         self.background_button = QPushButton("底色")
         self.text_button = QPushButton("文字颜色")
+        self.background_button.setObjectName("backgroundColorButton")
+        self.text_button.setObjectName("textColorButton")
         self.background_button.clicked.connect(lambda: self._choose_color("background"))
         self.text_button.clicked.connect(lambda: self._choose_color("text_color"))
-        row = QHBoxLayout()
-        row.addWidget(self.background_button)
-        row.addWidget(self.text_button)
-        fields.addRow("颜色", row)
+        colors = QHBoxLayout()
+        colors.setSpacing(6)
+        colors.addWidget(self.background_button)
+        colors.addWidget(self.text_button)
+        fields.addRow(colors)
         form.addWidget(self.style_group)
         export_group = QGroupBox("输出选项")
         options = QFormLayout(export_group)
@@ -351,7 +387,8 @@ class MainWindow(QMainWindow):
         self.template_combo.blockSignals(True)
         self.template_combo.clear()
         for preset in self.presets:
-            self.template_combo.addItem(preset.name, preset.name)
+            title = "品牌标识居中" if preset.name == "logo居中" else preset.name
+            self.template_combo.addItem(tr(title), preset.name)
         self.template_combo.setCurrentIndex(max(0, self.template_combo.findData(selected or self.settings.template_name)))
         self.template_combo.blockSignals(False)
 
@@ -369,13 +406,12 @@ class MainWindow(QMainWindow):
         if index < 0:
             return
         preset = self.presets[index]
-        self.template_description.setText(preset.description)
+        self.template_description.setText(tr(preset.description))
         self.template_preview.clear()
         if preset.thumbnail:
-            self.template_preview.setPixmap(QPixmap(str(preset.thumbnail)).scaled(255, 91, Qt.AspectRatioMode.KeepAspectRatio,
-                                                                                 Qt.TransformationMode.SmoothTransformation))
+            self.template_preview.setPixmap(preview_pixmap(preset.thumbnail, 255, 91))
         else:
-            self.template_preview.setText("自定义模板")
+            self.template_preview.setText(tr("自定义模板"))
         self.border_slider.setEnabled(preset.supports_footer)
         self.background_button.setEnabled(preset.supports_footer)
 
@@ -407,7 +443,7 @@ class MainWindow(QMainWindow):
                                 input_dir=self.input_input.text().strip(), output_dir=self.output_input.text().strip(),
                                 overwrite_existing=self.overwrite_check.isChecked(), preserve_structure=self.structure_check.isChecked(),
                                 use_template_styles=self.template_styles_check.isChecked())
-        self._dirty = replace(self.settings, template_source="") != replace(self._saved, template_source="")
+        self._dirty = replace(self.settings, template_source="", metadata_overrides={}) != replace(self._saved, template_source="", metadata_overrides={})
         self._update_labels()
         self._update_actions()
         self._schedule_preview()
@@ -415,16 +451,67 @@ class MainWindow(QMainWindow):
     def _update_labels(self):
         self.font_value.setText(f"{self.font_slider.value()}%")
         self.border_value.setText(f"{self.border_slider.value()}%")
-        self.mode_label.setText("使用模板定义的样式" if self.settings.use_template_styles else "自定义模式 · 快捷参数覆盖模板样式")
-        self.saved_label.setText("配置有修改，尚未保存" if self._dirty else "配置已保存")
+        self.mode_label.setText(tr("使用模板定义的样式" if self.settings.use_template_styles else "自定义模式 · 快捷参数覆盖模板样式"))
+        self.saved_label.setText(tr("配置有修改，尚未保存" if self._dirty else "配置已保存"))
         for widget, caption, color in ((self.background_button, "底色", self.settings.background),
                                        (self.text_button, "文字颜色", self.settings.text_color)):
-            widget.setText(caption)
-            widget.setToolTip(color)
-            widget.setStyleSheet(f"border-left: 10px solid {color};")
+            # 色块左侧保留透明间距，两个按钮维持紧凑并排
+            swatch = QPixmap(24, 16)
+            swatch.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(swatch)
+            painter.fillRect(8, 1, 14, 14, QColor(color))
+            painter.setPen(QColor("#949494"))
+            painter.drawRect(8, 1, 13, 13)
+            painter.end()
+            widget.setIcon(QIcon(swatch))
+            widget.setIconSize(QSize(24, 16))
+            widget.setText(tr(caption))
+            widget.setToolTip(tr("点击选择{label}，当前颜色 {color}", label=tr(caption), color=color.upper()))
+            widget.setAccessibleName(widget.toolTip())
+
+    def _set_status(self, source, **values):
+        """保留状态原文以便处理中切换语言"""
+        self._status_source, self._status_values = source, values
+        rendered = dict(values)
+        if "title" in rendered:
+            rendered["title"] = tr(rendered["title"])
+        if "error" in rendered:
+            rendered["error"] = localize_error(rendered["error"])
+        self.statusBar().showMessage(tr(source, **rendered))
+
+    def _set_preview_status(self, source, **values):
+        self._preview_source, self._preview_values = source, values
+        rendered = dict(values)
+        if "mode" in rendered:
+            rendered["mode"] = tr(rendered["mode"])
+        self.preview_status.setText(tr(source, **rendered))
+
+    @Slot()
+    def _retranslate_ui(self):
+        """原地更新文案而不重建队列或丢弃未保存的编辑内容"""
+        for code, action in self.language_actions.items():
+            action.setChecked(code == language())
+        self._reload_presets(self.settings.template_name)
+        self._show_template()
+        self._update_labels()
+        self.lock_button.setText(tr("编辑配置" if self._locked else "锁定配置"))
+        if not self._current_data:
+            self.canvas_name.setText(tr("预览"))
+        self._set_status(self._status_source, **self._status_values)
+        self._set_preview_status(self._preview_source, **self._preview_values)
+        self.preview_status.setToolTip(localize_error(self._preview_error))
+        self._summary_changed(self._counts)
+        for dialog, editor in self._error_dialogs:
+            dialog.setWindowTitle(tr("处理详情"))
+            editor.setPlainText(self._error_details())
+
+    def _error_details(self):
+        return "\n".join(tr(error[0], **error[1]) if isinstance(error, tuple) else localize_error(error)
+                         for error in self._errors) if self._errors else tr("暂无错误")
 
     def _choose_color(self, field):
-        color = QColorDialog.getColor(QColor(getattr(self.settings, field)), self, "选择颜色")
+        color = QColorDialog.getColor(QColor(getattr(self.settings, field)), self, tr("选择颜色"),
+                                      QColorDialog.ColorDialogOption.DontUseNativeDialog)
         if color.isValid():
             self.settings = replace(self.settings, **{field: color.name()})
             self._style_changed()
@@ -435,7 +522,7 @@ class MainWindow(QMainWindow):
         self.lock_button.blockSignals(True)
         self.lock_action.setChecked(locked)
         self.lock_button.setChecked(locked)
-        self.lock_button.setText("编辑配置" if locked else "锁定配置")
+        self.lock_button.setText(tr("编辑配置" if locked else "锁定配置"))
         self.lock_action.blockSignals(False)
         self.lock_button.blockSignals(False)
         self.config_body.setEnabled(not locked)
@@ -446,10 +533,10 @@ class MainWindow(QMainWindow):
         """显式保存同时更新原版共享配置和桌面个人配置"""
         try:
             save_workspace_settings(self.settings)
-            self._saved, self._dirty = replace(self.settings, template_source=""), False
+            self._saved, self._dirty = deepcopy(replace(self.settings, template_source="")), False
             self._update_labels()
             self._update_actions()
-            self.statusBar().showMessage("配置已保存")
+            self._set_status("配置已保存")
             return True
         except Exception as exc:
             self._record_errors("保存配置失败", [str(exc)])
@@ -457,7 +544,9 @@ class MainWindow(QMainWindow):
 
     def _reset_config(self):
         old_directories = (self.settings.input_dir, self.settings.output_dir)
-        self.settings = replace(self._saved)
+        overrides = deepcopy(self.settings.metadata_overrides)
+        self.settings = deepcopy(self._saved)
+        self.settings.metadata_overrides = overrides
         self._dirty = False
         self._restore_controls()
         self._schedule_preview()
@@ -472,12 +561,14 @@ class MainWindow(QMainWindow):
     def _pick_photos(self):
         if self._exporting or self._closing:
             return
-        paths, _ = QFileDialog.getOpenFileNames(self, "添加照片", self.settings.input_dir,
-                                              "照片 (*.jpg *.jpeg *.png *.heic *.heif)")
+        paths, _ = QFileDialog.getOpenFileNames(self, tr("添加照片"), self.settings.input_dir,
+                                              tr("照片 (*.jpg *.jpeg *.png *.heic *.heif)"),
+                                              options=QFileDialog.Option.DontUseNativeDialog)
         self.add_paths(paths)
 
     def _pick_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "选择输入目录", self.settings.input_dir)
+        folder = QFileDialog.getExistingDirectory(self, tr("选择输入目录"), self.settings.input_dir,
+                                                  QFileDialog.Option.DontUseNativeDialog)
         if folder:
             self._directory_requested("import", folder)
 
@@ -508,7 +599,7 @@ class MainWindow(QMainWindow):
             self._current_data = None
             self._generation += 1
             self.photo_view.set_image(None)
-            self.canvas_name.setText("预览")
+            self.canvas_name.setText(tr("预览"))
         self._start_task(kind, paths=[Path(folder)], settings=replace(self.settings))
         self._update_actions()
 
@@ -536,7 +627,7 @@ class MainWindow(QMainWindow):
         self.files.begin_scan("import", self.files.roots["import"])
         if self._current_kind == "import":
             self._file_selected("import", None)
-        self.statusBar().showMessage("输入队列已清空")
+        self._set_status("输入队列已清空")
 
     def _remove_photo(self):
         if not self._exporting:
@@ -553,10 +644,11 @@ class MainWindow(QMainWindow):
     def _file_selected(self, kind, data):
         self._current_kind, self._current_data = kind, data
         if not data:
-            self.canvas_name.setText("预览")
+            self.canvas_name.setText(tr("预览"))
             self.canvas_name.setToolTip("")
             self.photo_view.set_image(None)
-            self.preview_status.setText("未选择照片")
+            self._set_preview_status("未选择照片")
+            self._update_actions()
             self._schedule_preview()
             return
         path, width, height = data
@@ -565,7 +657,9 @@ class MainWindow(QMainWindow):
         self.original_toggle.setEnabled(kind == "import")
         self.original_action.setEnabled(kind == "import")
         self.photo_view.set_image(None)
-        self.preview_status.setText(f"{width} × {height} · {'输出文件' if kind == 'output' else '输入文件'}")
+        self._set_preview_status("{width} × {height} · {mode}", width=width, height=height,
+                                 mode="输出文件" if kind == "output" else "输入文件")
+        self._update_actions()
         self._schedule_preview()
 
     def _current_path(self):
@@ -584,12 +678,18 @@ class MainWindow(QMainWindow):
         self._pending = True
         self.timer.start()
 
+    def _queue_selection_changed(self):
+        """导入期间不反复推迟首张预览，完整批次在扫描结束后刷新"""
+        if not any(kind == "import" for kind, _ in self._tasks):
+            self._schedule_preview()
+
     def _render_preview(self):
         path = self._current_path()
         if self._closing or self._rendering or not self._pending or not path:
             return
         self._pending, self._rendering = False, True
-        self.preview_status.setText("正在生成预览…")
+        self._set_preview_status("正在生成预览…")
+        self._preview_error = ""
         self.preview_status.setToolTip("")
         # 输出树始终读取已有成品以免重复添加水印
         kind = "original" if self._current_kind == "output" or self.original_toggle.isChecked() else "preview"
@@ -599,6 +699,9 @@ class MainWindow(QMainWindow):
                          settings=replace(self.settings, input_files=selected))
 
     def _start_task(self, kind, token=None, **kwargs):
+        # 深拷贝会话元数据以免编辑窗口修改正在处理的批次
+        if kwargs.get("settings") is not None:
+            kwargs["settings"] = deepcopy(kwargs["settings"])
         self._serial += 1
         task = ImageTask(kind, self._serial if token is None else token, **kwargs)
         task.signals.result.connect(self._task_result)
@@ -618,16 +721,18 @@ class MainWindow(QMainWindow):
             self.photo_view.set_image(result)
             _, width, height = self._current_data
             mode = "输出文件" if self._current_kind == "output" else "原图" if kind == "original" else "水印预览"
-            self.preview_status.setText(f"{mode} · {width} × {height} · 适应窗口")
+            self._set_preview_status("{mode} · {width} × {height} · 适应窗口", mode=mode, width=width, height=height)
         elif kind in ("import", "output"):
-            self.statusBar().showMessage("目录读取完成")
+            self._set_status("目录读取完成")
+            if kind == "import":
+                self._schedule_preview()
             if result:
                 self._record_errors("部分照片无法读取", result)
         elif kind == "export":
             self._summary_changed({key: len(result[key]) for key in ("completed", "errors", "skipped")})
-            self._errors = result["errors"] + [f"已跳过同名文件：{path}" for path in result["skipped"]]
+            self._errors = result["errors"] + [("已跳过同名文件：{path}", {"path": path}) for path in result["skipped"]]
             self.error_button.setEnabled(bool(self._errors))
-            self.statusBar().showMessage("处理已取消" if result["cancelled"] else "处理完成")
+            self._set_status("处理已取消" if result["cancelled"] else "处理完成")
             if self._last_output and self._last_output.is_dir():
                 self._scan_directory("output", self._last_output)
 
@@ -637,8 +742,9 @@ class MainWindow(QMainWindow):
             return
         if kind in ("preview", "original"):
             if token == self._generation:
-                self.preview_status.setText("预览失败，详情见状态栏")
-                self.preview_status.setToolTip(message)
+                self._set_preview_status("预览失败，详情见状态栏")
+                self._preview_error = message
+                self.preview_status.setToolTip(localize_error(message))
                 self._record_errors("预览失败", [message])
         else:
             self._record_errors("处理失败", [message])
@@ -662,31 +768,34 @@ class MainWindow(QMainWindow):
             return
         if total:
             self.progress.setValue(current)
-            self.statusBar().showMessage(f"处理 {current}/{total} · {name}")
+            self._set_status("处理 {current}/{total} · {name}", current=current, total=total, name=name)
         elif not self._exporting:
-            self.statusBar().showMessage(f"读取目录 · {name}")
+            self._set_status("读取目录 · {name}", name=name)
 
     @Slot(object)
     def _summary_changed(self, summary):
-        self.summary_label.setText(f"成功 {summary['completed']} / 失败 {summary['errors']} / 跳过 {summary['skipped']}")
+        self._counts = dict(summary)
+        self.summary_label.setText(tr("成功 {completed} / 失败 {errors} / 跳过 {skipped}", **summary))
 
     def _record_errors(self, title, errors):
         self._errors = errors
         self.error_button.setEnabled(True)
-        self.statusBar().showMessage(f"{title}：{errors[0]}")
+        self._set_status("{title}：{error}", title=title, error=errors[0])
 
     def _show_error_details(self):
         dialog = QDialog(self)
-        dialog.setWindowTitle("处理详情")
+        dialog.setWindowTitle(tr("处理详情"))
         dialog.resize(680, 360)
         layout = QVBoxLayout(dialog)
-        text = QPlainTextEdit("\n".join(self._errors) if self._errors else "暂无错误")
+        text = QPlainTextEdit(self._error_details())
         text.setReadOnly(True)
         layout.addWidget(text)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self._error_dialogs.append((dialog, text))
+        dialog.finished.connect(lambda result: self._error_dialogs.remove((dialog, text)))
         dialog.open()
 
     def _update_actions(self):
@@ -694,11 +803,13 @@ class MainWindow(QMainWindow):
             return
         busy = self._exporting or self._closing
         importing = any(kind == "import" for kind, _ in self._tasks)
-        self.export_action.setEnabled(bool(self.files.selected_paths() and self.presets and not importing and not busy))
+        self.export_action.setEnabled(bool(self.files._selected_count and self.presets and not importing and not busy))
         self.cancel_action.setEnabled(self._exporting and not self._closing)
         for action in (self.add_action, self.directory_action, self.refresh_action, self.new_template_action,
                        self.copy_template_action, self.edit_template_action, self.lock_action):
             action.setEnabled(not busy)
+        self.metadata_action.setEnabled(bool(self._current_path()) and not busy)
+        self.metadata_batch_action.setEnabled(bool(self.files._selected_count) and not busy)
         self.save_action.setEnabled(self._dirty and not busy)
         self.reset_action.setEnabled(self._dirty and not busy)
         if hasattr(self, "save_button"):
@@ -706,7 +817,8 @@ class MainWindow(QMainWindow):
             self.reset_button.setEnabled(self._dirty and not busy)
 
     def _choose_output(self):
-        folder = QFileDialog.getExistingDirectory(self, "选择输出目录", self.settings.output_dir)
+        folder = QFileDialog.getExistingDirectory(self, tr("选择输出目录"), self.settings.output_dir,
+                                                  QFileDialog.Option.DontUseNativeDialog)
         if folder:
             self.output_input.setText(folder)
             self._settings_changed()
@@ -726,7 +838,7 @@ class MainWindow(QMainWindow):
         self._summary_changed({"completed": 0, "errors": 0, "skipped": 0})
         self.progress.setRange(0, len(paths))
         self.progress.setValue(0)
-        self.statusBar().showMessage(f"处理 0/{len(paths)}")
+        self._set_status("处理 {current}/{total} · {name}", current=0, total=len(paths), name="")
         self._start_task("export", paths=paths,
                          settings=replace(self.settings, input_files=tuple(str(path) for path in paths)),
                          output=self._last_output)
@@ -737,6 +849,8 @@ class MainWindow(QMainWindow):
         self.files.setEnabled(not active)
         for editor in self._editors:
             editor.setEnabled(not active)
+        for editor in self._metadata_editors:
+            editor.setEnabled(not active)
         self.progress.setVisible(active)
         self._update_actions()
 
@@ -745,12 +859,57 @@ class MainWindow(QMainWindow):
             if task.kind == "export":
                 task.cancel.set()
         self.cancel_action.setEnabled(False)
-        self.statusBar().showMessage("当前照片完成后停止")
+        self._set_status("当前照片完成后停止")
 
     def _open_output(self):
         directory = self._last_output or (Path(self.settings.output_dir) if self.settings.output_dir else None)
         if directory:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory.resolve())))
+
+    def _edit_metadata(self):
+        """默认编辑当前照片，批量操作通过独立菜单明确选择"""
+        current = self._current_path()
+        if current:
+            self._open_metadata_editor([current], current)
+        else:
+            self._set_status("尚未选择可编辑的照片")
+
+    def _edit_checked_metadata(self):
+        paths = self.files.selected_paths()
+        if paths:
+            current = self._current_path()
+            self._open_metadata_editor(paths, current if current in paths else paths[0])
+
+    def _open_metadata_editor(self, paths, current):
+        from .metadata_editor import MetadataEditor
+        if self._exporting or self._closing:
+            return
+        # 同时仅保留一个编辑会话，避免旧的完整映射覆盖较新的修改
+        if self._metadata_editors:
+            editor = self._metadata_editors[0]
+            editor.show()
+            editor.raise_()
+            editor.activateWindow()
+            return
+        editor = MetadataEditor(self, paths=paths, current=current, overrides=deepcopy(self.settings.metadata_overrides))
+        editor.applied.connect(self._metadata_applied)
+        editor.finished.connect(lambda result, window=editor: self._metadata_editor_closed(window))
+        self._metadata_editors.append(editor)
+        editor.show()
+
+    @Slot(dict)
+    def _metadata_applied(self, overrides):
+        """替换会话覆盖值并使进行中的预览失效"""
+        from core.metadata import metadata_key
+        normalized = {metadata_key(Path(path)): deepcopy(changes) for path, changes in overrides.items()}
+        self.settings = replace(self.settings, metadata_overrides=normalized)
+        self._schedule_preview()
+        self._set_status("照片信息已更新，仅用于水印")
+
+    def _metadata_editor_closed(self, editor):
+        if editor in self._metadata_editors:
+            self._metadata_editors.remove(editor)
+        editor.deleteLater()
 
     def _open_editor(self, name, source, is_new=False):
         editor = TemplateEditor(self, name=name, source=source, is_new=is_new)
@@ -761,12 +920,22 @@ class MainWindow(QMainWindow):
         editor.show()
 
     def _new_template(self):
-        self._open_editor("", "[]", True)
+        from .template_wizard import TemplateWizard
+        wizard = TemplateWizard(self, current_template=self.settings.template_name)
+        if wizard.exec() == QDialog.DialogCode.Accepted:
+            try:
+                write_template(wizard.name, wizard.source, create=True)
+                self._template_saved(wizard.name)
+                self._set_status("模板已创建：{name}", name=wizard.name)
+            except Exception as exc:
+                self._record_errors("创建模板失败", [str(exc)])
+                QMessageBox.warning(self, tr("创建模板失败"), localize_error(exc))
+        wizard.deleteLater()
 
     def _copy_template(self):
         name = self.settings.template_name
         try:
-            self._open_editor(name + "_副本", self._drafts.get(name) or read_template(name), True)
+            self._open_editor(name + tr("_副本"), self._drafts.get(name) or read_template(name), True)
         except Exception as exc:
             self._record_errors("读取模板失败", [str(exc)])
 
@@ -794,7 +963,7 @@ class MainWindow(QMainWindow):
             self.template_styles_check.setChecked(True)
             self._update_labels()
             self._schedule_preview()
-            self.statusBar().showMessage("模板草稿已应用，尚未保存到模板文件")
+            self._set_status("模板草稿已应用，尚未保存到模板文件")
 
     def _template_saved(self, name):
         self._drafts.pop(name, None)
@@ -825,6 +994,21 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         if not self._closing:
+            # 等待信息写入结束后重新走关闭确认，避免销毁仍在运行的线程
+            active_job = next((editor._job for editor in self._metadata_editors if editor._job is not None), None)
+            if active_job is not None:
+                if self._metadata_close_job is not active_job:
+                    self._metadata_close_job = active_job
+                    active_job.finished.connect(self._resume_close_after_metadata)
+                    if active_job.isFinished():
+                        QTimer.singleShot(0, self._resume_close_after_metadata)
+                self._set_status("等待照片信息处理结束…")
+                event.ignore()
+                return
+            for editor in list(self._metadata_editors):
+                if not editor.close():
+                    event.ignore()
+                    return
             for editor in list(self._editors):
                 if not editor.close():
                     event.ignore()
@@ -839,10 +1023,15 @@ class MainWindow(QMainWindow):
             self._closing = True
             self.centralWidget().setEnabled(False)
             self.toolbar.setEnabled(False)
-            self.statusBar().showMessage("等待当前照片处理结束…")
+            self._set_status("等待当前照片处理结束…")
             for task in self._tasks.values():
                 task.cancel.set()
             event.ignore()
         else:
             self._closing = True
             event.accept()
+
+    @Slot()
+    def _resume_close_after_metadata(self):
+        self._metadata_close_job = None
+        QTimer.singleShot(0, self.close)
