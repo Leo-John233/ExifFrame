@@ -93,14 +93,14 @@ def read_metadata(path: Path) -> dict[str, str]:
     if not source.is_file():
         raise MetadataError('file_missing')
     arguments = ['-j', '-n', '-lang', 'en', *(f'-{tag}' for tag in _FIELDS),
-                 '-LightSource', '-Orientation', source.as_posix()]
+                 '-LightSource', '-Orientation', '-GPSAltitudeRef', source.as_posix()]
     try:
         records = json.loads(_run_tool(arguments).stdout)
         data = records[0]
     except (ValueError, IndexError, TypeError) as error:
         raise MetadataError('write_failed', detail=str(error)) from error
     values = {key: str(value).replace('\x00', '').strip() for key, value in data.items()
-              if key in _FIELDS or key in {'LightSource', 'Orientation'}}
+              if key in _FIELDS or key in {'LightSource', 'Orientation', 'GPSAltitudeRef'}}
     if 'WhiteBalance' in values:
         preset = next((name for name, number in _LIGHT_SOURCES.items()
                        if str(number) == values.get('LightSource')), None)
@@ -108,6 +108,8 @@ def read_metadata(path: Path) -> dict[str, str]:
     if 'ExposureTime' in values:
         seconds = _number(values['ExposureTime'], 'ExposureTime')
         values['ExposureTime'] = str(Fraction(seconds).limit_denominator(1000000)) if 0 < seconds < 1 else f'{seconds:g}'
+    if values.get('GPSAltitudeRef') == '1' and 'GPSAltitude' in values:
+        values['GPSAltitude'] = f"{-abs(float(values['GPSAltitude'])):g}"
     return values
 
 
@@ -226,8 +228,11 @@ def save_metadata_copy(photo: Path, destination: Path, changes: dict, source: Pa
         if 'WhiteBalance' in values:
             value = values['WhiteBalance']
             payload['WhiteBalance'] = '0' if value == 'Auto' else '1'
-            if value in _LIGHT_SOURCES:
-                payload['LightSource'] = _LIGHT_SOURCES[value]
+            payload['LightSource'] = _LIGHT_SOURCES.get(value, 0)
+        if 'GPSAltitude' in values:
+            altitude = float(values['GPSAltitude'])
+            payload['GPSAltitude'] = abs(altitude)
+            payload['GPSAltitudeRef'] = 1 if altitude < 0 else 0
         if source is not None:
             payload['EXIF:Orientation'] = read_metadata(original).get('Orientation', '1')
         data_file = temporary_root / 'changes.json'
@@ -240,9 +245,15 @@ def save_metadata_copy(photo: Path, destination: Path, changes: dict, source: Pa
         arguments.extend([f'-json={data_file.as_posix()}', target.as_posix()])
         _run_tool(arguments)
         # 独占创建最终文件，防止保存期间出现同名文件时被覆盖
+        created = False
         try:
             with destination.open('xb') as output, target.open('rb') as incoming:
+                created = True
                 shutil.copyfileobj(incoming, output)
         except FileExistsError as error:
             raise MetadataError('destination_exists') from error
+        except OSError as error:
+            if created:
+                destination.unlink(missing_ok=True)
+            raise MetadataError('write_failed', detail=str(error)) from error
     return destination
