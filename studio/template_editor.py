@@ -9,11 +9,12 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QSyntaxHighlighter, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMessageBox,
-    QPlainTextEdit, QPushButton, QStyle, QToolBar, QVBoxLayout, QMenu, QToolButton,
+    QPlainTextEdit, QPushButton, QSplitter, QStyle, QToolBar, QVBoxLayout, QMenu, QToolButton,
 )
 
 from core.desktop_service import validate_template, write_template
 from studio.i18n import bind, tr, register_translations, translator, localize_error
+from studio.preview import TemplatePreview
 
 
 PLACEHOLDERS = (
@@ -56,6 +57,8 @@ register_translations({
     '包含 Jinja 条件或循环，保留原始排版': 'Jinja conditions or loops detected; original formatting preserved',
     '已格式化 JSON，Jinja 表达式保持不变': 'JSON formatted; Jinja expressions preserved',
     '无法安全格式化，源码保持不变：{error}': 'Cannot format safely; source unchanged: {error}',
+    '源码已修改，照片预览自动更新': 'Source changed; the photo preview updates automatically',
+    '有效源码会自动更新实际照片，保存后写入模板文件': 'Valid source updates the actual photo automatically; Save writes the template file',
 })
 
 
@@ -98,7 +101,7 @@ class TemplateEditor(QDialog):
     visual_requested = Signal(str)
 
     def __init__(self, parent=None, name: str = "", source: str = "", is_new: bool = False,
-                 saved_source: str | None = None):
+                 saved_source: str | None = None, photo_path=None, settings=None):
         super().__init__(parent)
         self.name = name
         self.is_new = is_new or not name
@@ -106,13 +109,15 @@ class TemplateEditor(QDialog):
         self._saved_source = initial_source if saved_source is None else saved_source
         self._saved_name = name
         self._close_approved = False
+        self._preview_photo_path = photo_path
+        self._preview_settings = settings
         self._status = ('修改源码后可先检查格式，再应用到当前照片预览', {})
         self.setObjectName("templateEditor")
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowTitleHint |
                             Qt.WindowType.WindowSystemMenuHint | Qt.WindowType.WindowMinMaxButtonsHint |
                             Qt.WindowType.WindowCloseButtonHint)
         available = self.screen().availableGeometry()
-        self.resize(min(900, max(620, available.width() - 64)), min(680, max(440, available.height() - 72)))
+        self.resize(min(1180, max(620, available.width() - 64)), min(740, max(440, available.height() - 72)))
         self.setMinimumSize(620, 440)
         self.setWindowModality(Qt.WindowModality.NonModal)
         self._build_ui()
@@ -120,7 +125,7 @@ class TemplateEditor(QDialog):
         self.editor.document().setModified(initial_source != self._saved_source)
         self._update_title()
         self._update_position()
-        self._set_status('修改源码后可先检查格式，再应用到当前照片预览')
+        self._set_status('有效源码会自动更新实际照片，保存后写入模板文件')
         translator.language_changed.connect(self.retranslate_ui)
         self.retranslate_ui()
 
@@ -134,12 +139,14 @@ class TemplateEditor(QDialog):
         bind(name_label, '模板名称')
         name_row.addWidget(name_label)
         self.name_input = QLineEdit(self.name)
+        self.name_input.setMaximumWidth(320)
         self.name_input.setObjectName("templateNameInput")
         bind(self.name_input, '新模板名称', 'setPlaceholderText')
         self.name_input.setReadOnly(not self.is_new)
         self.name_input.textChanged.connect(self._name_changed)
         name_row.addWidget(self.name_input, 1)
         name_row.addWidget(QLabel(".json"))
+        name_row.addStretch()
         layout.addLayout(name_row)
 
         toolbar = QToolBar()
@@ -204,7 +211,16 @@ class TemplateEditor(QDialog):
         self.editor.undoAvailable.connect(self.undo_action.setEnabled)
         self.editor.redoAvailable.connect(self.redo_action.setEnabled)
         self.highlighter = TemplateHighlighter(self.editor)
-        layout.addWidget(self.editor, 1)
+        self.preview = TemplatePreview(self, photo_path=self._preview_photo_path, settings=self._preview_settings)
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.setObjectName('templateSourcePreviewSplitter')
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.addWidget(self.editor)
+        self.splitter.addWidget(self.preview)
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setSizes([590, 540])
+        layout.addWidget(self.splitter, 1)
 
         status_row = QHBoxLayout()
         status_row.setSpacing(12)
@@ -255,6 +271,7 @@ class TemplateEditor(QDialog):
     def close_for_handoff(self):
         """草稿已交给另一编辑器时不重复询问丢弃"""
         self._close_approved = True
+        self.preview.shutdown()
         self.close()
 
     def is_dirty(self) -> bool:
@@ -269,7 +286,15 @@ class TemplateEditor(QDialog):
     def _text_changed(self):
         self._close_approved = False
         self._update_title()
-        self._set_status('源码已修改，尚未检查格式')
+        # 每次修改先使错误草稿失效，只有有效源码进入去抖预览
+        try:
+            validate_template(self.source())
+        except Exception as exc:
+            self.preview.set_error(exc)
+            self._set_status('格式检查失败：{error}', error=exc)
+            return
+        self.preview.set_source(self.source())
+        self._set_status('源码已修改，照片预览自动更新')
 
     def _update_title(self):
         name = self.name_input.text().strip() or tr("未命名模板")
@@ -377,8 +402,10 @@ class TemplateEditor(QDialog):
         try:
             validate_template(self.source())
         except Exception as exc:
+            self.preview.set_error(exc)
             self._error('格式检查失败：{error}', exc, error=exc)
             return False
+        self.preview.set_source(self.source())
         has_control = "{%" in self.source()
         self._set_status("Jinja 语法通过，条件和循环的最终结果请用照片预览验证" if has_control else "格式检查通过")
         self.status_label.setToolTip("")
@@ -471,6 +498,7 @@ class TemplateEditor(QDialog):
     def closeEvent(self, event):
         if self._close_approved or self.confirm_close():
             self._close_approved = True
+            self.preview.shutdown()
             super().closeEvent(event)
         else:
             event.ignore()
@@ -479,4 +507,5 @@ class TemplateEditor(QDialog):
         # Esc 和标题栏关闭遵循相同的未保存检查
         if self._close_approved or self.confirm_close():
             self._close_approved = True
+            self.preview.shutdown()
             super().reject()
