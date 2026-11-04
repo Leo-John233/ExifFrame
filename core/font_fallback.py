@@ -1,4 +1,4 @@
-"""为水印中缺失的 Unicode 字形选择系统字体"""
+"""为水印补齐缺失字形并保持原字体风格"""
 
 import math
 import os
@@ -8,6 +8,7 @@ from bisect import bisect_left
 from functools import lru_cache
 from pathlib import Path
 
+import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
 
@@ -149,6 +150,48 @@ def _invisible(character):
             or 0xFE00 <= codepoint <= 0xFE0F or 0xE0100 <= codepoint <= 0xE01EF)
 
 
+def _native_z(font):
+    """字库缺少双线 Z 时，优先沿用本字体的普通 Z 轮廓"""
+    key = _font_key(font)
+    return key is not None and not _supports(key, 0x2124) and _supports(key, ord('Z'))
+
+
+def _style_native_z(alpha, text, layout, font, origin):
+    """在原 Z 的斜笔画内形成双线，保留字高、字宽和收笔"""
+    pixels = np.array(alpha)
+    box = font.getbbox('Z')
+    advance = font.getlength('Z')
+    for index, character in enumerate(text):
+        if character != 'ℤ':
+            continue
+        # 使用整段字距定位，保留前一个字符与 Z 之间的字偶调整
+        position = origin[0] + font.getlength(layout[:index + 1]) - advance
+        left = max(0, math.floor(position + box[0]))
+        right = min(alpha.width, math.ceil(position + box[2]))
+        top = max(0, math.floor(origin[1] + box[1]))
+        bottom = min(alpha.height, math.ceil(origin[1] + box[3]))
+        glyph = pixels[top:bottom, left:right]
+        if not glyph.size:
+            continue
+        columns = np.arange(glyph.shape[1])
+        for row in glyph:
+            maximum = int(row.max())
+            if not maximum:
+                continue
+            ink = np.flatnonzero(row >= max(1, maximum * .5))
+            if not len(ink):
+                continue
+            width = ink[-1] - ink[0] + 1
+            # 顶部和底部横画保持原样，仅分开中间的斜笔画
+            if width > glyph.shape[1] * .7:
+                continue
+            center = (ink[0] + ink[-1]) / 2
+            half = max(1.5, width * .11)
+            cut = np.clip(half + .5 - np.abs(columns - center), 0, 1)
+            row[:] = np.rint(row * (1 - cut)).astype('uint8')
+    return Image.fromarray(pixels)
+
+
 def _render_line(runs, primary, color):
     """按共同基线拼接字体片段，保留字距和左右外伸部分"""
     ascent, descent = primary.getmetrics()
@@ -156,17 +199,18 @@ def _render_line(runs, primary, color):
     cursor, left, right = 0.0, 0, 1
     weight = _weight(primary)
     for text, font in runs:
+        layout = text.replace('ℤ', 'Z') if 'ℤ' in text and _native_z(font) else text
         font_ascent, font_descent = font.getmetrics()
         ascent, descent = max(ascent, font_ascent), max(descent, font_descent)
         # 缺字字体只有常规体时，按原字重细化或加粗笔画
         difference = weight - _weight(font) if font is not primary else 0
         radius = round(font.size * min(abs(difference), 500) / 20000)
         stroke = radius if difference > 0 else -radius
-        positions.append((cursor, text, font, font_ascent, stroke))
-        cursor += font.getlength(text)
+        positions.append((cursor, text, layout, font, font_ascent, stroke))
+        cursor += font.getlength(layout)
     top, bottom = 0, ascent + abs(descent)
-    for position, text, font, font_ascent, stroke in positions:
-        box = font.getbbox(text)
+    for position, text, layout, font, font_ascent, stroke in positions:
+        box = font.getbbox(layout)
         padding = max(0, stroke)
         left = min(left, math.floor(position + box[0]) - padding)
         right = max(right, math.ceil(position + box[2]) + padding)
@@ -175,15 +219,21 @@ def _render_line(runs, primary, color):
     right = max(right, math.ceil(cursor))
     image = Image.new('RGBA', (right - left, bottom - top), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
-    for position, text, font, font_ascent, stroke in positions:
+    for position, text, layout, font, font_ascent, stroke in positions:
         origin = position - left, ascent - font_ascent - top
-        if stroke < 0:
+        if stroke < 0 or text != layout:
             layer = Image.new('RGBA', image.size, (0, 0, 0, 0))
-            ImageDraw.Draw(layer).text(origin, text, font=font, fill=color)
-            layer.putalpha(layer.getchannel('A').filter(ImageFilter.MinFilter(1 - stroke * 2)))
+            ImageDraw.Draw(layer).text(origin, layout, font=font, fill=color,
+                                      stroke_width=max(0, stroke), stroke_fill=color)
+            alpha = layer.getchannel('A')
+            if stroke < 0:
+                alpha = alpha.filter(ImageFilter.MinFilter(1 - stroke * 2))
+            if text != layout:
+                alpha = _style_native_z(alpha, text, layout, font, origin)
+            layer.putalpha(alpha)
             image.alpha_composite(layer)
         else:
-            draw.text(origin, text, font=font, fill=color, stroke_width=stroke, stroke_fill=color)
+            draw.text(origin, layout, font=font, fill=color, stroke_width=stroke, stroke_fill=color)
     return image
 
 
@@ -195,13 +245,14 @@ def render_with_fallback(text, primary, load_font, color):
     fonts = Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'Fonts'
     candidates = [fonts / name for name in ('seguisym.ttf', 'cambria.ttc', 'seguiemj.ttf', 'msyh.ttc', 'arial.ttf')]
     loaded, chosen, lines = {}, {}, []
+    native_z = 'ℤ' in text and _native_z(primary)
     for line in text.split('\n'):
         runs = []
         for character in line:
             font = primary
             if _invisible(character):
                 font = runs[-1][1] if runs else primary
-            elif not _supports(primary_key, ord(character)):
+            elif not (character == 'ℤ' and native_z) and not _supports(primary_key, ord(character)):
                 if character not in chosen:
                     chosen[character] = primary
                     for path in candidates:
