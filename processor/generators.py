@@ -225,20 +225,27 @@ class RichTextGenerator(Generator):
     @staticmethod
     def generate(segment: TextSegment) -> Image.Image:
         font = load_font(segment.font_path)
-
-        # 获取文本尺寸
-        metrics = font.getmetrics()
         text = ' ' if not segment.text or segment.text == '' else segment.text
         color = _parse_color(segment.color)
+        key = (font, text, segment.height, segment.is_bold, color, segment.trim)
+        if not hasattr(_font_state, 'text_images'):
+            _font_state.text_images = OrderedDict()
+            _font_state.text_bytes = 0
+        cache = _font_state.text_images
+        if key in cache:
+            cache.move_to_end(key)
+            return cache[key][0].copy()
+
+        # 普通文字保持原有绘制方式，缺字时继续执行字体回退
+        metrics = font.getmetrics()
         image = render_with_fallback(text, font, load_font, color)
-        if image is None:
+        can_cache = image is None
+        if can_cache:
             bbox = font.getbbox(text)
-            # 普通文字保留原有尺寸和绘制方式
             image = Image.new('RGBA', (int(bbox[2] - bbox[0]), metrics[0] + abs(metrics[1])), (0, 0, 0, 0))
             draw = ImageDraw.Draw(image)
             draw.text((0, 0), text, font=font, fill=color)
 
-        # 使用 start_process 处理图片，解耦对 Filter 的直接依赖
         pipeline = [
             {
                 "processor_name": "trim",
@@ -252,9 +259,17 @@ class RichTextGenerator(Generator):
                 "save_buffer": False,
             }
         ]
-        # 使用临时 buffer 路径（实际上是 image 对象）
         from processor.core import start_process
-        return start_process(pipeline, input_path=None, output_path=None, initial_buffer=[image])
+        result = start_process(pipeline, input_path=None, output_path=None, initial_buffer=[image])
+        # 限制每个工作线程的像素缓存，字体回退结果不缓存以反映系统字体变化
+        cost = result.width * result.height * len(result.getbands()) + len(text) * 4
+        if can_cache and cost <= 16 * 1024 * 1024:
+            while cache and (_font_state.text_bytes + cost > 16 * 1024 * 1024 or len(cache) >= 64):
+                _, (_, old_cost) = cache.popitem(last=False)
+                _font_state.text_bytes -= old_cost
+            cache[key] = (result.copy(), cost)
+            _font_state.text_bytes += cost
+        return result
 
     def process(self, ctx: PipelineContext):
         img = RichTextGenerator.generate(TextSegment.from_dict(ctx))

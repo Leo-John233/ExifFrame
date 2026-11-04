@@ -402,7 +402,15 @@ def footer_row(context, metadata, items, separator=' ', missing='hide'):
     return ''.join(part['text'] for part in footer_segments(context, metadata, items, separator, missing))
 
 
-def preview_rows(layout: dict, metadata=None, filename='', file_dir='') -> dict[str, str]:
+@lru_cache(maxsize=1)
+def _preview_environment():
+    environment = Environment(autoescape=False)
+    environment.globals.update(footer_row=footer_row, footer_segments=footer_segments,
+                               geo_location=format_location, watermark_date=watermark_date)
+    return environment
+
+
+def preview_rows(layout: dict, metadata=None, filename='', file_dir='', file_path='', files=()) -> dict[str, str]:
     """生成文字示例，不读取照片或执行图像处理"""
     layout = normalize_layout(layout)
     if metadata is None:
@@ -416,14 +424,13 @@ def preview_rows(layout: dict, metadata=None, filename='', file_dir='') -> dict[
             match = re.search(r'exif\.([A-Za-z0-9_]+)', field.expression)
             if match:
                 metadata.setdefault(match.group(1), field.example)
-    environment = Environment(autoescape=False)
-    environment.globals.update(footer_row=footer_row, footer_segments=footer_segments,
-                               geo_location=format_location, watermark_date=watermark_date)
+    environment = _preview_environment()
     output = {}
     for region, row in layout['rows'].items():
         try:
-            output[region] = environment.from_string(_row_call('footer_row', row, layout['missing'])).render(
-                exif=metadata, filename=filename or 'DSC_7575', file_dir=file_dir or 'Travel')
+            output[region] = _raw_template(environment, _row_call('footer_row', row, layout['missing'])).render(
+                exif=metadata, filename=filename or 'DSC_7575', file_dir=file_dir or 'Travel',
+                file_path=file_path, files=list(files) or ([file_path] if file_path else []))
         except Exception:
             output[region] = '…'
     return output
