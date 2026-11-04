@@ -1,4 +1,5 @@
 import os.path
+import json
 import sys
 from collections import OrderedDict
 from threading import local
@@ -262,7 +263,11 @@ class RichTextGenerator(Generator):
 
 class MultiRichTextGenerator(Generator):
     def process(self, ctx: PipelineContext):
-        text_segments: List[TextSegment] = TextSegment.from_dicts(ctx.get("text_segments"))
+        segments = ctx.get("text_segments")
+        # 可视化组合可返回动态分段列表，缺失项不会留下多余分隔符
+        if isinstance(segments, str):
+            segments = json.loads(segments)
+        text_segments: List[TextSegment] = TextSegment.from_dicts(segments)
         text_alignment = ctx.get("text_alignment")
         text_spacing = ctx.getint("text_spacing")
         height = ctx.get("height", 100)

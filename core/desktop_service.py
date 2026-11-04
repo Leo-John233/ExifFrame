@@ -16,7 +16,7 @@ from core import CONFIG_PATH
 from core.jinja2renders import auto_logo, vh, vw
 from core.util import find_exiftool, get_exif
 from core.metadata import merge_overrides, metadata_key
-from core.template_render import compiled_template
+from core.template_render import compiled_template, _prepare_footer_calls
 from processor.core import start_process
 
 SUPPORTED_SUFFIXES = {'.jpg', '.jpeg', '.png', '.heic', '.heif'}
@@ -202,11 +202,14 @@ def read_template(name: str) -> str:
 
 def validate_template(source: str) -> None:
     """检查 Jinja 语法及普通模板的 JSON 结构"""
-    Environment().parse(source)
+    Environment().parse(_prepare_footer_calls(source))
     # 条件和循环模板的最终结构由照片预览进一步验证
     if '{%' not in source:
-        simplified = re.sub(r'\{\{.*?\}\}|\{#.*?#\}', '0', source, flags=re.S)
-        nodes = json.loads(simplified)
+        try:
+            nodes = json.loads(source)
+        except ValueError:
+            simplified = re.sub(r'\{\{.*?\}\}|\{#.*?#\}', '0', source, flags=re.S)
+            nodes = json.loads(simplified)
         if not isinstance(nodes, list) or any(not isinstance(node, dict) for node in nodes):
             raise ValueError('模板必须是由处理步骤对象组成的 JSON 数组')
 

@@ -1,11 +1,13 @@
 """缓存模板编译结果并正确转义 JSON 字符串中的照片信息"""
 
 import json
+import re
 from functools import lru_cache
 
 from jinja2 import Environment
 
 from core.jinja2renders import auto_logo, vh, vw
+from core.footer import footer_row, footer_segments
 
 
 def _json_string(value):
@@ -44,10 +46,29 @@ def _escape_string_variables(source):
     return ''.join(output)
 
 
+def _prepare_footer_calls(source):
+    """先解开新组合函数的 JSON 编码，避免引号进入 Jinja 代码位置"""
+    if 'footer_row' not in source and 'footer_segments' not in source:
+        return source
+    def prepare(match):
+        try:
+            value = json.loads(match.group())
+            if 'footer_row' not in value and 'footer_segments' not in value:
+                return match.group()
+            parts = []
+            for _, kind, text in Environment().lex(value):
+                parts.append(json.dumps(text, ensure_ascii=False)[1:-1] if kind == 'data' else text)
+            return '"' + ''.join(parts) + '"'
+        except (ValueError, TypeError):
+            return match.group()
+    # 只处理对应字符串，模板外层的 Jinja 条件和手写源码保持原样
+    return re.sub(r'"(?:[^"\\]|\\.)*"', prepare, source, flags=re.S)
+
+
 @lru_cache(maxsize=32)
 def compiled_template(source: str, logo=auto_logo):
     """不可变编译结果可由后台任务共享，照片变量仍逐次传入"""
     environment = Environment(autoescape=False)
     environment.filters['json_string'] = _json_string
-    environment.globals.update(vh=vh, vw=vw, auto_logo=logo)
-    return environment.from_string(_escape_string_variables(source))
+    environment.globals.update(vh=vh, vw=vw, auto_logo=logo, footer_row=footer_row, footer_segments=footer_segments)
+    return environment.from_string(_escape_string_variables(_prepare_footer_calls(source)))
