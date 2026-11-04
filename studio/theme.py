@@ -21,7 +21,7 @@ QMenu::item { padding: 6px 25px; border-radius: 4px; }
 QMenu::item:selected { background: #48494B; }
 QMenu::item:disabled { color: #7B7B7B; }
 QMenu::separator { height: 1px; background: #4A4A4A; margin: 5px 8px; }
-QToolBar { background: #252629; border-bottom: 1px solid #353638; spacing: 6px; padding: 6px 8px; }
+QToolBar { background: #252629; border-bottom: 1px solid #353638; spacing: 8px; padding: 8px 12px; }
 QToolBar::separator { background: #515151; width: 1px; margin: 6px 4px; }
 QToolButton { min-height: 23px; padding: 4px 8px; border: 1px solid transparent; border-radius: 5px; }
 QToolButton:hover { background: #424242; border-color: #5F5F5F; }
@@ -72,7 +72,7 @@ QLabel#secondaryText { color: #A4A4A4; }
 QLabel#previewStatus { color: #B4B4B4; background: #141516; padding: 7px 9px; }
 QLabel#templatePreview { background: #202020; border: 1px solid #404040; border-radius: 4px; }
 QLabel#errorText { color: #B77975; }
-QStatusBar { border-top: 1px solid #474747; background: #252629; }
+QStatusBar { border-top: 1px solid #474747; background: #252629; padding: 4px 12px; }
 QStatusBar::item { border: none; }
 QProgressBar { max-height: 14px; min-height: 14px; border: 1px solid #636363; border-radius: 3px; background: #252525; text-align: center; }
 QProgressBar::chunk { background: #67686A; border-radius: 2px; }

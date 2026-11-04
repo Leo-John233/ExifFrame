@@ -35,15 +35,16 @@ class FileBrowser(QWidget):
         self._scan_checks = {"import": {}, "output": {}}
         self._selected_count = 0
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setContentsMargins(0, 0, 0, 4)
+        outer.setSpacing(8)
         outer.addWidget(self.tabs)
         for kind, title in (("import", "输入"), ("output", "输出")):
             page = QWidget()
             layout = QVBoxLayout(page)
-            layout.setContentsMargins(6, 7, 6, 5)
-            layout.setSpacing(5)
+            layout.setContentsMargins(6, 8, 6, 6)
+            layout.setSpacing(8)
             path_row = QHBoxLayout()
-            path_row.setSpacing(3)
+            path_row.setSpacing(4)
             path = QLineEdit()
             path.setObjectName("inputDirectoryInput" if kind == "import" else "outputDirectoryInput")
             path.setPlaceholderText("输入目录" if kind == "import" else "输出目录")

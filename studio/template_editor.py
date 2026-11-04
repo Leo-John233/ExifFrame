@@ -126,9 +126,10 @@ class TemplateEditor(QDialog):
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 8, 10, 8)
-        layout.setSpacing(7)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(8)
         name_row = QHBoxLayout()
+        name_row.setSpacing(8)
         name_label = QLabel()
         bind(name_label, '模板名称')
         name_row.addWidget(name_label)
@@ -165,6 +166,7 @@ class TemplateEditor(QDialog):
         toolbar.addAction(self._action("恢复已保存", self.revert))
         layout.addWidget(toolbar)
         tools = QHBoxLayout()
+        tools.setSpacing(8)
         insert_button = QToolButton()
         bind(insert_button, '插入字段')
         insert_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
@@ -205,6 +207,7 @@ class TemplateEditor(QDialog):
         layout.addWidget(self.editor, 1)
 
         status_row = QHBoxLayout()
+        status_row.setSpacing(12)
         self.status_label = QLabel("修改源码后可先检查格式，再应用到当前照片预览")
         self.status_label.setObjectName("templateEditorStatus")
         self.status_label.setWordWrap(True)
@@ -214,6 +217,7 @@ class TemplateEditor(QDialog):
         status_row.addWidget(self.position_label)
         layout.addLayout(status_row)
         bottom = QHBoxLayout()
+        bottom.setSpacing(12)
         hint = QLabel()
         bind(hint, '格式检查不会替换 Jinja 变量，照片预览会验证实际处理结果')
         hint.setWordWrap(True)
