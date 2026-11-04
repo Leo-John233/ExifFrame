@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass, fields, field
 from functools import lru_cache
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from threading import Lock
 
 from jinja2 import Environment, pass_context
 from PIL import Image, ImageColor, ImageOps
@@ -24,6 +25,7 @@ from processor.core import start_process
 SUPPORTED_SUFFIXES = {'.jpg', '.jpeg', '.png', '.heic', '.heif'}
 SETTINGS_PATH = Path('config/desktop.json')
 WORKSPACE_CONFIG_PATH = Path(CONFIG_PATH)
+_protected_snapshot_lock = Lock()
 
 
 @dataclass(frozen=True)
@@ -58,6 +60,7 @@ class WatermarkSettings:
     use_template_styles: bool = True
     template_source: str = ''
     input_files: tuple[str, ...] = ()
+    protected_sources: tuple[str, ...] = ()
     metadata_overrides: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
@@ -134,7 +137,7 @@ def load_settings() -> WatermarkSettings:
         data = json.loads(SETTINGS_PATH.read_text(encoding='utf-8'))
         valid = {field.name for field in fields(WatermarkSettings)}
         values = asdict(defaults)
-        values.update({key: value for key, value in data.items() if key in valid and key not in {'template_source', 'input_files', 'metadata_overrides'}})
+        values.update({key: value for key, value in data.items() if key in valid and key not in {'template_source', 'input_files', 'protected_sources', 'metadata_overrides'}})
         # 共用字段始终以原项目配置为准，旧桌面缓存不再覆盖模板和导出参数
         if WORKSPACE_CONFIG_PATH.is_file():
             for key in ('template_name', 'input_dir', 'output_dir', 'quality', 'subsampling', 'overwrite_existing'):
@@ -159,6 +162,7 @@ def save_settings(settings: WatermarkSettings) -> None:
     # 未保存的模板草稿不写入个人配置
     values.pop('template_source', None)
     values.pop('input_files', None)
+    values.pop('protected_sources', None)
     values.pop('metadata_overrides', None)
     temporary.write_text(json.dumps(values, ensure_ascii=False, indent=2), encoding='utf-8')
     temporary.replace(SETTINGS_PATH)
@@ -241,11 +245,11 @@ def _metadata(source: str, modified: int) -> dict:
     """工具新增或更换后自动刷新缓存，避免继续使用缺失的回退信息"""
     tool = find_exiftool()
     signature = (str(tool), tool.stat().st_mtime_ns, tool.stat().st_size) if tool else None
-    return dict(_cached_metadata(source, modified, signature))
+    return dict(_cached_metadata(source, modified, Path(source).stat().st_size, signature))
 
 
 @lru_cache(maxsize=64)
-def _cached_metadata(source: str, modified: int, tool_signature) -> dict:
+def _cached_metadata(source: str, modified: int, size: int, tool_signature) -> dict:
     """优先使用完整 ExifTool 数据，仅读取失败时回退照片自带信息"""
     if tool_signature:
         extracted = get_exif(source)
@@ -396,8 +400,22 @@ def _scale_nodes(value, scale):
                 _scale_nodes(child, scale)
 
 
+def _preview_file_signature(template_source, files):
+    """引用批次照片的模板需要随相关文件变化更新预览"""
+    if not re.search(r'\bfiles\b', template_source):
+        return ()
+    result = []
+    for path in files:
+        try:
+            info = Path(path).stat()
+            result.append((str(path), info.st_mtime_ns, info.st_size))
+        except OSError:
+            result.append((str(path), None, None))
+    return tuple(result)
+
+
 @lru_cache(maxsize=2)
-def _original_preview(source, modified, template_name, template_source, files, tool_signature, overrides):
+def _original_preview(source, modified, size, template_name, template_source, files, tool_signature, overrides, dependencies):
     """原样预览从完整结果缩略，避免默认像素参数改变版式"""
     settings = WatermarkSettings(template_name=template_name, template_source=template_source,
                                  input_files=files, use_template_styles=True,
@@ -416,10 +434,13 @@ def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True) 
     if preview and settings.use_template_styles:
         tool = find_exiftool()
         signature = (str(tool), tool.stat().st_mtime_ns, tool.stat().st_size) if tool else None
-        return _original_preview(str(source), source.stat().st_mtime_ns, settings.template_name,
-                                 settings.template_source or read_template(settings.template_name),
+        template_source = settings.template_source or read_template(settings.template_name)
+        info = source.stat()
+        return _original_preview(str(source), info.st_mtime_ns, info.st_size, settings.template_name,
+                                 template_source,
                                  tuple(settings.input_files), signature,
-                                 tuple(sorted(settings.metadata_overrides.get(metadata_key(source), {}).items()))).copy()
+                                 tuple(sorted(settings.metadata_overrides.get(metadata_key(source), {}).items())),
+                                 _preview_file_signature(template_source, settings.input_files)).copy()
     with Image.open(source) as opened:
         encoded_size = opened.size
         image = ImageOps.exif_transpose(opened).copy()
@@ -462,6 +483,30 @@ def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True) 
     return result
 
 
+def _protected_source_index(settings: WatermarkSettings):
+    """每份导出快照仅解析一次源路径和文件标识"""
+    key = (settings.input_files, settings.protected_sources)
+    cached = getattr(settings, '_protected_source_index', None)
+    if cached is not None and cached[0] == key:
+        return cached[1], cached[2]
+    with _protected_snapshot_lock:
+        cached = getattr(settings, '_protected_source_index', None)
+        if cached is None or cached[0] != key:
+            paths = set()
+            identities = set()
+            for item in (*settings.input_files, *settings.protected_sources):
+                protected = Path(item).expanduser().resolve()
+                paths.add(protected)
+                try:
+                    info = protected.stat()
+                    identities.add((info.st_dev, info.st_ino))
+                except OSError:
+                    pass
+            cached = (key, frozenset(paths), frozenset(identities))
+            settings._protected_source_index = cached
+    return cached[1], cached[2]
+
+
 def export_photo(path: Path, settings: WatermarkSettings, output_dir: Path) -> Path:
     """保留输入目录结构，按覆盖开关处理已有输出并始终保护原照片"""
     source = Path(path).resolve()
@@ -483,6 +528,11 @@ def export_photo(path: Path, settings: WatermarkSettings, output_dir: Path) -> P
         inside_input = input_root is not None and target.resolve().is_relative_to(input_root)
         if inside_input or target.parent == source.parent:
             raise ValueError('不能覆盖输入目录中的照片，请选择独立的输出目录')
+        # 保护整个导入队列，包括未勾选照片和同一文件的其他路径
+        paths, identities = _protected_source_index(settings)
+        info = target.stat()
+        if target.resolve() in paths or (info.st_dev, info.st_ino) in identities:
+            raise ValueError('不能覆盖已导入的原照片，请选择独立的输出目录')
     if in_workspace and target.exists() and not settings.overwrite_existing:
         raise FileExistsError(f'已跳过同名输出：{target.name}')
     image = render_photo(source, settings, preview=False)
