@@ -9,3 +9,7 @@ build
 dist
 logs
 tmp
+config/desktop.json
+config/desktop.json.tmp
+/test/
+/tests/
