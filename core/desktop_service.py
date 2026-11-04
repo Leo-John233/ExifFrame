@@ -86,6 +86,12 @@ def list_presets() -> list[Preset]:
 
 def _validate(settings: WatermarkSettings) -> None:
     """在进入图像处理前校验模板和可视参数"""
+    for name in ('template_name', 'title', 'subtitle', 'input_dir', 'output_dir', 'template_source'):
+        if not isinstance(getattr(settings, name), str):
+            raise ValueError('文本设置格式无效，请重新加载配置')
+    for name in ('show_logo', 'overwrite_existing', 'preserve_structure', 'use_template_styles'):
+        if not isinstance(getattr(settings, name), bool):
+            raise ValueError('开关设置格式无效，请重新加载配置')
     if settings.template_name not in {preset.name for preset in list_presets()}:
         raise ValueError('水印模板不存在，请重新选择')
     if not 0.5 <= settings.font_scale <= 2.0:
