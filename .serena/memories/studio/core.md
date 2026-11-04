@@ -1,7 +1,7 @@
 # Native photo workspace
 - `main.py` is the Windows desktop entrypoint; `studio/` owns Qt widgets, file browsing, workers and template editing. Keep the entrypoint and package names; do not reintroduce the previous desktop_ui/desktop.py names.
 - Localization lives in studio/i18n.py: tr/register_translations/bind/translator.language_changed. All fixed UI strings must have Chinese+English, including standard Qt buttons/calendars; never translate file names, camera brands or user edits. Language preference is separate ignored config/ui.json; switching locale must not invalidate previews or discard queues/drafts.
-- TemplateWizard starts from presets/current/valid blank frame, inserts camera/lens/exposure/date/copyright/photographer fields; TemplateEditor retains advanced source editing, safe formatting and undo.
+- TemplateWizard starts from presets/current/valid blank frame and embeds the same free field composer as the main editor. Fields are independent; do not regress to fixed checkbox-to-region assignment or a locked exposure group. For composition schema, helpers, exact source preservation and handoff: `mem:footer`.
 - Photo information editing, migration and copy protection: `mem:metadata`.
 - PySide6 UI runs offline. User prefers a compact professional dark photo workspace: native menus/toolbars, input/output file trees, central image canvas and parameter inspector, without decorative cards, slogans or step labels. Source browser UI remains under web_server.py/templates for existing users.
 - `core/desktop_service.py` adapts existing processor pipelines for previews/full-resolution exports, template CRUD and workspace settings. `WatermarkSettings` snapshots isolate background jobs from edits.

@@ -1,0 +1,11 @@
+# Visual footer composition
+- core/footer.py provides FIELD_CATALOG (independent exposure/creator/time/file fields), read_layout/write_layout/normalize_layout/preview_rows. Footer layouts use four watermark regions or the actual standalone text-node regions; do not silently force overlay templates into footer geometry.
+- Items support field, literal text and preserved raw content; expressions/style/segments carry legacy formatting and colored Nikon Z spans. Separators are per region, missing-value policy skips orphan units/separators, prefix/suffix are independently editable.
+- write_layout returns source unchanged for untouched layouts and rewrites only edited regions. Unrecognized advanced structures stay available through advanced source, not erased or converted to an empty layout.
+- Generated Jinja footer_row/footer_segments calls carry the model as constant arguments. footer_segments returns JSON for the multi-text processor to parse; lists remain supported for older templates.
+- core/template_render prepares JSON-encoded footer calls before Jinja lexing. Keep validate_template using the same preparation path, otherwise original date expressions containing quotes fail creation/save. Original folder expressions need their code escape layer restored for independent evaluation.
+- Recognize only exact generated calls on read-back; additional user filters/literals are custom content and must be preserved. Pure source JSON formatting should use json.loads first to avoid corrupting nested footer expressions.
+- studio/footer_editor.py exposes reusable FooterPanel and modeless FooterEditor. Main template area: Compose footer information / Ctrl+Shift+E for routine work; Advanced source / Ctrl+E stays in the template area/menu and composer per explicit user preference.
+- Visual/source editors share disk saved_source baseline and session drafts. Single editor per template during handoff; draft owner tracking prevents closing one copy from clearing another copy's preview.
+- Compose placement/text separately from EXIF values; composer has Edit photo information shortcut. Metadata changes update examples without resetting layout. Locale changes must not emit changed or discard fields.
+- Persistence, metadata protection and runtime lifecycle: `mem:studio/core` and `mem:metadata`. Validation: `mem:task_completion`.

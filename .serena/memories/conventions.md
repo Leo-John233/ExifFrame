@@ -1,4 +1,5 @@
 # Source and template conventions
+- Keep advanced source editing available in the template area, template menu and composer (Ctrl+E); the visual composer is the routine entry (Ctrl+Shift+E). Preserve source/drafts on transitions, per user preference.
 - Desktop UI text goes through studio.i18n with Chinese+English registration, including dynamic progress/errors and dialogs. User text, file names and brands retain their original values. Color buttons remain compact side-by-side with inset swatches, per user correction.
 - New code uses concise Chinese comments/docstrings without terminal full stops, per user preference.
 - Complete and verify each module before making its own local Git commit. Keep test/ and tests/ local and ignored, including previously tracked tests.
