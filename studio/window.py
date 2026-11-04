@@ -76,9 +76,9 @@ class PhotoView(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#141517"))
+        painter.fillRect(self.rect(), QColor("#141516"))
         if self.pixmap.isNull():
-            painter.setPen(QColor("#A4ADB9"))
+            painter.setPen(QColor("#A6A7A9"))
             painter.drawText(self.rect().adjusted(20, 20, -20, -20),
                              Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, tr(self.empty_message))
             return
@@ -119,6 +119,8 @@ class MainWindow(QMainWindow):
         self._active_wizard = None
         self._completion_refresh = None
         self._export_finish_message = None
+        self._watermark_image = None
+        self._watermark_signature = None
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(2)
         self.timer = QTimer(self)
@@ -138,7 +140,7 @@ class MainWindow(QMainWindow):
         translator.language_changed.connect(self._retranslate_ui)
         install_qt_translations()
         self._retranslate_ui()
-        QTimer.singleShot(0, self._load_directories)
+        QTimer.singleShot(0, self, self._load_directories)
 
     def _action(self, text, callback, shortcut=None, icon=None, checkable=False):
         """统一菜单和工具栏使用的动作及快捷键"""
@@ -151,7 +153,7 @@ class MainWindow(QMainWindow):
                 pixmap = artwork.pixmap(16, 16)
                 painter = QPainter(pixmap)
                 painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-                painter.fillRect(pixmap.rect(), QColor("#CFD6DE"))
+                painter.fillRect(pixmap.rect(), QColor("#D2D3D5"))
                 painter.end()
                 artwork = QIcon(pixmap)
             action.setIcon(artwork)
@@ -475,6 +477,9 @@ class MainWindow(QMainWindow):
         if self._restoring:
             return
         name = self.template_combo.currentData()
+        for editor in self._editors:
+            if hasattr(editor, "set_preview") and editor.name != name:
+                editor.hide()
         self.settings = replace(self.settings, template_name=name, template_source=self._drafts.get(name, ""))
         self.template_styles_check.setChecked(True)
         self._show_template()
@@ -502,6 +507,8 @@ class MainWindow(QMainWindow):
         self._dirty = replace(self.settings, template_source="", metadata_overrides={}) != replace(self._saved, template_source="", metadata_overrides={})
         self._update_labels()
         self._update_actions()
+        if self._visible_footer_editors():
+            self._ensure_watermark_mode()
         self._schedule_preview()
 
     def _update_labels(self):
@@ -703,6 +710,8 @@ class MainWindow(QMainWindow):
     @Slot(str, object)
     def _file_selected(self, kind, data):
         self._current_kind, self._current_data = kind, data
+        self._watermark_image = self._watermark_signature = None
+        self._send_footer_preview(None)
         if not data:
             self.canvas_name.setText(tr("预览"))
             self.canvas_name.setToolTip("")
@@ -721,11 +730,73 @@ class MainWindow(QMainWindow):
         self._set_preview_status("{width} × {height} · {mode}", width=width, height=height,
                                  mode="输出文件" if kind == "output" else "输入文件")
         self._update_actions()
+        if kind == "import" and self._visible_footer_editors():
+            self._ensure_watermark_mode()
         self._schedule_preview()
         self._refresh_footer_examples()
 
     def _current_path(self):
         return self._current_data[0] if self._current_data else None
+
+    def _visible_footer_editors(self):
+        return [editor for editor in self._editors if hasattr(editor, "set_preview")
+                and editor.name == self.settings.template_name and editor.isVisible() and not editor.isMinimized()]
+
+    def _preview_signature(self):
+        return (self._current_path(), replace(self.settings, input_files=tuple(str(path) for path in self.files.selected_paths())))
+
+    def _current_footer_image(self):
+        """只复用当前照片与当前设置对应的水印结果，原图另行对照"""
+        if self._watermark_image is not None and self._watermark_signature == self._preview_signature():
+            return self._watermark_image
+        return None
+
+    def _ensure_watermark_mode(self):
+        changed = self.original_toggle.isChecked()
+        self.original_toggle.blockSignals(True)
+        self.original_toggle.setChecked(False)
+        self.original_toggle.blockSignals(False)
+        self.original_action.setChecked(False)
+        return changed
+
+    def _send_footer_preview(self, image):
+        for editor in self._visible_footer_editors():
+            editor.set_preview(image)
+
+    def _show_template_editor(self, editor):
+        """恢复收起的编辑器并补上当前预览，不重建草稿"""
+        if hasattr(editor, "set_preview"):
+            # 组合水印使用输入原片，输出成品仍只作结果查看
+            if self.files.tabs.currentIndex() != 0:
+                self.files.tabs.setCurrentIndex(0)
+            if self._current_path() is None and self.files.items["import"]:
+                items = list(self.files.items["import"].values())
+                selected = next((item for item in items if item.checkState(0) == Qt.CheckState.Checked), items[0])
+                self.input_tree.setCurrentItem(selected)
+            for other in self._editors:
+                if other is not editor and hasattr(other, "set_preview"):
+                    other.hide()
+            index = self.template_combo.findData(editor.name)
+            if index >= 0 and editor.name != self.settings.template_name:
+                self.template_combo.setCurrentIndex(index)
+            original = self._ensure_watermark_mode()
+            editor.set_preview(self._current_footer_image())
+            if self._current_path() and (original or self._current_footer_image() is None):
+                self._schedule_preview()
+        # 只取消最小化，保留用户已有的最大化状态
+        editor.setWindowState(editor.windowState() & ~Qt.WindowState.WindowMinimized)
+        editor.show()
+        editor.raise_()
+        editor.activateWindow()
+
+    def _show_main_from_editor(self, editor):
+        """收起编辑窗口前提交有效预览，尚未保存的组合仍留在窗口中"""
+        editor.apply_preview()
+        editor.hide()
+        self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
     def _original_toggled(self, checked):
         self.original_action.setChecked(checked)
@@ -747,6 +818,9 @@ class MainWindow(QMainWindow):
 
     def _render_preview(self):
         path = self._current_path()
+        if not path:
+            self._send_footer_preview(None)
+            return
         if self._closing or self._rendering or not self._pending or not path:
             return
         self._pending, self._rendering = False, True
@@ -786,6 +860,10 @@ class MainWindow(QMainWindow):
             return
         if kind in ("preview", "original") and token == self._generation:
             self.photo_view.set_image(result)
+            if kind == "preview":
+                self._watermark_image = result.copy()
+                self._watermark_signature = deepcopy(self._preview_signature())
+                self._send_footer_preview(self._watermark_image)
             _, width, height = self._current_data
             mode = "输出文件" if self._current_kind == "output" else "原图" if kind == "original" else "水印预览"
             self._set_preview_status("{mode} · {width} × {height} · 适应窗口", mode=mode, width=width, height=height)
@@ -828,6 +906,8 @@ class MainWindow(QMainWindow):
                 self._set_preview_status("预览失败，详情见状态栏")
                 self._preview_error = message
                 self.preview_status.setToolTip(localize_error(message))
+                for editor in self._visible_footer_editors():
+                    editor.set_preview_error(ValueError(message))
                 self._record_errors("预览失败", [message])
         else:
             self._record_errors("导出失败" if kind == "export" else "处理失败", [message])
@@ -845,7 +925,7 @@ class MainWindow(QMainWindow):
             self._completion_refresh = None
         self._update_actions()
         if self._closing and not self._tasks:
-            QTimer.singleShot(0, self.close)
+            QTimer.singleShot(0, self, self.close)
 
     @Slot(int, int, str)
     def _task_progress(self, current, total, name):
@@ -1014,6 +1094,8 @@ class MainWindow(QMainWindow):
         from core.metadata import metadata_key
         normalized = {metadata_key(Path(path)): deepcopy(changes) for path, changes in overrides.items()}
         self.settings = replace(self.settings, metadata_overrides=normalized)
+        if self._visible_footer_editors():
+            self._ensure_watermark_mode()
         self._schedule_preview()
         self._refresh_footer_examples()
         self._set_status("照片信息已更新，仅用于水印")
@@ -1070,8 +1152,9 @@ class MainWindow(QMainWindow):
         else:
             editor.advanced_requested.connect(lambda source, window=editor: self._handoff_editor(window, source, visual=False))
             editor.metadata_requested.connect(self._edit_metadata)
+            editor.view_main_requested.connect(lambda window=editor: self._show_main_from_editor(window))
         self._editors.append(editor)
-        editor.show()
+        self._show_template_editor(editor)
         self._refresh_footer_examples()
         return editor
 
@@ -1080,7 +1163,8 @@ class MainWindow(QMainWindow):
             saved_source = read_template(name)
         if visual:
             from .footer_editor import FooterEditor
-            editor = FooterEditor(self, name=name, source=source, saved_source=saved_source, **self._template_context())
+            editor = FooterEditor(self, name=name, source=source, saved_source=saved_source,
+                                  preview_image=self._current_footer_image(), **self._template_context())
         else:
             editor = TemplateEditor(self, name=name, source=source, is_new=is_new, saved_source=saved_source)
         return self._track_template_editor(editor)
@@ -1089,9 +1173,7 @@ class MainWindow(QMainWindow):
         editor = next((item for item in self._editors if item.name == name), None)
         if editor is not None:
             if isinstance(editor, TemplateEditor):
-                editor.show()
-                editor.raise_()
-                editor.activateWindow()
+                self._show_template_editor(editor)
                 return editor
             try:
                 return self._handoff_editor(editor, editor.source(), visual=False)
@@ -1136,9 +1218,7 @@ class MainWindow(QMainWindow):
         previous = next((item for item in self._editors if item.name == name), None)
         if previous is not None:
             if isinstance(previous, FooterEditor):
-                previous.show()
-                previous.raise_()
-                previous.activateWindow()
+                self._show_template_editor(previous)
             elif previous.check_format():
                 self._handoff_editor(previous, previous.source(), visual=True)
             return
@@ -1184,9 +1264,7 @@ class MainWindow(QMainWindow):
         for editor in self._editors:
             if editor.name == name:
                 if isinstance(editor, TemplateEditor):
-                    editor.show()
-                    editor.raise_()
-                    editor.activateWindow()
+                    self._show_template_editor(editor)
                 else:
                     try:
                         self._handoff_editor(editor, editor.source(), visual=False)
@@ -1205,11 +1283,16 @@ class MainWindow(QMainWindow):
         editor.preview_target = target
         self._drafts[target] = source
         self._draft_owners[target] = editor
+        if hasattr(editor, "set_preview") and not editor.isVisible():
+            return
         if target == self.settings.template_name:
             self.settings = replace(self.settings, template_source=source, use_template_styles=True)
+            self._ensure_watermark_mode()
             self.template_styles_check.setChecked(True)
             self._update_labels()
             self._schedule_preview()
+            # 编辑器已完成去抖，主窗直接排入后台预览
+            self.timer.start(0)
             self._set_status("模板草稿已应用，尚未保存到模板文件")
 
     def _template_saved(self, name, owner=None):
@@ -1260,7 +1343,7 @@ class MainWindow(QMainWindow):
                     self._metadata_close_job = active_job
                     active_job.finished.connect(self._resume_close_after_metadata)
                     if active_job.isFinished():
-                        QTimer.singleShot(0, self._resume_close_after_metadata)
+                        QTimer.singleShot(0, self, self._resume_close_after_metadata)
                 self._set_status("等待照片信息处理结束…")
                 event.ignore()
                 return
@@ -1293,4 +1376,4 @@ class MainWindow(QMainWindow):
     @Slot()
     def _resume_close_after_metadata(self):
         self._metadata_close_job = None
-        QTimer.singleShot(0, self.close)
+        QTimer.singleShot(0, self, self.close)

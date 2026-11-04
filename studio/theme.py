@@ -3,80 +3,152 @@
 import os
 from pathlib import Path
 
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QPalette
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QEvent, QObject, Qt
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QPainter, QPalette
+from PySide6.QtWidgets import QApplication, QProxyStyle, QStyleFactory, QWidget
 
 
 STYLESHEET = """
 QWidget { color: #DDDFE2; font-family: 'Microsoft YaHei UI', 'Segoe UI'; font-size: 12px; }
-QMainWindow, QDialog { background: #242629; }
-QWidget#filesPanel, QWidget#inspectorPanel { background: #292C30; }
-QWidget#previewPanel { background: #202226; }
-QMenuBar { background: #242629; border-bottom: 1px solid #383C42; }
+QMainWindow, QDialog { background: #1E1F21; }
+QWidget#filesPanel, QWidget#inspectorPanel { background: #252629; }
+QWidget#previewPanel { background: #1B1C1E; }
+QMenuBar { background: #1E1F21; border-bottom: 1px solid #353638; }
 QMenuBar::item { padding: 5px 10px; background: transparent; }
-QMenuBar::item:selected { background: #3C4148; border-radius: 4px; }
-QMenu { background: #2B2E33; border: 1px solid #505761; padding: 4px; }
+QMenuBar::item:selected { background: #424242; border-radius: 4px; }
+QMenu { background: #252629; border: 1px solid #585858; padding: 4px; }
 QMenu::item { padding: 6px 25px; border-radius: 4px; }
-QMenu::item:selected { background: #485565; }
-QMenu::item:disabled { color: #747A82; }
-QMenu::separator { height: 1px; background: #434951; margin: 5px 8px; }
-QToolBar { background: #2B2E32; border-bottom: 1px solid #3C4147; spacing: 6px; padding: 6px 8px; }
-QToolBar::separator { background: #4A5058; width: 1px; margin: 6px 4px; }
+QMenu::item:selected { background: #48494B; }
+QMenu::item:disabled { color: #7B7B7B; }
+QMenu::separator { height: 1px; background: #4A4A4A; margin: 5px 8px; }
+QToolBar { background: #252629; border-bottom: 1px solid #353638; spacing: 6px; padding: 6px 8px; }
+QToolBar::separator { background: #515151; width: 1px; margin: 6px 4px; }
 QToolButton { min-height: 23px; padding: 4px 8px; border: 1px solid transparent; border-radius: 5px; }
-QToolButton:hover { background: #3B4149; border-color: #555E6A; }
-QToolButton:checked { background: #485565; border-color: #718298; }
-QPushButton { background: #363B42; border: 1px solid #4B525C; border-radius: 5px; min-height: 22px; padding: 3px 8px; }
-QPushButton:hover { background: #424951; border-color: #6B7684; }
-QPushButton:pressed, QToolButton:pressed { background: #29323D; border-color: #6A7D95; }
-QPushButton:checked { background: #485565; border-color: #73869C; }
-QPushButton:focus, QToolButton:focus { border-color: #91ACC8; }
-QPushButton:disabled, QToolButton:disabled { color: #737982; background: #2C3035; border-color: #3B4148; }
-QPushButton#primaryButton, QToolButton#primaryButton { background: #52647B; border-color: #6E839D; color: #F1F3F5; }
-QPushButton#primaryButton:hover, QToolButton#primaryButton:hover { background: #617690; border-color: #91A7C1; }
-QPushButton#primaryButton:pressed, QToolButton#primaryButton:pressed { background: #43546B; }
-QPushButton#primaryButton:disabled, QToolButton#primaryButton:disabled { background: #333D49; color: #818C99; border-color: #414E5D; }
-QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QDateTimeEdit, QPlainTextEdit { background: #202327; border: 1px solid #4D545E; border-radius: 4px; padding: 3px 6px; selection-background-color: #52657C; selection-color: #FFFFFF; }
+QToolButton:hover { background: #424242; border-color: #5F5F5F; }
+QToolButton:checked { background: #48494B; border-color: #848484; }
+QPushButton { background: #363739; border: 1px solid #4C4D4F; border-radius: 5px; min-height: 22px; padding: 3px 8px; }
+QPushButton:hover { background: #494949; border-color: #777777; }
+QPushButton:pressed, QToolButton:pressed { background: #333333; border-color: #7F7F7F; }
+QPushButton:checked { background: #48494B; border-color: #878787; }
+QPushButton:focus, QToolButton:focus { border-color: #8B8C8E; }
+QPushButton:disabled, QToolButton:disabled { color: #717274; background: #303030; border-color: #414141; }
+QPushButton#primaryButton, QToolButton#primaryButton { background: #515254; border-color: #707173; color: #F1F3F5; }
+QPushButton#primaryButton:hover, QToolButton#primaryButton:hover { background: #616264; border-color: #8D8E90; }
+QPushButton#primaryButton:pressed, QToolButton#primaryButton:pressed { background: #424345; }
+QPushButton#primaryButton:disabled, QToolButton#primaryButton:disabled { background: #2E2F31; color: #727375; border-color: #414244; }
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QDateTimeEdit, QPlainTextEdit { background: #1B1C1E; border: 1px solid #555555; border-radius: 4px; padding: 3px 6px; selection-background-color: #48494B; selection-color: #FFFFFF; }
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QDateTimeEdit { min-height: 22px; }
-QLineEdit:hover, QComboBox:hover, QSpinBox:hover { border-color: #6A7482; }
-QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled { color: #747B84; background: #2A2E33; border-color: #3B424B; }
-QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus, QSpinBox:focus, QDateTimeEdit:focus { border: 1px solid #91ACC8; }
-QComboBox QAbstractItemView { background: #2B3036; border: 1px solid #616D7C; selection-background-color: #48596E; color: #DDDFE2; padding: 3px; }
-QTreeWidget, QListWidget { background: #23262A; border: 1px solid #3B4047; border-radius: 4px; alternate-background-color: #282C31; outline: none; }
-QTreeWidget:focus, QListWidget:focus { border-color: #7D94AE; }
+QLineEdit:hover, QComboBox:hover, QSpinBox:hover { border-color: #757575; }
+QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled { color: #7C7C7C; background: #2E2E2E; border-color: #434343; }
+QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus, QSpinBox:focus, QDateTimeEdit:focus { border: 1px solid #8B8C8E; }
+QComboBox QAbstractItemView { background: #303030; border: 1px solid #6E6E6E; selection-background-color: #48494B; color: #DDDFE2; padding: 3px; }
+QTreeWidget, QListWidget { background: #202123; border: 1px solid #353638; border-radius: 4px; alternate-background-color: #242527; outline: none; }
+QTreeWidget:focus, QListWidget:focus { border-color: #8B8C8E; }
 QTreeWidget::item { height: 27px; }
-QTreeWidget::item:selected, QListWidget::item:selected { background: #48596D; color: #F0F2F4; }
-QTreeWidget::item:hover, QListWidget::item:hover { background: #353E49; }
-QHeaderView::section { background: #30353C; padding: 5px; border: none; border-right: 1px solid #41474F; border-bottom: 1px solid #41474F; color: #BCC3CB; }
-QTabWidget::pane { border: 1px solid #40464E; border-radius: 4px; background: #292D32; }
-QTabBar::tab { background: #24282D; color: #A1A9B3; border: 1px solid #3B424A; border-top-left-radius: 4px; border-top-right-radius: 4px; padding: 6px 21px; margin-right: 2px; }
-QTabBar::tab:selected { background: #3A424D; color: #EDF0F3; border-color: #677689; }
-QTabBar::tab:hover { background: #333A44; color: #EDF0F3; }
-QGroupBox { border: 1px solid #41474F; border-radius: 5px; margin-top: 11px; padding: 9px 7px 5px 7px; }
-QGroupBox::title { subcontrol-origin: margin; left: 9px; padding: 0 4px; color: #C5CBD2; }
+QTreeWidget::item:selected, QListWidget::item:selected { background: #48494B; color: #F0F2F4; }
+QTreeWidget::item:hover, QListWidget::item:hover { background: #3F3F3F; }
+QHeaderView::section { background: #363636; padding: 5px; border: none; border-right: 1px solid #484848; border-bottom: 1px solid #484848; color: #C3C3C3; }
+QTabWidget::pane { border: 1px solid #474747; border-radius: 4px; background: #252629; }
+QTabBar::tab { background: #282828; color: #AAAAAA; border: 1px solid #424242; border-top-left-radius: 4px; border-top-right-radius: 4px; padding: 6px 21px; margin-right: 2px; }
+QTabBar::tab:selected { background: #434343; color: #F0F0F0; border-color: #777777; }
+QTabBar::tab:hover { background: #3B3B3B; color: #F0F0F0; }
+QGroupBox { border: 1px solid #484848; border-radius: 5px; margin-top: 11px; padding: 9px 7px 5px 7px; }
+QGroupBox::title { subcontrol-origin: margin; left: 9px; padding: 0 4px; color: #CBCBCB; }
 QCheckBox { spacing: 7px; padding: 2px 0; }
-QCheckBox:disabled { color: #757C85; }
-QSplitter::handle { background: #1C1F23; }
-QSplitter::handle:hover { background: #657A93; }
+QCheckBox:disabled { color: #7D7D7D; }
+QSplitter::handle { background: #171819; }
+QSplitter::handle:hover { background: #7B7B7B; }
 QScrollArea { border: none; background: transparent; }
-QScrollArea > QWidget > QWidget { background: #292C30; }
-QScrollBar:vertical { background: #23272C; width: 10px; margin: 0; }
-QScrollBar::handle:vertical { background: #505965; min-height: 30px; border-radius: 4px; }
-QScrollBar::handle:vertical:hover { background: #738196; }
+QScrollArea > QWidget > QWidget { background: #252629; }
+QScrollBar:vertical { background: #272727; width: 10px; margin: 0; }
+QScrollBar::handle:vertical { background: #505153; min-height: 30px; border-radius: 4px; }
+QScrollBar::handle:vertical:hover { background: #737476; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }
-QScrollBar:horizontal { background: #23272C; height: 10px; }
-QScrollBar::handle:horizontal { background: #505965; min-width: 30px; border-radius: 4px; }
+QScrollBar:horizontal { background: #272727; height: 10px; }
+QScrollBar::handle:horizontal { background: #505153; min-width: 30px; border-radius: 4px; }
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
-QLabel#secondaryText { color: #9BA3AE; }
-QLabel#previewStatus { color: #ABB3BF; background: #141517; padding: 7px 9px; }
-QLabel#templatePreview { background: #1D2024; border: 1px solid #383F48; border-radius: 4px; }
-QLabel#errorText { color: #E5A59E; }
-QStatusBar { border-top: 1px solid #40464E; background: #2B2F35; }
+QLabel#secondaryText { color: #A4A4A4; }
+QLabel#previewStatus { color: #B4B4B4; background: #141516; padding: 7px 9px; }
+QLabel#templatePreview { background: #202020; border: 1px solid #404040; border-radius: 4px; }
+QLabel#errorText { color: #B77975; }
+QStatusBar { border-top: 1px solid #474747; background: #252629; }
 QStatusBar::item { border: none; }
-QProgressBar { max-height: 14px; min-height: 14px; border: 1px solid #566272; border-radius: 3px; background: #20252B; text-align: center; }
-QProgressBar::chunk { background: #647D99; border-radius: 2px; }
-QToolTip { background: #363E48; color: #EDF0F3; border: 1px solid #77879A; padding: 5px; }
+QProgressBar { max-height: 14px; min-height: 14px; border: 1px solid #636363; border-radius: 3px; background: #252525; text-align: center; }
+QProgressBar::chunk { background: #67686A; border-radius: 2px; }
+QToolTip { background: #3F3F3F; color: #F0F0F0; border: 1px solid #707173; padding: 5px; }
 """
+
+
+class NeutralIconStyle(QProxyStyle):
+    """保留系统图标形状并去除工具栏和目录图标的蓝色"""
+
+    def __init__(self):
+        super().__init__(QStyleFactory.create("Fusion"))
+        self._icons = {}
+
+    def standardIcon(self, icon, option=None, widget=None):
+        key = int(icon)
+        if key not in self._icons:
+            original = super().standardIcon(icon, option, widget)
+            neutral = QIcon()
+            for size in (16, 20, 24, 32):
+                for mode, color in ((QIcon.Mode.Normal, "#D1D2D4"),
+                                    (QIcon.Mode.Disabled, "#6B6C6E"),
+                                    (QIcon.Mode.Active, "#F0F1F3"),
+                                    (QIcon.Mode.Selected, "#F0F1F3")):
+                    pixmap = original.pixmap(size, size)
+                    if pixmap.isNull():
+                        continue
+                    painter = QPainter(pixmap)
+                    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+                    painter.fillRect(pixmap.rect(), QColor(color))
+                    painter.end()
+                    neutral.addPixmap(pixmap, mode)
+            self._icons[key] = neutral
+        return QIcon(self._icons[key])
+
+
+def apply_native_titlebar(widget: QWidget) -> bool:
+    """只调整本应用的 Windows 标题栏，不改变系统外观设置"""
+    app = QApplication.instance()
+    if (os.name != "nt" or app is None or app.platformName() in {"offscreen", "minimal"}
+            or not widget.isWindow() or not widget.windowFlags() & Qt.WindowType.WindowTitleHint):
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        api = ctypes.WinDLL("dwmapi", use_last_error=True)
+        setter = api.DwmSetWindowAttribute
+        setter.argtypes = (wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD)
+        setter.restype = ctypes.c_long
+        handle = wintypes.HWND(int(widget.winId()))
+        enabled = ctypes.c_int(1)
+        applied = setter(handle, 20, ctypes.byref(enabled), ctypes.sizeof(enabled)) == 0
+        if not applied:
+            applied = setter(handle, 19, ctypes.byref(enabled), ctypes.sizeof(enabled)) == 0
+        # Windows 11 可分别设置边界、标题背景和标题文字
+        for attribute, color in ((34, "#353638"), (35, "#1E1F21"), (36, "#DADBDD")):
+            rgb = QColor(color)
+            value = wintypes.DWORD(rgb.red() | rgb.green() << 8 | rgb.blue() << 16)
+            applied = setter(handle, attribute, ctypes.byref(value), ctypes.sizeof(value)) == 0 or applied
+        if applied:
+            user = ctypes.WinDLL("user32", use_last_error=True)
+            user.SetWindowPos.argtypes = (wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                                         ctypes.c_int, ctypes.c_int, wintypes.UINT)
+            user.SetWindowPos(handle, None, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020)
+        return applied
+    except (OSError, AttributeError, RuntimeError):
+        return False
+
+
+class _NativeTitlebarFilter(QObject):
+    """为随后打开的编辑器和对话框应用相同暗色标题栏"""
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.Show and isinstance(watched, QWidget) and watched.isWindow():
+            apply_native_titlebar(watched)
+        return False
 
 
 def apply_theme(app: QApplication) -> None:
@@ -86,17 +158,27 @@ def apply_theme(app: QApplication) -> None:
         for name in ("msyh.ttc", "msyhbd.ttc", "segoeui.ttf", "consola.ttf"):
             if (fonts / name).is_file():
                 QFontDatabase.addApplicationFont(str(fonts / name))
-    app.setStyle("Fusion")
+    if hasattr(app.styleHints(), "setColorScheme"):
+        app.styleHints().setColorScheme(Qt.ColorScheme.Dark)
+    style = NeutralIconStyle()
+    app.setStyle(style)
+    app._neutral_icon_style = style
     app.setFont(QFont("Microsoft YaHei UI", 9))
     palette = QPalette()
-    colors = {"Window": "#242629", "Base": "#202327", "AlternateBase": "#282C31", "Text": "#DDDFE2",
-              "WindowText": "#DDDFE2", "Button": "#363B42", "ButtonText": "#DDDFE2", "Highlight": "#48596D",
-              "HighlightedText": "#F0F2F4", "Light": "#687483", "Midlight": "#505B68", "Mid": "#363D46",
-              "Dark": "#1C2025", "Shadow": "#111417", "ToolTipBase": "#363E48", "ToolTipText": "#EDF0F3",
-              "PlaceholderText": "#858E9B", "Link": "#A0BBD6"}
+    colors = {"Window": "#1E1F21", "Base": "#1B1C1E", "AlternateBase": "#242527", "Text": "#DDDFE2",
+              "WindowText": "#DDDFE2", "Button": "#363739", "ButtonText": "#DDDFE2", "Highlight": "#48494B",
+              "HighlightedText": "#F0F2F4", "Light": "#757575", "Midlight": "#5C5C5C", "Mid": "#3E3E3E",
+              "Dark": "#202020", "Shadow": "#141414", "ToolTipBase": "#3F3F3F", "ToolTipText": "#F0F0F0",
+              "PlaceholderText": "#8F8F8F", "Link": "#B9BABC"}
     for role, color in colors.items():
         palette.setColor(getattr(QPalette.ColorRole, role), QColor(color))
+    palette.setColor(QPalette.ColorRole.LinkVisited, QColor("#9E9FA1"))
+    if hasattr(QPalette.ColorRole, "Accent"):
+        palette.setColor(QPalette.ColorRole.Accent, QColor("#707173"))
     for role in (QPalette.ColorRole.Text, QPalette.ColorRole.ButtonText, QPalette.ColorRole.WindowText):
-        palette.setColor(QPalette.ColorGroup.Disabled, role, QColor("#737B87"))
+        palette.setColor(QPalette.ColorGroup.Disabled, role, QColor("#717274"))
     app.setPalette(palette)
     app.setStyleSheet(STYLESHEET)
+    if not hasattr(app, "_native_titlebar_filter"):
+        app._native_titlebar_filter = _NativeTitlebarFilter(app)
+        app.installEventFilter(app._native_titlebar_filter)
