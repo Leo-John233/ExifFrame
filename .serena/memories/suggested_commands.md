@@ -5,15 +5,15 @@ Run in project root.
 - User-supplied existing Conda environment: `D:/miniconda3/envs/Python3.13`. Reuse it; do not create a project .venv or use the WindowsApps Python alias.
 - Interpreter: `& 'D:/miniconda3/envs/Python3.13/python.exe' --version`.
 - Native workspace: `& 'D:/miniconda3/envs/Python3.13/python.exe' main.py` (sets working directory automatically).
-- Legacy browser entry: `& 'D:/miniconda3/envs/Python3.13/python.exe' app.py`.
+- Legacy browser entry: `& 'D:/miniconda3/envs/Python3.13/python.exe' web_server.py`.
 - Native startup/shutdown smoke check: `& 'D:/miniconda3/envs/Python3.13/python.exe' main.py --smoke-test`.
-- Default URL is configured in config/config.ini: `http://localhost:15050`; app.py opens a browser when debug is false.
+- Default URL is configured in config/config.ini: `http://localhost:15050`; web_server.py opens a browser when debug is false.
 - Dependency installation, when needed for a development task: `& 'D:/miniconda3/envs/Python3.13/python.exe' -m pip install -r requirements.txt`. Installation changes this external environment; onboarding only inspected it.
 - EXIF-backed processing also requires `exiftool/exiftool.exe` and its distribution support files.
 - Machine-specific Serena guidance is in `.serena/project.local.yml`, which is excluded by `.serena/.gitignore`.
 
 ## uv route (optional, not the selected local environment)
-- `uv sync`; `uv run python app.py`.
+- `uv sync`; `uv run python web_server.py`.
 - Creates/uses a separate managed environment; prefer the user-supplied Conda interpreter for this machine.
 - Keep in mind the pip CI dependency path described in `mem:tech_stack`.
 

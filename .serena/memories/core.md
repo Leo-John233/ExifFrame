@@ -1,7 +1,7 @@
 # ExifFrame project map
 - Windows is the only supported operating system. Workspace is named ExifFrame; existing product/docs/package names remain Semi-Utils / semi-photo-utils. Do not infer a completed product rename from the folder name.
 - `main.py` launches the native Windows photo workspace. For Qt file browsing, template editing, previews, export behavior and lifecycle: `mem:studio/core`.
-- `app.py`: legacy Flask instance `api`, configuration/template/file APIs, batch orchestration and streamed progress. `templates/index.html`: browser UI and embedded JavaScript.
+- `web_server.py`: legacy Flask instance `api`, configuration/template/file APIs, batch orchestration and streamed progress. `templates/index.html`: browser UI and embedded JavaScript.
 - `core/`: config/resource paths, external EXIF extraction, template loading/Jinja helpers, Loguru setup. `processor/`: extensible Pillow processing pipeline.
 - Runtime assets live under `config/` (INI, JSON/Jinja templates, fonts, logos); `static/` includes example templates/previews. Runtime template lookup uses `config/templates`, not the example files.
 - Paths to config, project metadata, fonts/logos/templates and bundled ExifTool are relative to the working directory. Run from project root; packaging must preserve external resource layout.

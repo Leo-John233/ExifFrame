@@ -1,7 +1,8 @@
 # Completion and validation
 - Use the existing user environment D:/miniconda3/envs/Python3.13; never rely on WindowsApps python. Run commands from project root unless main.py handles the directory itself.
 - Native startup/clean shutdown: `& 'D:/miniconda3/envs/Python3.13/python.exe' main.py --smoke-test`. This runs Qt offscreen, opens/closes the window and must exit 0.
-- Syntax: `& 'D:/miniconda3/envs/Python3.13/python.exe' -m compileall -q main.py core studio build_support`.
+- Syntax: `& 'D:/miniconda3/envs/Python3.13/python.exe' -m compileall -q main.py web_server.py core processor studio build_support`.
+- Qt tests should wait using QEventLoop/QTimer so Python workers can run; repeated QTest.qWait can starve Pillow text rendering and cause misleading timeouts.
 - test/ and tests/ are intentionally ignored by user request. Local tests, when present: `& 'D:/miniconda3/envs/Python3.13/python.exe' -m unittest discover -s tests -v`. Do not add them back to Git or imply they are distributed with the repository.
 - For UI work, verify actual directory scans, checked photo scope, template CRUD/source edits, raw-template mode, output preview, skip/overwrite counters, cancellation and close during work. Capture screenshots and inspect them. Qt workers returning signals must not mutate widgets directly.
 - For pipeline/template work, verify real image outputs, source preservation, orientation, Unicode/quotes, preview/export proportions, filename collisions and fallback metadata. Missing ExifTool must not prevent desktop previews.

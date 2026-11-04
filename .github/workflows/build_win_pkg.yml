@@ -64,23 +64,25 @@ jobs:
         Write-Host "Expanding ExifTool archive..."
         Expand-Archive -Path $zipFile -DestinationPath $exiftoolDestPath -Force
 
-        # --- 解决多一层目录问题的核心逻辑 ---
-        # 查找解压后可能产生的唯一子目录
-        $subFolder = Get-ChildItem -Path $exiftoolDestPath -Directory | Select-Object -First 1
-
-        if ($null -ne $subFolder) {
-            Write-Host "Correcting directory structure. Moving items from $($subFolder.FullName) ..."
-            # 将子目录内的所有内容移动到上一级
-            Move-Item -Path (Join-Path $subFolder.FullName "*") -Destination $exiftoolDestPath -Force
-            # 删除现在已经为空的子目录
-            Remove-Item -Path $subFolder.FullName -Force
-            Write-Host "Directory structure corrected."
-        } else {
-            Write-Host "Archive was already flat. No correction needed."
+        # 以程序所在目录识别外层包装，保留 exiftool_files 的内部结构
+        $resourceRoot = (Resolve-Path -LiteralPath $exiftoolDestPath).Path
+        $toolExe = Get-ChildItem -LiteralPath $resourceRoot -File -Recurse |
+            Where-Object { $_.Name -in @("exiftool.exe", "exiftool(-k).exe") } |
+            Select-Object -First 1
+        if ($null -eq $toolExe) { throw "ExifTool executable missing" }
+        $toolRoot = $toolExe.Directory.FullName
+        if ($toolRoot -ne $resourceRoot) {
+            if (-not $toolRoot.StartsWith($resourceRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+                throw "ExifTool package path outside resource directory"
+            }
+            Get-ChildItem -LiteralPath $toolRoot -Force | Move-Item -Destination $resourceRoot -Force
         }
-        
-        Write-Host "Renaming exiftool executable..."
-        Rename-Item -Path (Join-Path $exiftoolDestPath "exiftool(-k).exe") -NewName "exiftool.exe"
+        if ($toolExe.Name -eq "exiftool(-k).exe") {
+            Rename-Item -LiteralPath (Join-Path $resourceRoot "exiftool(-k).exe") -NewName "exiftool.exe"
+        }
+        if (-not (Test-Path -LiteralPath (Join-Path $resourceRoot "exiftool_files"))) {
+            throw "ExifTool runtime files missing"
+        }
 
         Write-Host "Setup complete."
 

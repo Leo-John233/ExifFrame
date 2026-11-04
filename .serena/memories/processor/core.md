@@ -5,7 +5,8 @@
 - `PipelineContext` holds the supplied dictionary by reference; processing mutates it. Batch renders/parses template JSON per input file. Avoid sharing mutable node dictionaries across concurrent runs.
 - Buffers are lists of Pillow images. Lazy file loading uses ImageOps.exif_transpose. start_process accepts input_path or initial_buffer; nonempty node lists are assumed.
 - `all_buffer[0]` is the initial input; each processor appends its result, so output of zero-based node i is at i+1. Explicit `select` is parsed with json.loads and flattens the chosen buffer lists.
-- Without select: non-mergers receive previous output; mergers gather outputs since the previous implicit merger. Preserve these indexing semantics for existing templates.
+- Engine input_buffer has priority over select/previous output and sets buffer_loaded; it supplies independent source inputs for shortcut previews. Setting only buffer/buffer_loaded before the loop loses the intended input because update_buffer overwrites it.
+- Without input_buffer/select: non-mergers receive previous output; mergers gather outputs since the previous implicit merger. Preserve these indexing semantics for existing templates.
 - Nodes may override buffer_path to load an independent source. get_buffer only loads when buffer_loaded is false; update_buffer does not itself set that flag.
 - EXIF is inserted into node contexts when an input file is supplied and the node lacks it. Output writing converts the final first image to RGB and uses configured quality/subsampling; return value is the final first Pillow image.
 - `save_buffer` / `success` participate in node completion/debug flow; inspect their implementations before changing processing lifecycle.
