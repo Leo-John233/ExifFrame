@@ -398,6 +398,11 @@ def export_photo(path: Path, settings: WatermarkSettings, output_dir: Path) -> P
     target = destination / f'{basename}.jpg'
     if target.resolve() == source or (target.exists() and target.samefile(source)):
         raise ValueError('输出文件与原照片相同，请选择其他输出目录')
+    # 同名 PNG 与 JPEG 可能属于两张原片，不允许覆盖输入目录中的其他照片
+    if settings.overwrite_existing and target.exists():
+        inside_input = input_root is not None and target.resolve().is_relative_to(input_root)
+        if inside_input or target.parent == source.parent:
+            raise ValueError('不能覆盖输入目录中的照片，请选择独立的输出目录')
     if in_workspace and target.exists() and not settings.overwrite_existing:
         raise FileExistsError(f'已跳过同名输出：{target.name}')
     image = render_photo(source, settings, preview=False)
