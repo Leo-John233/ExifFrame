@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import json
 
-from PySide6.QtCore import QEvent, QSize, Qt
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton, QScrollArea, QSplitter,
+    QComboBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QLineEdit,
+    QPlainTextEdit, QPushButton, QScrollArea, QSplitter,
     QSizePolicy, QVBoxLayout, QWidget,
 )
 
@@ -16,7 +15,6 @@ from core.desktop_service import list_presets, read_template, validate_template,
 from studio.footer_editor import FooterPanel, _fit_editor_window
 from studio.i18n import bind, tr, register_translations, translator, localize_error
 from studio.template_editor import TemplateHighlighter
-from studio.pixmaps import preview_pixmap
 
 
 register_translations({
@@ -69,7 +67,7 @@ class TemplateWizard(QDialog):
                  '右下角参数', '文件夹名+右下角参数', 'logo居中', '仅标识居中')
 
     def __init__(self, parent=None, current_template: str = '', current_source: str | None = None,
-                 metadata=None, filename='', file_dir=''):
+                 metadata=None, filename='', file_dir='', photo_path=None, settings=None):
         super().__init__(parent)
         self.current_template, self.current_source = current_template, current_source
         self.name, self.source = '', ''
@@ -80,13 +78,14 @@ class TemplateWizard(QDialog):
         self._composition_error = None
         self._loading = True
         self._context = dict(metadata=metadata, filename=filename, file_dir=file_dir)
+        self._preview_path, self._preview_settings = photo_path, settings
         self._presets = [preset for preset in list_presets() if preset.name in self.BUILT_INS]
         self.setObjectName('templateWizard')
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowTitleHint |
                             Qt.WindowType.WindowSystemMenuHint | Qt.WindowType.WindowMinMaxButtonsHint |
                             Qt.WindowType.WindowCloseButtonHint)
         self.setMinimumSize(760, 500)
-        _fit_editor_window(self, 960, 640)
+        _fit_editor_window(self, 1120, 720)
         self._build_ui()
         self._loading = False
         self._change_style()
@@ -94,6 +93,8 @@ class TemplateWizard(QDialog):
         self.retranslate_ui()
 
     def _build_ui(self):
+        from .preview import TemplatePreview
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(8)
@@ -103,7 +104,7 @@ class TemplateWizard(QDialog):
         self.name_input = QLineEdit()
         self.name_input.setObjectName('templateWizardName')
         self.name_input.setClearButtonEnabled(True)
-        self.name_input.setMaximumWidth(420)
+        self.name_input.setMaximumWidth(300)
         bind(self.name_input, '新模板名称', 'setPlaceholderText')
         names.addWidget(self.name_input, 1)
         names.addStretch()
@@ -116,64 +117,56 @@ class TemplateWizard(QDialog):
         self.advanced_button.clicked.connect(self._advanced)
         names.addWidget(self.advanced_button)
         layout.addLayout(names)
+
         self.splitter = QSplitter()
         self.splitter.setChildrenCollapsible(False)
-        self.splitter.setHandleWidth(6)
+        self.splitter.setHandleWidth(8)
         left = QWidget()
-        left.setMinimumWidth(205)
-        left.setMaximumWidth(270)
         choices = QVBoxLayout(left)
-        choices.setContentsMargins(0, 0, 10, 0)
+        choices.setContentsMargins(0, 0, 8, 0)
         choices.setSpacing(8)
-        choices.addWidget(bind(QLabel(), '起始样式'))
+        style_row = QHBoxLayout()
+        style_row.setSpacing(8)
         self.mode = QComboBox()
+        bind(self.mode, '起始样式', 'setAccessibleName')
+        bind(self.mode, '起始样式', 'setToolTip')
+        self.mode.setMaximumWidth(180)
         for value in ('内置样式', '复制当前模板', '空白边框'):
             self.mode.addItem(tr(value), value)
         self.mode.model().item(1).setEnabled(bool(self.current_template))
         if not self._presets:
             self.mode.setCurrentIndex(1 if self.current_template else 2)
-        choices.addWidget(self.mode)
-        self.styles = QListWidget()
+        style_row.addWidget(self.mode)
+        self.styles = QComboBox()
         self.styles.setObjectName('templateWizardStyles')
-        self.styles.setIconSize(QSize(66, 44))
-        self.styles.setSpacing(2)
-        self.styles.setUniformItemSizes(True)
-        self.styles.setWordWrap(True)
-        self.styles.setTextElideMode(Qt.TextElideMode.ElideRight)
-        self.styles.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.styles.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
-        self.styles.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self.styles.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.styles.setMinimumContentsLength(8)
+        self.styles.setMaximumWidth(360)
+        self.styles.setMaxVisibleItems(8)
+        self.styles.view().setMinimumWidth(260)
         for preset in self._presets:
-            item = QListWidgetItem(self.styles)
-            item.setData(Qt.ItemDataRole.UserRole, preset.name)
-            if preset.thumbnail:
-                item.setIcon(QIcon(preview_pixmap(preset.thumbnail, 66, 44)))
-            # 行宽由视口决定，避免固定宽度挤出横向滚动条
-            item.setSizeHint(QSize(0, 58))
-        if self.styles.count():
-            self.styles.setCurrentRow(0)
-        choices.addWidget(self.styles, 1)
-        self.splitter.addWidget(left)
-        right = QWidget()
-        content = QVBoxLayout(right)
-        content.setContentsMargins(12, 0, 0, 0)
-        content.setSpacing(8)
-        heading = QHBoxLayout()
-        heading.setSpacing(12)
-        self.style_title = QLabel()
-        title_font = self.style_title.font()
-        title_font.setBold(True)
-        self.style_title.setFont(title_font)
-        self.style_title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        heading.addWidget(self.style_title, 1)
-        self.summary = QLabel()
-        self.summary.setObjectName('secondaryText')
-        heading.addWidget(self.summary)
-        content.addLayout(heading)
+            self.styles.addItem(tr(preset.title), preset.name)
+        style_row.addWidget(self.styles, 1)
+        style_row.addStretch()
+        choices.addLayout(style_row)
         self.description = QLabel()
         self.description.setWordWrap(True)
         self.description.setObjectName('secondaryText')
-        content.addWidget(self.description)
+        choices.addWidget(self.description)
+        self.preview = TemplatePreview(self, photo_path=self._preview_path, settings=self._preview_settings)
+        self.preview.setObjectName('templateWizardPreview')
+        choices.addWidget(self.preview, 1)
+        self.splitter.addWidget(left)
+
+        right = QWidget()
+        right.setMinimumWidth(335)
+        right.setMaximumWidth(430)
+        content = QVBoxLayout(right)
+        content.setContentsMargins(8, 0, 0, 0)
+        content.setSpacing(8)
+        self.summary = QLabel()
+        self.summary.setObjectName('secondaryText')
+        content.addWidget(self.summary)
         self.mode_hint = QLabel()
         self.mode_hint.setWordWrap(True)
         self.mode_hint.setObjectName('secondaryText')
@@ -181,27 +174,20 @@ class TemplateWizard(QDialog):
         self.footer_panel = FooterPanel(self._style_source(), parent=self, compact=True, **self._context)
         self.footer_panel.setObjectName('templateWizardFooterPanel')
         self.footer_panel.layout().setContentsMargins(0, 4, 8, 0)
-        self.footer_panel.region_group.setMinimumWidth(280)
-        self.footer_panel.region_group.setMaximumWidth(360)
-        self.footer_panel.layout().setAlignment(self.footer_panel.region_group, Qt.AlignmentFlag.AlignLeft)
         self.footer_panel.item_hint.hide()
-        # 列表随内容显示两到五行，不让少量字段撑出大片空白
-        model = self.footer_panel.items.model()
-        model.rowsInserted.connect(self._fit_content_list)
-        model.rowsRemoved.connect(self._fit_content_list)
-        model.modelReset.connect(self._fit_content_list)
-        self._fit_content_list()
         self.footer_panel.changed.connect(self._content_changed)
+        self.preview.metadata_ready.connect(self._preview_metadata)
         self.panel_scroll = QScrollArea()
         self.panel_scroll.setWidgetResizable(True)
         self.panel_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.panel_scroll.setWidget(self.footer_panel)
         content.addWidget(self.panel_scroll, 1)
         self.splitter.addWidget(right)
-        self.splitter.setStretchFactor(0, 0)
-        self.splitter.setStretchFactor(1, 1)
-        self.splitter.setSizes([245, 690])
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 0)
+        self.splitter.setSizes([660, 390])
         layout.addWidget(self.splitter, 1)
+
         bottom = QHBoxLayout()
         bottom.setSpacing(12)
         bottom.setContentsMargins(0, 8, 0, 0)
@@ -217,12 +203,12 @@ class TemplateWizard(QDialog):
         layout.addLayout(bottom)
         self.name_input.textChanged.connect(self._refresh)
         self.mode.currentIndexChanged.connect(self._change_style)
-        self.styles.currentRowChanged.connect(self._change_style)
+        self.styles.currentIndexChanged.connect(self._change_style)
 
-    def _fit_content_list(self, *args):
-        """区域切换后按信息数量收紧列表，较多内容在列表内滚动"""
-        rows = min(5, max(2, self.footer_panel.items.count()))
-        self.footer_panel.items.setFixedHeight(rows * 26 + 8)
+    def _preview_metadata(self, metadata, filename, file_dir):
+        """示例和照片预览使用同一份拍摄信息，不改动组合草稿"""
+        self._context = dict(metadata=metadata, filename=filename, file_dir=file_dir)
+        self.footer_panel.set_metadata(**self._context)
 
     def _style_source(self):
         mode = self.mode.currentData()
@@ -234,7 +220,7 @@ class TemplateWizard(QDialog):
             return json.dumps([{'processor_name': 'watermark', 'color': 'white',
                                 **{name: {'processor_name': 'rich_text', 'text': ''}
                                    for name in ('left_top', 'left_bottom', 'right_top', 'right_bottom')}}], indent=2)
-        row = self.styles.currentRow()
+        row = self.styles.currentIndex()
         if row < 0:
             raise ValueError(tr('请选择一个样式'))
         return read_template(self._presets[row].name)
@@ -244,8 +230,7 @@ class TemplateWizard(QDialog):
         if self._loading:
             return
         mode = self.mode.currentData()
-        selected = self.styles.currentItem()
-        key = (mode, selected.data(Qt.ItemDataRole.UserRole) if mode == '内置样式' and selected else self.current_template if mode == '复制当前模板' else '')
+        key = (mode, self.styles.currentData() if mode == '内置样式' else self.current_template if mode == '复制当前模板' else '')
         if key == self._style_key:
             self._refresh()
             return
@@ -258,7 +243,7 @@ class TemplateWizard(QDialog):
             if old_mode == '内置样式':
                 for index, preset in enumerate(self._presets):
                     if preset.name == old_name:
-                        self.styles.setCurrentRow(index)
+                        self.styles.setCurrentIndex(index)
                         break
             self.mode.blockSignals(False)
             self.styles.blockSignals(False)
@@ -294,6 +279,7 @@ class TemplateWizard(QDialog):
             self._refresh()
         except Exception as exc:
             self._composition_error = exc
+            self.preview.set_error(exc)
             self.status.setText(tr('无法读取当前组合：{error}', error=localize_error(exc)))
             self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(False)
 
@@ -312,7 +298,7 @@ class TemplateWizard(QDialog):
         self.visual_button.setVisible(advanced)
         self.mode_hint.setVisible(advanced)
         self.mode_hint.setText(tr('正在使用高级源码，返回可视化后可继续组合字段'))
-        row = self.styles.currentRow()
+        row = self.styles.currentIndex()
         preset = self._presets[row] if row >= 0 else None
         if mode == '内置样式' and preset:
             style = tr(preset.title)
@@ -320,9 +306,9 @@ class TemplateWizard(QDialog):
         else:
             style = tr(self.current_template) if mode == '复制当前模板' else tr(mode)
             self.description.setText(tr('保留当前模板的完整样式和处理步骤' if mode == '复制当前模板' else '从空白边框开始，按需组合每个文字区域'))
-        self.style_title.setText(style)
-        self.style_title.setToolTip(style)
+        self.styles.setToolTip(style)
         error = ''
+        source_valid = False
         try:
             if self._composition_error is not None:
                 raise self._composition_error
@@ -330,12 +316,16 @@ class TemplateWizard(QDialog):
             validate_template(self.source)
             if self.source.strip() == '[]':
                 raise ValueError(tr('水印模板需要至少一个处理步骤'))
+            source_valid = True
+            self.preview.set_source(self.source)
             name = self.name_input.text().strip()
             path = _template_path(name)
             if path.exists() or any(item.name.casefold() == path.name.casefold() for item in path.parent.glob('*.json')):
                 raise ValueError(tr('模板名称已存在'))
         except Exception as exc:
             error = localize_error(exc)
+            if not source_valid:
+                self.preview.set_error(exc)
         model = self.footer_panel.layout_data()
         rows = model.get('rows', {})
         self.summary.setText(tr('{regions} 个文字区 · {items} 个信息项',
@@ -346,29 +336,53 @@ class TemplateWizard(QDialog):
         self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(not error)
 
     def _advanced(self):
+        from .preview import TemplatePreview
+
         if self._composition_error is not None:
             self.status.setText(tr('无法读取当前组合：{error}', error=localize_error(self._composition_error)))
             return
         dialog = QDialog(self)
         bind(dialog, '高级源码编辑器', 'setWindowTitle')
-        dialog.resize(820, 630)
+        _fit_editor_window(dialog, 1080, 680)
         layout = QVBoxLayout(dialog)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(8)
+        splitter = QSplitter()
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(8)
         editor = QPlainTextEdit(self.source)
+        editor.setMinimumWidth(240)
         editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         highlighter = TemplateHighlighter(editor)
-        layout.addWidget(editor)
+        splitter.addWidget(editor)
+        preview = TemplatePreview(dialog, photo_path=self.preview.photo_path, settings=self.preview.settings)
+        splitter.addWidget(preview)
+        splitter.setSizes([500, 540])
+        layout.addWidget(splitter, 1)
         error = QLabel()
         error.setWordWrap(True)
         layout.addWidget(error)
         buttons = _WizardButtons('使用此源码')
         layout.addWidget(buttons)
-        def apply():
+
+        def update_preview():
             try:
-                validate_template(editor.toPlainText())
+                source = editor.toPlainText()
+                validate_template(source)
+                if source.strip() == '[]':
+                    raise ValueError(tr('水印模板需要至少一个处理步骤'))
             except Exception as exc:
                 error.setText(localize_error(exc))
+                preview.set_error(exc)
+                buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(False)
+                return False
+            error.clear()
+            preview.set_source(source)
+            buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(True)
+            return True
+
+        def apply():
+            if not update_preview():
                 return
             self._advanced_source = editor.toPlainText()
             self._composition_error = None
@@ -378,10 +392,17 @@ class TemplateWizard(QDialog):
             except Exception:
                 pass
             dialog.accept()
+
+        editor.textChanged.connect(update_preview)
         buttons.accepted.connect(apply)
         buttons.rejected.connect(dialog.reject)
+        dialog.finished.connect(preview.shutdown)
+        update_preview()
         if dialog.exec() == QDialog.DialogCode.Accepted:
+            if preview.photo_path:
+                self.preview.set_photo(preview.photo_path)
             self._refresh()
+        preview.shutdown()
         dialog.deleteLater()
 
     def _return_visual(self):
@@ -405,10 +426,11 @@ class TemplateWizard(QDialog):
         for index in range(self.mode.count()):
             self.mode.setItemText(index, tr(self.mode.itemData(index)))
         self.mode.blockSignals(False)
+        self.styles.blockSignals(True)
         for index, preset in enumerate(self._presets):
-            item = self.styles.item(index)
-            item.setText(tr(preset.title))
-            item.setToolTip(tr(preset.description))
+            self.styles.setItemText(index, tr(preset.title))
+            self.styles.setItemData(index, tr(preset.description), Qt.ItemDataRole.ToolTipRole)
+        self.styles.blockSignals(False)
         self._refresh()
 
     def accept(self):
@@ -416,4 +438,13 @@ class TemplateWizard(QDialog):
         if not self.buttons.button(QDialogButtonBox.StandardButton.Ok).isEnabled():
             return
         self.name = self.name_input.text().strip()
+        self.preview.shutdown()
         super().accept()
+
+    def reject(self):
+        self.preview.shutdown()
+        super().reject()
+
+    def closeEvent(self, event):
+        self.preview.shutdown()
+        super().closeEvent(event)

@@ -1132,7 +1132,8 @@ class MainWindow(QMainWindow):
     def _refresh_footer_examples(self, request=True):
         """异步刷新示例，不重载或改写正在组合的内容"""
         panels = [editor.panel for editor in self._editors if hasattr(editor, "panel")]
-        if self._active_wizard is not None:
+        if (self._active_wizard is not None
+                and self._active_wizard.preview.photo_path == self._current_path()):
             panels.append(self._active_wizard.footer_panel)
         if not panels:
             return
@@ -1172,7 +1173,8 @@ class MainWindow(QMainWindow):
             editor = FooterEditor(self, name=name, source=source, saved_source=saved_source,
                                   preview_image=self._current_footer_image(), **self._template_context())
         else:
-            editor = TemplateEditor(self, name=name, source=source, is_new=is_new, saved_source=saved_source)
+            editor = TemplateEditor(self, name=name, source=source, is_new=is_new, saved_source=saved_source,
+                                    photo_path=self._current_path(), settings=deepcopy(self.settings))
         return self._track_template_editor(editor)
 
     def _open_editor(self, name, source, is_new=False):
@@ -1242,6 +1244,7 @@ class MainWindow(QMainWindow):
             self._record_errors("无法读取当前组合", [str(exc)])
             return
         wizard = TemplateWizard(self, current_template=self.settings.template_name, current_source=current_source,
+                                photo_path=self._current_path(), settings=deepcopy(self.settings),
                                 **self._template_context())
         self._active_wizard = wizard
         self._refresh_footer_examples()
