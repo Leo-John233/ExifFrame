@@ -214,13 +214,14 @@ register_translations({
 _ERROR_SOURCES = {
     "当前模板需要使用高级源码编辑", "模板中没有可组合的文字区域", "底部信息区域无效", "标识位置无效",
     "缺失值处理方式无效", "分隔符过长", "每个区域最多放置 32 项信息", "底部信息字段无效", "自定义文字过长",
-    "文字区必须保留在原有版式内",
+    "文字区必须保留在原有版式内", "底部空间不足以容纳水印内容",
     "文本设置格式无效，请重新加载配置", "开关设置格式无效，请重新加载配置", "水印模板不存在，请重新选择",
     "文字大小需在 50% 到 200% 之间", "边框高度需在 6% 到 30% 之间", "导出质量需在 1 到 100 之间",
     "JPEG 色度采样需为 0、1 或 2", "模板名称不能包含路径、特殊字符或 Windows 保留名称",
     "模板路径必须位于模板目录内", "模板必须是由处理步骤对象组成的 JSON 数组", "模板不存在，请先新建模板",
     "请选择存在的 JPG、PNG 或 HEIC 照片", "水印模板需要至少一个处理步骤",
     "输出文件与原照片相同，请选择其他输出目录", "不能覆盖输入目录中的照片，请选择独立的输出目录",
+    "不能覆盖已导入的原照片，请选择独立的输出目录",
 }
 _METADATA_ERRORS = {
     "tool_missing": "未找到 ExifTool", "file_missing": "照片文件不存在", "invalid_value": "照片信息的数值无效",
@@ -238,6 +239,7 @@ register_translations({
     "每个区域最多放置 32 项信息": "Each region can contain up to 32 items",
     "底部信息字段无效": "Invalid footer field", "自定义文字过长": "Custom text is too long",
     "文字区必须保留在原有版式内": "Text regions must stay within the original layout",
+    "底部空间不足以容纳水印内容": "Not enough footer space for the watermark content",
     "未找到 ExifTool": "ExifTool was not found", "照片文件不存在": "Photo file not found",
     "照片信息的数值无效": "Invalid photo information value", "日期格式无效": "Invalid date format",
     "时区偏移格式无效": "Invalid time zone offset", "位置坐标无效": "Invalid location coordinates",
@@ -317,5 +319,6 @@ register_translations({
     "水印模板需要至少一个处理步骤": "The template needs at least one processing step",
     "输出文件与原照片相同，请选择其他输出目录": "The output would replace the source photo; choose another output folder",
     "不能覆盖输入目录中的照片，请选择独立的输出目录": "Source photos cannot be overwritten; choose a separate output folder",
+    "不能覆盖已导入的原照片，请选择独立的输出目录": "Imported source photos cannot be overwritten; choose a separate output folder",
     "已跳过同名输出：": "Skipped existing output: ",
 })
