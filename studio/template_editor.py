@@ -91,12 +91,15 @@ class TemplateEditor(QDialog):
 
     source_preview = Signal(str)
     saved = Signal(str)
+    visual_requested = Signal(str)
 
-    def __init__(self, parent=None, name: str = "", source: str = "", is_new: bool = False):
+    def __init__(self, parent=None, name: str = "", source: str = "", is_new: bool = False,
+                 saved_source: str | None = None):
         super().__init__(parent)
         self.name = name
         self.is_new = is_new or not name
-        self._saved_source = source if source else "[]"
+        initial_source = source if source else "[]"
+        self._saved_source = initial_source if saved_source is None else saved_source
         self._saved_name = name
         self._close_approved = False
         self._status = ('修改源码后可先检查格式，再应用到当前照片预览', {})
@@ -105,8 +108,8 @@ class TemplateEditor(QDialog):
         self.setMinimumSize(620, 440)
         self.setWindowModality(Qt.WindowModality.NonModal)
         self._build_ui()
-        self.editor.setPlainText(self._saved_source)
-        self.editor.document().setModified(False)
+        self.editor.setPlainText(initial_source)
+        self.editor.document().setModified(initial_source != self._saved_source)
         self._update_title()
         self._update_position()
         self._set_status('修改源码后可先检查格式，再应用到当前照片预览')
@@ -168,6 +171,11 @@ class TemplateEditor(QDialog):
         format_button.setAutoDefault(False)
         format_button.clicked.connect(self.format_json)
         tools.addWidget(format_button)
+        self.visual_button = QPushButton()
+        bind(self.visual_button, '组合底部信息…')
+        self.visual_button.setAutoDefault(False)
+        self.visual_button.clicked.connect(self._request_visual)
+        tools.addWidget(self.visual_button)
         tools.addStretch()
         layout.addLayout(tools)
 
@@ -226,6 +234,16 @@ class TemplateEditor(QDialog):
         """返回未经格式化或插值的原始文本"""
         return self.editor.toPlainText()
 
+    def _request_visual(self):
+        """将有效源码交给可视化编辑器且保留未保存状态"""
+        if self.check_format():
+            self.visual_requested.emit(self.source())
+
+    def close_for_handoff(self):
+        """草稿已交给另一编辑器时不重复询问丢弃"""
+        self._close_approved = True
+        self.close()
+
     def is_dirty(self) -> bool:
         return self.is_new or self.source() != self._saved_source or self.name_input.text().strip() != self._saved_name
 
@@ -264,6 +282,19 @@ class TemplateEditor(QDialog):
         if '{%' in source:
             self._set_status('包含 Jinja 条件或循环，保留原始排版')
             return False
+        try:
+            data = json.loads(source)
+        except ValueError:
+            data = None
+        if data is not None:
+            # 组合函数可能含嵌套表达式，合法 JSON 直接排版以保留全部引号
+            try:
+                validate_template(source)
+            except Exception as exc:
+                self._set_status('无法安全格式化，源码保持不变：{error}', error=exc)
+                return False
+            self._replace_formatted_source(json.dumps(data, ensure_ascii=False, indent=2))
+            return True
         expressions = []
         chunks = []
         position = 0
@@ -295,13 +326,17 @@ class TemplateEditor(QDialog):
         except Exception as exc:
             self._set_status('无法安全格式化，源码保持不变：{error}', error=exc)
             return False
+        self._replace_formatted_source(formatted)
+        return True
+
+    def _replace_formatted_source(self, formatted):
+        """将格式化操作合并为一次撤销"""
         cursor = self.editor.textCursor()
         cursor.beginEditBlock()
         cursor.select(QTextCursor.SelectionType.Document)
         cursor.insertText(formatted + '\n')
         cursor.endEditBlock()
         self._set_status('已格式化 JSON，Jinja 表达式保持不变')
-        return True
 
     def _undo(self):
         self.editor.undo()

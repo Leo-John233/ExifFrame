@@ -15,6 +15,7 @@ from PySide6.QtCore import QCoreApplication, QLibraryInfo, QLocale, QObject, QTr
 
 PREFERENCES_PATH = Path("config/ui.json")
 _messages = {}
+_messages.update({'相机显示文字': 'Camera display text', '镜头显示文字': 'Lens display text'})
 _messages.update({
     '仅标识居中': 'Centered logo only', '仅品牌标识': 'Logo only',
     '品牌标识居中，两侧显示相机、镜头与拍摄参数': 'Centered logo with camera, lens and exposure details on both sides',
@@ -171,6 +172,11 @@ def localize_error(error) -> str:
 
 
 register_translations({
+    "组合底部信息…": "Compose footer information…", "高级源码": "Advanced source", "高级源码…": "Advanced source…",
+    "切换编辑方式": "Switch editor", "将未保存的修改带到{editor}继续编辑？": "Continue editing the unsaved changes in {editor}?",
+    "可视化组合": "the visual composer", "高级源码编辑器": "the source editor",
+    "无法打开组合编辑器": "Unable to open the footer composer", "无法切换编辑器": "Unable to switch editors",
+    "无法读取当前组合": "Unable to read the current composition",
     'JSON 格式有误，第 {line} 行、第 {column} 列': 'Invalid JSON at line {line}, column {column}',
     '模板语法有误，第 {line} 行': 'Invalid template syntax at line {line}',
     '文件不存在：{path}': 'File not found: {path}',
@@ -179,6 +185,9 @@ register_translations({
 
 
 _ERROR_SOURCES = {
+    "当前模板需要使用高级源码编辑", "模板中没有可组合的文字区域", "底部信息区域无效", "标识位置无效",
+    "缺失值处理方式无效", "分隔符过长", "每个区域最多放置 32 项信息", "底部信息字段无效", "自定义文字过长",
+    "文字区必须保留在原有版式内",
     "文本设置格式无效，请重新加载配置", "开关设置格式无效，请重新加载配置", "水印模板不存在，请重新选择",
     "文字大小需在 50% 到 200% 之间", "边框高度需在 6% 到 30% 之间", "导出质量需在 1 到 100 之间",
     "JPEG 色度采样需为 0、1 或 2", "模板名称不能包含路径、特殊字符或 Windows 保留名称",
@@ -195,6 +204,13 @@ _METADATA_ERRORS = {
 
 
 register_translations({
+    "当前模板需要使用高级源码编辑": "Use Advanced source to edit this template",
+    "模板中没有可组合的文字区域": "This template has no text regions to compose",
+    "底部信息区域无效": "Invalid footer region", "标识位置无效": "Invalid logo position",
+    "缺失值处理方式无效": "Invalid missing-value setting", "分隔符过长": "The separator is too long",
+    "每个区域最多放置 32 项信息": "Each region can contain up to 32 items",
+    "底部信息字段无效": "Invalid footer field", "自定义文字过长": "Custom text is too long",
+    "文字区必须保留在原有版式内": "Text regions must stay within the original layout",
     "未找到 ExifTool": "ExifTool was not found", "照片文件不存在": "Photo file not found",
     "照片信息的数值无效": "Invalid photo information value", "日期格式无效": "Invalid date format",
     "时区偏移格式无效": "Invalid time zone offset", "位置坐标无效": "Invalid location coordinates",

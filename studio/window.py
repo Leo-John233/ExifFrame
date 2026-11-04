@@ -6,8 +6,9 @@ import os
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
+from threading import Event
 
-from PySide6.QtCore import QSize, Qt, QThreadPool, QTimer, QUrl, Slot
+from PySide6.QtCore import QRunnable, QSize, Qt, QThreadPool, QTimer, QUrl, Slot
 from PySide6.QtGui import QAction, QActionGroup, QColor, QDesktopServices, QIcon, QKeySequence, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox,
@@ -23,8 +24,33 @@ from core.desktop_service import (
 from .files import FileBrowser
 from .i18n import bind_static_texts, install_qt_translations, language, localize_error, set_language, tr, translator
 from .template_editor import TemplateEditor
-from .workers import ImageTask
+from .workers import ImageTask, WorkerSignals
 from .pixmaps import preview_pixmap
+
+
+class FooterMetadataTask(QRunnable):
+    """后台读取与水印渲染一致的照片信息供组合区预览"""
+
+    def __init__(self, token, path):
+        super().__init__()
+        self.kind, self.token = "footer_metadata", token
+        self.paths = (Path(path),)
+        self.cancel = Event()
+        self.signals = WorkerSignals()
+
+    def run(self):
+        try:
+            if not self.cancel.is_set():
+                from core.desktop_service import _metadata
+                path = self.paths[0].resolve()
+                modified = path.stat().st_mtime_ns
+                metadata = _metadata(str(path), modified)
+                if not self.cancel.is_set():
+                    self.signals.result.emit(self.kind, self.token, (path, modified, metadata))
+        except Exception as exc:
+            self.signals.error.emit(self.kind, self.token, str(exc))
+        finally:
+            self.signals.finished.emit(self.kind, self.token)
 
 
 class PhotoView(QWidget):
@@ -69,6 +95,7 @@ class MainWindow(QMainWindow):
         self._saved = deepcopy(self.settings)
         self.presets = list_presets()
         self._tasks, self._drafts, self._editors = {}, {}, []
+        self._draft_owners = {}
         self._serial = self._generation = 0
         self._rendering = self._pending = self._closing = self._exporting = self._restoring = False
         self._dirty = self._locked = False
@@ -81,6 +108,8 @@ class MainWindow(QMainWindow):
         self._preview_source, self._preview_values = "未选择照片", {}
         self._preview_error = ""
         self._metadata_close_job = None
+        self._footer_metadata = {}
+        self._active_wizard = None
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(2)
         self.timer = QTimer(self)
@@ -132,7 +161,8 @@ class MainWindow(QMainWindow):
         self.reset_action = self._action("重置配置", self._reset_config, icon=icons.SP_BrowserReload)
         self.new_template_action = self._action("新建模板…", self._new_template, "Ctrl+N", icons.SP_FileIcon)
         self.copy_template_action = self._action("模板另存为…", self._copy_template, "Ctrl+Shift+S", icons.SP_DialogSaveButton)
-        self.edit_template_action = self._action("编辑模板源码…", self._edit_template, "Ctrl+E", icons.SP_FileDialogDetailedView)
+        self.edit_template_action = self._action("高级源码…", self._edit_template, "Ctrl+E", icons.SP_FileDialogDetailedView)
+        self.footer_action = self._action("组合底部信息…", self._edit_footer, "Ctrl+Shift+E", icons.SP_FileDialogContentsView)
         self.metadata_action = self._action("编辑照片信息…", self._edit_metadata, "Ctrl+I", icons.SP_FileDialogInfoView)
         self.metadata_batch_action = self._action("编辑选中照片信息…", self._edit_checked_metadata, icon=icons.SP_FileDialogListView)
         self.original_action = self._action("显示原图", self._view_changed, "Ctrl+Tab", checkable=True)
@@ -152,7 +182,7 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(self._action("退出", self.close, "Alt+F4"))
         template_menu = self.menuBar().addMenu("模板(&T)")
-        for action in (self.new_template_action, self.copy_template_action, self.edit_template_action):
+        for action in (self.new_template_action, self.copy_template_action, self.footer_action, self.edit_template_action):
             template_menu.addAction(action)
         view_menu = self.menuBar().addMenu("查看(&V)")
         view_menu.addAction(self.original_action)
@@ -270,11 +300,16 @@ class MainWindow(QMainWindow):
         self.template_description.setObjectName("secondaryText")
         template_layout.addWidget(self.template_description)
         controls = QHBoxLayout()
-        for text, callback in (("新建", self._new_template), ("另存为", self._copy_template), ("源码", self._edit_template)):
+        for text, callback in (("新建", self._new_template), ("另存为", self._copy_template), ("高级源码", self._edit_template)):
             button = QPushButton(text)
             button.clicked.connect(callback)
             controls.addWidget(button)
         template_layout.addLayout(controls)
+        self.footer_button = QPushButton("组合底部信息…")
+        self.footer_button.setObjectName("composeFooterButton")
+        self.footer_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView))
+        self.footer_button.clicked.connect(self._edit_footer)
+        template_layout.addWidget(self.footer_button)
         self.template_styles_check = QCheckBox("按模板原样处理")
         self.template_styles_check.setObjectName("useTemplateStylesCheck")
         self.template_styles_check.setToolTip("保留模板中的文字、颜色、字号和布局；调整下方参数后切换为自定义")
@@ -293,8 +328,8 @@ class MainWindow(QMainWindow):
         self.subtitle_input.setObjectName("subtitleInput")
         self.title_input.setPlaceholderText("留空使用照片信息")
         self.subtitle_input.setPlaceholderText("留空使用照片信息")
-        fields.addRow("主标题", self.title_input)
-        fields.addRow("副标题", self.subtitle_input)
+        fields.addRow("相机显示文字", self.title_input)
+        fields.addRow("镜头显示文字", self.subtitle_input)
         self.logo_check = QCheckBox("显示品牌标识")
         self.logo_check.setObjectName("showLogoCheck")
         fields.addRow("", self.logo_check)
@@ -650,6 +685,7 @@ class MainWindow(QMainWindow):
             self._set_preview_status("未选择照片")
             self._update_actions()
             self._schedule_preview()
+            self._refresh_footer_examples()
             return
         path, width, height = data
         self.canvas_name.setText(path.name)
@@ -661,6 +697,7 @@ class MainWindow(QMainWindow):
                                  mode="输出文件" if kind == "output" else "输入文件")
         self._update_actions()
         self._schedule_preview()
+        self._refresh_footer_examples()
 
     def _current_path(self):
         return self._current_data[0] if self._current_data else None
@@ -704,6 +741,10 @@ class MainWindow(QMainWindow):
             kwargs["settings"] = deepcopy(kwargs["settings"])
         self._serial += 1
         task = ImageTask(kind, self._serial if token is None else token, **kwargs)
+        self._connect_task(task)
+
+    def _connect_task(self, task):
+        """后台任务共用信号连接和安全关闭登记"""
         task.signals.result.connect(self._task_result)
         task.signals.error.connect(self._task_error)
         task.signals.finished.connect(self._task_finished)
@@ -735,6 +776,13 @@ class MainWindow(QMainWindow):
             self._set_status("处理已取消" if result["cancelled"] else "处理完成")
             if self._last_output and self._last_output.is_dir():
                 self._scan_directory("output", self._last_output)
+        elif kind == "footer_metadata":
+            path, modified, metadata = result
+            from core.metadata import metadata_key
+            self._footer_metadata[(metadata_key(path), modified)] = metadata
+            while len(self._footer_metadata) > 32:
+                self._footer_metadata.pop(next(iter(self._footer_metadata)))
+            self._refresh_footer_examples(request=False)
 
     @Slot(str, int, str)
     def _task_error(self, kind, token, message):
@@ -806,7 +854,7 @@ class MainWindow(QMainWindow):
         self.export_action.setEnabled(bool(self.files._selected_count and self.presets and not importing and not busy))
         self.cancel_action.setEnabled(self._exporting and not self._closing)
         for action in (self.add_action, self.directory_action, self.refresh_action, self.new_template_action,
-                       self.copy_template_action, self.edit_template_action, self.lock_action):
+                       self.copy_template_action, self.edit_template_action, self.footer_action, self.lock_action):
             action.setEnabled(not busy)
         self.metadata_action.setEnabled(bool(self._current_path()) and not busy)
         self.metadata_batch_action.setEnabled(bool(self.files._selected_count) and not busy)
@@ -904,6 +952,7 @@ class MainWindow(QMainWindow):
         normalized = {metadata_key(Path(path)): deepcopy(changes) for path, changes in overrides.items()}
         self.settings = replace(self.settings, metadata_overrides=normalized)
         self._schedule_preview()
+        self._refresh_footer_examples()
         self._set_status("照片信息已更新，仅用于水印")
 
     def _metadata_editor_closed(self, editor):
@@ -911,17 +960,142 @@ class MainWindow(QMainWindow):
             self._metadata_editors.remove(editor)
         editor.deleteLater()
 
-    def _open_editor(self, name, source, is_new=False):
-        editor = TemplateEditor(self, name=name, source=source, is_new=is_new)
+    def _template_context(self):
+        """只复用已经读取的信息，打开组合窗口时不阻塞界面"""
+        from core.metadata import merge_overrides, metadata_key
+        path = self._current_path()
+        result = {"metadata": None, "filename": path.stem if path else "", "file_dir": path.parent.as_posix() if path else ""}
+        if path:
+            try:
+                values = self._footer_metadata.get((metadata_key(path), path.stat().st_mtime_ns))
+            except OSError:
+                values = None
+            overrides = self.settings.metadata_overrides.get(metadata_key(path), {})
+            if values is not None:
+                try:
+                    result["metadata"] = merge_overrides(values, overrides)
+                except ValueError:
+                    result["metadata"] = None
+        return result
+
+    def _refresh_footer_examples(self, request=True):
+        """异步刷新示例，不重载或改写正在组合的内容"""
+        panels = [editor.panel for editor in self._editors if hasattr(editor, "panel")]
+        if self._active_wizard is not None:
+            panels.append(self._active_wizard.footer_panel)
+        if not panels:
+            return
+        context = self._template_context()
+        for panel in panels:
+            panel.set_metadata(**context)
+        for editor in self._editors:
+            if hasattr(editor, 'metadata_button'):
+                editor.metadata_button.setEnabled(bool(self._current_path()) and not self._exporting)
+        path = self._current_path()
+        pending = any(task.kind == "footer_metadata" and task.paths[0] == path for task in self._tasks.values())
+        if request and path and context["metadata"] is None and not pending and not self._closing:
+            self._serial += 1
+            self._connect_task(FooterMetadataTask(self._serial, path))
+
+    def _track_template_editor(self, editor):
+        """源码与组合编辑共用草稿、保存和关闭处理"""
         editor.source_preview.connect(lambda text, window=editor: self._preview_draft(window, text))
-        editor.saved.connect(self._template_saved)
+        editor.saved.connect(lambda name, window=editor: self._editor_saved(window, name))
         editor.finished.connect(lambda result, window=editor: self._editor_closed(window))
+        if isinstance(editor, TemplateEditor):
+            editor.visual_requested.connect(lambda source, window=editor: self._handoff_editor(window, source, visual=True))
+        else:
+            editor.advanced_requested.connect(lambda source, window=editor: self._handoff_editor(window, source, visual=False))
+            editor.metadata_requested.connect(self._edit_metadata)
         self._editors.append(editor)
         editor.show()
+        self._refresh_footer_examples()
+        return editor
+
+    def _make_template_editor(self, name, source, visual=False, is_new=False, saved_source=None):
+        if saved_source is None and not is_new:
+            saved_source = read_template(name)
+        if visual:
+            from .footer_editor import FooterEditor
+            editor = FooterEditor(self, name=name, source=source, saved_source=saved_source, **self._template_context())
+        else:
+            editor = TemplateEditor(self, name=name, source=source, is_new=is_new, saved_source=saved_source)
+        return self._track_template_editor(editor)
+
+    def _open_editor(self, name, source, is_new=False):
+        editor = next((item for item in self._editors if item.name == name), None)
+        if editor is not None:
+            if isinstance(editor, TemplateEditor):
+                editor.show()
+                editor.raise_()
+                editor.activateWindow()
+                return editor
+            try:
+                return self._handoff_editor(editor, editor.source(), visual=False)
+            except Exception as exc:
+                self._record_errors("无法切换编辑器", [str(exc)])
+                return None
+        return self._make_template_editor(name, source, is_new=is_new)
+
+    def _handoff_editor(self, previous, source, visual=False):
+        """确认后携带当前草稿切换模式，同一模板仅保留一个编辑窗口"""
+        if getattr(previous, "is_new", False) and visual:
+            # 未命名或尚未落盘的模板继续由源码编辑器管理保存路径
+            if not previous.save():
+                return None
+            source = previous.source()
+        if previous.is_dirty():
+            destination = tr("可视化组合" if visual else "高级源码编辑器")
+            answer = QMessageBox.question(self, tr("切换编辑方式"),
+                                          tr("将未保存的修改带到{editor}继续编辑？", editor=destination),
+                                          QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                                          QMessageBox.StandardButton.Yes)
+            if answer != QMessageBox.StandardButton.Yes:
+                return None
+        try:
+            baseline = getattr(previous, "_saved_source", None)
+            editor = self._make_template_editor(previous.name, source, visual=visual, saved_source=baseline)
+        except Exception as exc:
+            self._record_errors("无法切换编辑器", [str(exc)])
+            return None
+        editor.preview_target = getattr(previous, "preview_target", previous.name)
+        for target, owner in list(self._draft_owners.items()):
+            if owner is previous:
+                self._draft_owners[target] = editor
+        previous._handoff = True
+        previous.close_for_handoff()
+        self._preview_draft(editor, source)
+        return editor
+
+    def _edit_footer(self):
+        from .footer_editor import FooterEditor
+        name = self.settings.template_name
+        previous = next((item for item in self._editors if item.name == name), None)
+        if previous is not None:
+            if isinstance(previous, FooterEditor):
+                previous.show()
+                previous.raise_()
+                previous.activateWindow()
+            elif previous.check_format():
+                self._handoff_editor(previous, previous.source(), visual=True)
+            return
+        try:
+            self._make_template_editor(name, self._drafts.get(name) or read_template(name), visual=True)
+        except Exception as exc:
+            self._record_errors("无法打开组合编辑器", [str(exc)])
 
     def _new_template(self):
         from .template_wizard import TemplateWizard
-        wizard = TemplateWizard(self, current_template=self.settings.template_name)
+        active = next((editor for editor in self._editors if editor.name == self.settings.template_name), None)
+        try:
+            current_source = active.source() if active else self._drafts.get(self.settings.template_name)
+        except Exception as exc:
+            self._record_errors("无法读取当前组合", [str(exc)])
+            return
+        wizard = TemplateWizard(self, current_template=self.settings.template_name, current_source=current_source,
+                                **self._template_context())
+        self._active_wizard = wizard
+        self._refresh_footer_examples()
         if wizard.exec() == QDialog.DialogCode.Accepted:
             try:
                 write_template(wizard.name, wizard.source, create=True)
@@ -930,12 +1104,15 @@ class MainWindow(QMainWindow):
             except Exception as exc:
                 self._record_errors("创建模板失败", [str(exc)])
                 QMessageBox.warning(self, tr("创建模板失败"), localize_error(exc))
+        self._active_wizard = None
         wizard.deleteLater()
 
     def _copy_template(self):
         name = self.settings.template_name
         try:
-            self._open_editor(name + tr("_副本"), self._drafts.get(name) or read_template(name), True)
+            active = next((editor for editor in self._editors if editor.name == name), None)
+            source = active.source() if active else self._drafts.get(name) or read_template(name)
+            self._open_editor(name + tr("_副本"), source, True)
         except Exception as exc:
             self._record_errors("读取模板失败", [str(exc)])
 
@@ -943,9 +1120,15 @@ class MainWindow(QMainWindow):
         name = self.settings.template_name
         for editor in self._editors:
             if editor.name == name:
-                editor.show()
-                editor.raise_()
-                editor.activateWindow()
+                if isinstance(editor, TemplateEditor):
+                    editor.show()
+                    editor.raise_()
+                    editor.activateWindow()
+                else:
+                    try:
+                        self._handoff_editor(editor, editor.source(), visual=False)
+                    except Exception as exc:
+                        self._record_errors("无法切换编辑器", [str(exc)])
                 return
         try:
             self._open_editor(name, self._drafts.get(name) or read_template(name))
@@ -958,6 +1141,7 @@ class MainWindow(QMainWindow):
         target = name if self.template_combo.findData(name) >= 0 else self.settings.template_name
         editor.preview_target = target
         self._drafts[target] = source
+        self._draft_owners[target] = editor
         if target == self.settings.template_name:
             self.settings = replace(self.settings, template_source=source, use_template_styles=True)
             self.template_styles_check.setChecked(True)
@@ -965,23 +1149,35 @@ class MainWindow(QMainWindow):
             self._schedule_preview()
             self._set_status("模板草稿已应用，尚未保存到模板文件")
 
-    def _template_saved(self, name):
-        self._drafts.pop(name, None)
+    def _template_saved(self, name, owner=None):
+        if self._draft_owners.get(name) in (None, owner):
+            self._drafts.pop(name, None)
+            self._draft_owners.pop(name, None)
         self._reload_presets(name)
-        self.settings = replace(self.settings, template_name=name, template_source="")
+        self.settings = replace(self.settings, template_name=name, template_source=self._drafts.get(name, ""))
         self.template_styles_check.setChecked(True)
         self._show_template()
         self._settings_changed()
 
+    def _editor_saved(self, editor, name):
+        for target, owner in list(self._draft_owners.items()):
+            if owner is editor and target != name:
+                self._drafts.pop(target, None)
+                self._draft_owners.pop(target, None)
+        editor.preview_target = name
+        self._template_saved(name, owner=editor)
+
     def _editor_closed(self, editor):
         if editor in self._editors:
             self._editors.remove(editor)
-        target = getattr(editor, "preview_target", editor.name)
-        if target in self._drafts:
-            self._drafts.pop(target, None)
-            if target == self.settings.template_name:
-                self.settings = replace(self.settings, template_source="")
-                self._schedule_preview()
+        if not getattr(editor, "_handoff", False):
+            for target, owner in list(self._draft_owners.items()):
+                if owner is editor:
+                    self._drafts.pop(target, None)
+                    self._draft_owners.pop(target, None)
+                    if target == self.settings.template_name:
+                        self.settings = replace(self.settings, template_source="")
+                        self._schedule_preview()
         editor.deleteLater()
 
     def dragEnterEvent(self, event):
