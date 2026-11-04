@@ -43,10 +43,11 @@ class FooterMetadataTask(QRunnable):
             if not self.cancel.is_set():
                 from core.desktop_service import _metadata
                 path = self.paths[0].resolve()
-                modified = path.stat().st_mtime_ns
+                info = path.stat()
+                modified, size = info.st_mtime_ns, info.st_size
                 metadata = _metadata(str(path), modified)
                 if not self.cancel.is_set():
-                    self.signals.result.emit(self.kind, self.token, (path, modified, metadata))
+                    self.signals.result.emit(self.kind, self.token, (path, modified, size, metadata))
         except Exception as exc:
             self.signals.error.emit(self.kind, self.token, str(exc))
         finally:
@@ -119,8 +120,10 @@ class MainWindow(QMainWindow):
         self._active_wizard = None
         self._completion_refresh = None
         self._export_finish_message = None
+        self._queued_export = None
         self._watermark_image = None
         self._watermark_signature = None
+        self._render_signature = None
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(2)
         self.timer = QTimer(self)
@@ -147,16 +150,7 @@ class MainWindow(QMainWindow):
         action = QAction(text, self)
         action.setCheckable(checkable)
         if icon is not None:
-            artwork = self.style().standardIcon(icon)
-            if icon in (QStyle.StandardPixmap.SP_MediaPlay, QStyle.StandardPixmap.SP_MediaStop,
-                        QStyle.StandardPixmap.SP_ArrowDown):
-                pixmap = artwork.pixmap(16, 16)
-                painter = QPainter(pixmap)
-                painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-                painter.fillRect(pixmap.rect(), QColor("#D2D3D5"))
-                painter.end()
-                artwork = QIcon(pixmap)
-            action.setIcon(artwork)
+            action.setIcon(self.style().standardIcon(icon))
         if shortcut:
             action.setShortcut(QKeySequence(shortcut))
         action.triggered.connect(callback)
@@ -461,8 +455,9 @@ class MainWindow(QMainWindow):
                        self.font_slider.valueChanged, self.border_slider.valueChanged):
             signal.connect(self._style_changed)
         for signal in (self.quality_spin.valueChanged, self.overwrite_check.toggled, self.structure_check.toggled,
-                       self.template_styles_check.toggled, self.input_input.textEdited, self.output_input.textEdited):
-            signal.connect(self._settings_changed)
+                       self.input_input.textEdited, self.output_input.textEdited):
+            signal.connect(lambda *args: self._settings_changed(refresh_preview=False))
+        self.template_styles_check.toggled.connect(lambda checked: self._settings_changed())
 
     def _show_template(self):
         index = self.template_combo.currentIndex()
@@ -497,7 +492,7 @@ class MainWindow(QMainWindow):
         self.template_styles_check.blockSignals(False)
         self._settings_changed()
 
-    def _settings_changed(self):
+    def _settings_changed(self, refresh_preview=True):
         if self._restoring:
             return
         self.settings = replace(self.settings, template_name=self.template_combo.currentData(),
@@ -510,9 +505,10 @@ class MainWindow(QMainWindow):
         self._dirty = replace(self.settings, template_source="", metadata_overrides={}) != replace(self._saved, template_source="", metadata_overrides={})
         self._update_labels()
         self._update_actions()
-        if self._visible_footer_editors():
-            self._ensure_watermark_mode()
-        self._schedule_preview()
+        if refresh_preview:
+            if self._visible_footer_editors():
+                self._ensure_watermark_mode()
+            self._schedule_preview()
 
     def _update_labels(self):
         self.font_value.setText(f"{self.font_slider.value()}%")
@@ -655,7 +651,7 @@ class MainWindow(QMainWindow):
             self._record_errors("目录无法读取", [folder])
             return
         self.files.paths[kind].setText(str(Path(folder).resolve()))
-        self._settings_changed()
+        self._settings_changed(refresh_preview=False)
         self._scan_directory(kind, folder)
 
     def _scan_directory(self, kind, folder):
@@ -746,7 +742,25 @@ class MainWindow(QMainWindow):
                 and editor.name == self.settings.template_name and editor.isVisible() and not editor.isMinimized()]
 
     def _preview_signature(self):
-        return (self._current_path(), replace(self.settings, input_files=tuple(str(path) for path in self.files.selected_paths())))
+        from core.desktop_service import _preview_file_signature
+
+        settings = self.settings
+        path = self._current_path()
+        selected = tuple(str(item) for item in self.files.selected_paths())
+        try:
+            info = path.stat() if path else None
+            version = (info.st_mtime_ns, info.st_size) if info else None
+        except OSError:
+            version = None
+        try:
+            source = settings.template_source or read_template(settings.template_name)
+        except (OSError, ValueError):
+            source = ''
+        dependencies = _preview_file_signature(source, selected or ((str(path),) if path else ()))
+        return (self._current_path(), settings.template_name, settings.template_source, settings.use_template_styles,
+                settings.title, settings.subtitle, settings.show_logo, settings.font_scale, settings.border_percent,
+                settings.background, settings.text_color, settings.metadata_overrides, selected,
+                version, source, dependencies)
 
     def _current_footer_image(self):
         """只复用当前照片与当前设置对应的水印结果，原图另行对照"""
@@ -783,8 +797,9 @@ class MainWindow(QMainWindow):
             if index >= 0 and editor.name != self.settings.template_name:
                 self.template_combo.setCurrentIndex(index)
             original = self._ensure_watermark_mode()
-            editor.set_preview(self._current_footer_image())
-            if self._current_path() and (original or self._current_footer_image() is None):
+            image = self._current_footer_image()
+            editor.set_preview(image)
+            if self._current_path() and (original or image is None):
                 self._schedule_preview()
         # 只取消最小化，保留用户已有的最大化状态
         editor.setWindowState(editor.windowState() & ~Qt.WindowState.WindowMinimized)
@@ -817,14 +832,32 @@ class MainWindow(QMainWindow):
     def _queue_selection_changed(self):
         """导入期间不反复推迟首张预览，完整批次在扫描结束后刷新"""
         if not any(kind == "import" for kind, _ in self._tasks):
+            self._sync_template_context()
+            self._refresh_footer_examples(request=False)
             self._schedule_preview()
+
+    def _sync_template_context(self):
+        """让已打开的编辑器使用当前勾选和照片信息快照"""
+        selected = tuple(str(path) for path in self.files.selected_paths())
+        for preview in self._template_previews():
+            preview.update_context(selected, self.settings.metadata_overrides)
+        if self._active_wizard is not None:
+            self._active_wizard.refresh_preview_context()
+
+    def _template_previews(self):
+        previews = [editor.preview for editor in self._editors if isinstance(editor, TemplateEditor)]
+        if self._active_wizard is not None:
+            previews.append(self._active_wizard.preview)
+            if self._active_wizard._advanced_preview is not None:
+                previews.append(self._active_wizard._advanced_preview)
+        return previews
 
     def _render_preview(self):
         path = self._current_path()
         if not path:
             self._send_footer_preview(None)
             return
-        if self._closing or self._rendering or not self._pending or not path:
+        if self._closing or self._exporting or self._rendering or not self._pending or not path:
             return
         self._pending, self._rendering = False, True
         self._set_preview_status("正在生成预览…")
@@ -834,6 +867,7 @@ class MainWindow(QMainWindow):
         kind = "original" if self._current_kind == "output" or self.original_toggle.isChecked() else "preview"
         # 与实际导出共用勾选文件快照，支持模板中的跨照片处理
         selected = tuple(str(item) for item in self.files.selected_paths())
+        self._render_signature = deepcopy(self._preview_signature())
         self._start_task(kind, token=self._generation, paths=[path],
                          settings=replace(self.settings, input_files=selected))
 
@@ -862,10 +896,13 @@ class MainWindow(QMainWindow):
         if self._closing:
             return
         if kind in ("preview", "original") and token == self._generation:
+            if self._render_signature != self._preview_signature():
+                self._schedule_preview()
+                return
             self.photo_view.set_image(result)
             if kind == "preview":
                 self._watermark_image = result.copy()
-                self._watermark_signature = deepcopy(self._preview_signature())
+                self._watermark_signature = self._render_signature
                 self._send_footer_preview(self._watermark_image)
             _, width, height = self._current_data
             mode = "输出文件" if self._current_kind == "output" else "原图" if kind == "original" else "水印预览"
@@ -876,8 +913,6 @@ class MainWindow(QMainWindow):
                 self._set_status(source, **values)
             else:
                 self._set_status("目录读取完成")
-            if kind == "import":
-                self._schedule_preview()
             if result:
                 self._record_errors("部分照片无法读取", result)
         elif kind == "export":
@@ -893,9 +928,9 @@ class MainWindow(QMainWindow):
                 # 自动刷新成品列表后继续显示导出结果
                 self._completion_refresh = self._scan_directory("output", self._last_output).token
         elif kind == "footer_metadata":
-            path, modified, metadata = result
+            path, modified, size, metadata = result
             from core.metadata import metadata_key
-            self._footer_metadata[(metadata_key(path), modified)] = metadata
+            self._footer_metadata[(metadata_key(path), modified, size)] = metadata
             while len(self._footer_metadata) > 32:
                 self._footer_metadata.pop(next(iter(self._footer_metadata)))
             self._refresh_footer_examples(request=False)
@@ -924,6 +959,10 @@ class MainWindow(QMainWindow):
                 self._render_preview()
         elif kind == "export":
             self._set_exporting(False)
+        elif kind == "import" and not any(task_kind == "import" for task_kind, _ in self._tasks):
+            self._sync_template_context()
+            self._refresh_footer_examples(request=False)
+            self._schedule_preview()
         elif kind == "output" and token == self._completion_refresh:
             self._completion_refresh = None
         self._update_actions()
@@ -1015,7 +1054,7 @@ class MainWindow(QMainWindow):
                                                   QFileDialog.Option.DontUseNativeDialog)
         if folder:
             self.output_input.setText(folder)
-            self._settings_changed()
+            self._settings_changed(refresh_preview=False)
         return folder
 
     def _export(self):
@@ -1033,9 +1072,32 @@ class MainWindow(QMainWindow):
         self.progress.setRange(0, len(paths))
         self.progress.setValue(0)
         self._set_status("正在导出 {current}/{total} · {name}", current=0, total=len(paths), name="")
-        self._start_task("export", paths=paths,
-                         settings=replace(self.settings, input_files=tuple(str(path) for path in paths)),
-                         output=self._last_output)
+        self._queued_export = (paths, replace(self.settings, input_files=tuple(str(path) for path in paths),
+                                             protected_sources=tuple(str(path) for path in self.files.all_paths())),
+                               self._last_output)
+        self.timer.stop()
+        if self._rendering:
+            self._generation += 1
+            self._pending = True
+            for task in self._tasks.values():
+                if task.kind in ("preview", "original"):
+                    task.cancel.set()
+        for preview in self._template_previews():
+            preview.suspend()
+        self._start_queued_export()
+
+    def _start_queued_export(self):
+        if self._queued_export is None or self._closing:
+            return
+        from .preview import _task_owner
+        if self._rendering or _task_owner().jobs:
+            self._set_status("等待预览完成后开始导出…")
+            QTimer.singleShot(100, self, self._start_queued_export)
+            return
+        paths, settings, output = self._queued_export
+        self._queued_export = None
+        self._set_status("正在导出 {current}/{total} · {name}", current=0, total=len(paths), name="")
+        self._start_task("export", paths=paths, settings=settings, output=output)
 
     def _set_exporting(self, active):
         self._exporting = active
@@ -1046,14 +1108,24 @@ class MainWindow(QMainWindow):
         for editor in self._metadata_editors:
             editor.setEnabled(not active)
         self.progress.setVisible(active)
+        if not active and not self._closing:
+            for preview in self._template_previews():
+                preview.resume()
+            if self._pending:
+                self.timer.start()
         self._update_actions()
 
     def _cancel_export(self):
+        if self._queued_export is not None:
+            self._queued_export = None
+            self._set_exporting(False)
+            self._set_status("导出已取消，已保存 {count} 张照片", count=0)
+            return
         for task in self._tasks.values():
             if task.kind == "export":
                 task.cancel.set()
         self.cancel_action.setEnabled(False)
-        self._set_status("当前照片完成后取消导出")
+        self._set_status("正在处理的照片完成后取消导出")
 
     def _open_output(self):
         directory = self._last_output or (Path(self.settings.output_dir) if self.settings.output_dir else None)
@@ -1097,6 +1169,7 @@ class MainWindow(QMainWindow):
         from core.metadata import metadata_key
         normalized = {metadata_key(Path(path)): deepcopy(changes) for path, changes in overrides.items()}
         self.settings = replace(self.settings, metadata_overrides=normalized)
+        self._sync_template_context()
         if self._visible_footer_editors():
             self._ensure_watermark_mode()
         self._schedule_preview()
@@ -1112,10 +1185,15 @@ class MainWindow(QMainWindow):
         """只复用已经读取的信息，打开组合窗口时不阻塞界面"""
         from core.metadata import merge_overrides, metadata_key
         path = self._current_path()
-        result = {"metadata": None, "filename": path.stem if path else "", "file_dir": path.parent.as_posix() if path else ""}
+        selected = tuple(str(item) for item in self.files.selected_paths())
+        result = {"metadata": None, "filename": path.stem if path else "",
+                  "file_dir": path.parent.as_posix() if path else "",
+                  "file_path": path.as_posix() if path else "",
+                  "files": selected or ((str(path),) if path else ())}
         if path:
             try:
-                values = self._footer_metadata.get((metadata_key(path), path.stat().st_mtime_ns))
+                info = path.stat()
+                values = self._footer_metadata.get((metadata_key(path), info.st_mtime_ns, info.st_size))
             except OSError:
                 values = None
             overrides = self.settings.metadata_overrides.get(metadata_key(path), {})
@@ -1168,10 +1246,11 @@ class MainWindow(QMainWindow):
         if visual:
             from .footer_editor import FooterEditor
             editor = FooterEditor(self, name=name, source=source, saved_source=saved_source,
-                                  preview_image=self._current_footer_image(), **self._template_context())
+                                  **self._template_context())
         else:
+            settings = replace(self.settings, input_files=tuple(str(path) for path in self.files.selected_paths()))
             editor = TemplateEditor(self, name=name, source=source, is_new=is_new, saved_source=saved_source,
-                                    photo_path=self._current_path(), settings=deepcopy(self.settings))
+                                    photo_path=self._current_path(), settings=deepcopy(settings))
         return self._track_template_editor(editor)
 
     def _open_editor(self, name, source, is_new=False):
@@ -1240,8 +1319,9 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self._record_errors("无法读取当前组合", [str(exc)])
             return
+        settings = replace(self.settings, input_files=tuple(str(path) for path in self.files.selected_paths()))
         wizard = TemplateWizard(self, current_template=self.settings.template_name, current_source=current_source,
-                                settings=deepcopy(self.settings))
+                                settings=deepcopy(settings))
         self._active_wizard = wizard
         self._refresh_footer_examples()
         if wizard.exec() == QDialog.DialogCode.Accepted:

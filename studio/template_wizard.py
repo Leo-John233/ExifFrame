@@ -81,6 +81,7 @@ class TemplateWizard(QDialog):
         self._context = dict(metadata=metadata, filename=filename, file_dir=file_dir)
         self._preview_path = photo_path if photo_path is not None else example_photo_path()
         self._preview_settings = settings
+        self._advanced_preview = None
         self._presets = [preset for preset in list_presets() if preset.name in self.BUILT_INS]
         self.setObjectName('templateWizard')
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowTitleHint |
@@ -210,8 +211,15 @@ class TemplateWizard(QDialog):
 
     def _preview_metadata(self, metadata, filename, file_dir):
         """示例和照片预览使用同一份拍摄信息，不改动组合草稿"""
-        self._context = dict(metadata=metadata, filename=filename, file_dir=file_dir)
+        path = self.preview.photo_path
+        files = self.preview.settings.input_files or ((str(path),) if path else ())
+        self._context = dict(metadata=metadata, filename=filename or (path.stem if path else ''),
+                             file_dir=file_dir or (path.parent.as_posix() if path else ''),
+                             file_path=path.as_posix() if path else '', files=files)
         self.footer_panel.set_metadata(**self._context)
+
+    def refresh_preview_context(self):
+        self._preview_metadata(self._context['metadata'], self._context['filename'], self._context['file_dir'])
 
     def _style_source(self):
         mode = self.mode.currentData()
@@ -358,7 +366,8 @@ class TemplateWizard(QDialog):
         editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         highlighter = TemplateHighlighter(editor)
         splitter.addWidget(editor)
-        preview = TemplatePreview(dialog, photo_path=self.preview.photo_path, settings=self.preview.settings)
+        preview = TemplatePreview(dialog, photo_path=self.preview.photo_path, settings=self.preview.session_settings)
+        self._advanced_preview = preview
         splitter.addWidget(preview)
         splitter.setSizes([500, 540])
         layout.addWidget(splitter, 1)
@@ -406,6 +415,7 @@ class TemplateWizard(QDialog):
                 self.preview.set_photo(preview.photo_path)
             self._refresh()
         preview.shutdown()
+        self._advanced_preview = None
         dialog.deleteLater()
 
     def _return_visual(self):

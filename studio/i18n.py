@@ -194,6 +194,8 @@ register_translations({
     "导出已取消，已保存 {count} 张照片": "Export cancelled; {count} photos saved",
     "导出完成，已保存 {count} 张照片": "Export complete; {count} photos saved", "导出失败": "Export failed",
     "当前照片完成后取消导出": "Finishing the current photo, then cancelling export",
+    "等待预览完成后开始导出…": "Waiting for previews to finish before exporting…",
+    "正在处理的照片完成后取消导出": "Finishing photos in progress, then cancelling export",
     "添加照片后开始编辑水印\n\n拖入 JPG、PNG、HEIC 文件或文件夹，或点击上方“添加照片”": "Add photos to start editing watermarks\n\nDrop JPG, PNG, HEIC files or folders here, or use Add photos above",
     "从左侧列表选择一张照片\n\n勾选的输入照片会一并导出": "Select a photo in the list to preview it\n\nChecked input photos will be exported together",
     "此目录暂无导出照片\n\n导出后可在“输出”标签查看成品": "No exported photos in this folder\n\nExport your photos to review the results in the Output tab",

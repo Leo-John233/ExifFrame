@@ -206,7 +206,8 @@ class FooterPanel(QWidget):
     LOGOS = (('沿用模板', 'keep'), ('隐藏', 'none'), ('左侧', 'left'), ('居中', 'center'), ('右侧', 'right'))
     MISSING = (('隐藏该字段', 'hide'), ('显示破折号', 'dash'))
 
-    def __init__(self, source: str, parent=None, metadata=None, filename='', file_dir='', compact=True):
+    def __init__(self, source: str, parent=None, metadata=None, filename='', file_dir='', compact=True,
+                 file_path='', files=()):
         super().__init__(parent)
         self.compact = bool(compact)
         self._source = source
@@ -217,6 +218,8 @@ class FooterPanel(QWidget):
         self._metadata = deepcopy(metadata) if metadata is not None else None
         self._filename = filename
         self._file_dir = file_dir
+        self._file_path = file_path
+        self._files = tuple(files)
         self._fields = {field.key: field for field in FIELD_CATALOG}
         for key in ('gps_latitude', 'gps_longitude'):
             field = get_footer_field(key)
@@ -469,13 +472,17 @@ class FooterPanel(QWidget):
     def layout_data(self) -> dict:
         return deepcopy(self._layout)
 
-    def set_metadata(self, metadata, filename=None, file_dir=None):
+    def set_metadata(self, metadata, filename=None, file_dir=None, file_path=None, files=None):
         """仅刷新示例数据，保留字段组合且不广播修改"""
         self._metadata = deepcopy(metadata) if metadata is not None else None
         if filename is not None:
             self._filename = filename
         if file_dir is not None:
             self._file_dir = file_dir
+        if file_path is not None:
+            self._file_path = file_path
+        if files is not None:
+            self._files = tuple(files)
         self.preview_group.setTitle(tr('示例预览' if self._metadata is None else '照片信息预览'))
         self._refresh_items(self.items.currentRow())
 
@@ -551,7 +558,7 @@ class FooterPanel(QWidget):
         model = {'kind': self._layout.get('kind', 'footer'), 'regions': [region],
                  'rows': {region: {'items': [item], 'separator': ''}},
                  'missing': self._layout.get('missing', 'hide')}
-        values = preview_rows(model, self._metadata, self._filename, self._file_dir)
+        values = preview_rows(model, self._metadata, self._filename, self._file_dir, self._file_path, self._files)
         return values.get(region, '') or '—'
 
     def _item_label(self, item):
@@ -566,9 +573,10 @@ class FooterPanel(QWidget):
         self._updating = True
         self.items.clear()
         for item in self._row().get('items', []):
-            entry = QListWidgetItem(self._item_label(item), self.items)
+            label = self._item_label(item)
+            entry = QListWidgetItem(label, self.items)
             entry.setData(Qt.ItemDataRole.UserRole, deepcopy(item))
-            entry.setToolTip(self._item_label(item))
+            entry.setToolTip(label)
             entry.setSizeHint(QSize(100, max(24, self.items.fontMetrics().height() + 8)))
         self._fit_item_list()
         if self.items.count():
@@ -773,7 +781,8 @@ class FooterPanel(QWidget):
         rows = {}
         if error is None:
             try:
-                rows = preview_rows(self.layout_data(), metadata=self._metadata, filename=self._filename, file_dir=self._file_dir)
+                rows = preview_rows(self.layout_data(), metadata=self._metadata, filename=self._filename,
+                                    file_dir=self._file_dir, file_path=self._file_path, files=self._files)
             except Exception as exc:
                 error = exc
         for region, (title, label) in self._preview_labels.items():
@@ -816,7 +825,7 @@ class FooterEditor(QDialog):
 
     def __init__(self, parent=None, name: str = '', source: str = '',
                  metadata=None, filename: str = '', file_dir: str = '', saved_source: str | None = None,
-                 preview_image=None):
+                 preview_image=None, file_path: str = '', files=()):
         super().__init__(parent)
         self.name = name
         self._saved_name = name
@@ -885,7 +894,8 @@ class FooterEditor(QDialog):
         preview_layout.addWidget(self.image_status_label)
         self.splitter.addWidget(preview_area)
 
-        self.panel = FooterPanel(source, self, metadata, filename, file_dir, compact=True)
+        self.panel = FooterPanel(source, self, metadata, filename, file_dir, compact=True,
+                                 file_path=file_path, files=files)
         self._initial_layout = self.panel.layout_data()
         try:
             self._saved_layout = read_layout(self._saved_source)

@@ -144,6 +144,7 @@ class TemplatePreview(QWidget):
         self._active = None
         self._failed = False
         self._closed = False
+        self._suspended = False
         self._stopped = Event()
         self._last_metadata = None
         self._status = ('未选择照片', {})
@@ -219,13 +220,29 @@ class TemplatePreview(QWidget):
         return self._photo_path
 
     @property
+    def session_settings(self):
+        return deepcopy(replace(self._settings, template_source=self._source, use_template_styles=True))
+
+    @property
     def settings(self):
-        snapshot = replace(self._settings, template_source=self._source, use_template_styles=True)
+        snapshot = self.session_settings
         if self._photo_path == example_photo_path():
             # 示例仅使用自己的照片和拍摄信息，不混入用户队列与临时 EXIF 修改
-            snapshot = replace(snapshot, input_files=(str(self._photo_path),), metadata_overrides={},
+            snapshot = replace(snapshot, input_files=(str(self._photo_path),), protected_sources=(), metadata_overrides={},
                                input_dir='', output_dir='')
-        return deepcopy(snapshot)
+        return snapshot
+
+    def update_context(self, input_files, metadata_overrides):
+        """更新照片队列和会话信息而不改变预览照片或源码"""
+        if self._closed:
+            return
+        before = self.settings
+        self._settings.input_files = tuple(input_files)
+        self._settings.metadata_overrides = deepcopy(metadata_overrides)
+        if self.settings != before:
+            self._failed = False
+            self._invalidate()
+            self._request()
 
     def set_source(self, source: str):
         """有效源码去抖渲染，父编辑器对无效源码调用 set_error"""
@@ -258,8 +275,6 @@ class TemplatePreview(QWidget):
         if self._closed:
             return
         selected = Path(path).expanduser().absolute() if path else None
-        if self._photo_path == example_photo_path() and selected and selected != self._photo_path:
-            self._settings.input_files = (str(selected),)
         changed = selected != self._photo_path
         self._photo_path = selected
         self._failed = False
@@ -284,11 +299,12 @@ class TemplatePreview(QWidget):
             self._set_status('等待有效模板')
         else:
             self._set_status('正在更新照片预览…')
-            self.timer.start()
+            if not self._suspended:
+                self.timer.start()
 
     @Slot()
     def _start_latest(self):
-        if self._closed or not self._pending or self._active is not None:
+        if self._closed or self._suspended or not self._pending or self._active is not None:
             return
         if not self._photo_path or not self._valid_source:
             return
@@ -321,11 +337,28 @@ class TemplatePreview(QWidget):
     def _finished(self, job_id):
         if self._active is not None and self._active.job_id == job_id:
             self._active = None
-        if not self._closed and self._pending and not self.timer.isActive():
+        if not self._closed and not self._suspended and self._pending and not self.timer.isActive():
             self._start_latest()
 
+    def suspend(self):
+        """导出前停止启动新预览，等待在途处理自然结束"""
+        if self._closed or self._suspended:
+            return
+        self._suspended = True
+        if self._active is not None or self._pending or self.timer.isActive():
+            self._invalidate()
+            self.timer.stop()
+            self._pending = bool(self._photo_path and self._valid_source)
+
+    def resume(self):
+        if self._closed or not self._suspended:
+            return
+        self._suspended = False
+        if self._pending:
+            self._request()
+
     def _publish_metadata(self, metadata, filename, file_dir):
-        value = (metadata, filename, file_dir)
+        value = (metadata, filename, file_dir, self._photo_path)
         if value != self._last_metadata:
             self._last_metadata = deepcopy(value)
             self.metadata_ready.emit(deepcopy(metadata), filename, file_dir)

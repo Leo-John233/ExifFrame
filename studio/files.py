@@ -139,7 +139,7 @@ class FileBrowser(QWidget):
         if kind == "import":
             self._selected_count = 0
         self._changing = False
-        self._update_count(recount=False)
+        self._update_count(emit=kind == "import", recount=False)
 
     def add_file(self, kind, data):
         path, image, width, height = data
@@ -181,13 +181,16 @@ class FileBrowser(QWidget):
             self._selected_count += int(checked)
         self.items[kind][identity] = item
         self._changing = False
-        self._update_count(recount=False)
+        self._update_count(emit=kind == "import", recount=False)
         if not self.trees[kind].currentItem():
             self.trees[kind].setCurrentItem(item)
 
     def selected_paths(self):
         return [item.data(0, Qt.ItemDataRole.UserRole)[0] for item in self.items["import"].values()
                 if item.checkState(0) == Qt.CheckState.Checked]
+
+    def all_paths(self):
+        return [item.data(0, Qt.ItemDataRole.UserRole)[0] for item in self.items["import"].values()]
 
     def select_all(self, checked):
         self._changing = True
