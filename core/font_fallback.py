@@ -186,7 +186,7 @@ def _style_native_z(alpha, text, layout, font, origin):
             if width > glyph.shape[1] * .7:
                 continue
             center = (ink[0] + ink[-1]) / 2
-            half = max(1.5, width * .11)
+            half = max(1.5, width * .15)
             cut = np.clip(half + .5 - np.abs(columns - center), 0, 1)
             row[:] = np.rint(row * (1 - cut)).astype('uint8')
     return Image.fromarray(pixels)
