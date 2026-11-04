@@ -241,6 +241,7 @@ class FooterPanel(QWidget):
         layout.setSpacing(8 if self.compact else 12)
         layout.addWidget(bind(QLabel(), '水印区域'))
         self.region_group = QWidget()
+        self.region_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.region_grid = QGridLayout(self.region_group)
         self.region_grid.setContentsMargins(0, 0, 0, 0)
         self.region_grid.setSpacing(8)
@@ -263,8 +264,8 @@ class FooterPanel(QWidget):
         self.items.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.items.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.items.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.items.setMinimumHeight(158)
-        self.items.setMaximumHeight(240 if self.compact else 320)
+        self.items.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.items.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.items.setSpacing(1)
         bind(self.items, '拖动字段调整顺序，也可使用上移和下移按钮', 'setToolTip')
         self.items.currentRowChanged.connect(self._select_item)
@@ -302,14 +303,19 @@ class FooterPanel(QWidget):
         self.items.addAction(delete_action)
 
         self.details = QWidget()
+        self.details.setMaximumWidth(440)
         form = QGridLayout(self.details)
         form.setContentsMargins(0, 0, 0, 0)
         form.setSpacing(8)
         self.item_hint = QLabel()
         self.item_hint.setWordWrap(True)
+        self.item_hint.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.item_hint.setObjectName('secondaryText')
         form.addWidget(self.item_hint, 0, 0, 1, 4)
         self.prefix_input, self.suffix_input, self.text_input = QLineEdit(), QLineEdit(), QLineEdit()
+        for editor in (self.prefix_input, self.suffix_input):
+            editor.setMaximumWidth(144)
+        self.text_input.setMaximumWidth(360)
         self.prefix_label, self.suffix_label, self.text_label = QLabel(), QLabel(), QLabel()
         bind(self.prefix_label, '前面')
         bind(self.suffix_label, '后面')
@@ -325,7 +331,7 @@ class FooterPanel(QWidget):
         self.prefix_input.textEdited.connect(lambda value: self._edit_item('prefix', value))
         self.suffix_input.textEdited.connect(lambda value: self._edit_item('suffix', value))
         self.text_input.textEdited.connect(lambda value: self._edit_item('text', value))
-        layout.addWidget(self.details)
+        layout.addWidget(self.details, 0, Qt.AlignmentFlag.AlignLeft)
 
         self.format_toggle = QToolButton()
         bind(self.format_toggle, '格式与布局')
@@ -504,8 +510,7 @@ class FooterPanel(QWidget):
             row, column = positions.get(region, divmod(index, 2))
             button = QToolButton()
             button.setCheckable(True)
-            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-            button.setFixedHeight(25)
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             button.clicked.connect(lambda checked=False, region=region: self.select_region(region))
             self.button_group.addButton(button)
             self.region_grid.addWidget(button, row, column)
@@ -552,7 +557,8 @@ class FooterPanel(QWidget):
             entry = QListWidgetItem(self._item_label(item), self.items)
             entry.setData(Qt.ItemDataRole.UserRole, deepcopy(item))
             entry.setToolTip(self._item_label(item))
-            entry.setSizeHint(QSize(100, 24))
+            entry.setSizeHint(QSize(100, max(24, self.items.fontMetrics().height() + 8)))
+        self._fit_item_list()
         if self.items.count():
             self.items.setCurrentRow(max(0, min(selection, self.items.count() - 1)))
         self.empty_label.setVisible(not self.items.count())
@@ -576,6 +582,13 @@ class FooterPanel(QWidget):
         self._updating = False
         self._select_item(self.items.currentRow())
         self._refresh_preview()
+
+    def _fit_item_list(self):
+        """按实际行高显示二至五行，更多内容在列表内滚动"""
+        row_height = self.items.sizeHintForRow(0) if self.items.count() else max(24, self.items.fontMetrics().height() + 8)
+        visible_rows = min(5, max(2, self.items.count()))
+        height = visible_rows * (row_height + 2 * self.items.spacing()) + 2 * self.items.frameWidth()
+        self.items.setFixedHeight(height)
 
     def _select_item(self, index):
         if self._updating:

@@ -9,7 +9,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QFileDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton,
-    QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QStyle,
+    QSizePolicy, QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QStyle,
 )
 from .i18n import bind_static_texts, tr, translator
 
@@ -52,13 +52,13 @@ class FileBrowser(QWidget):
             self.paths[kind] = path
             path_row.addWidget(path, 1)
             browse = QPushButton("…")
-            browse.setFixedWidth(27)
+            browse.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             browse.setToolTip("选择输入目录" if kind == "import" else "选择输出目录")
             browse.clicked.connect(lambda checked=False, which=kind: self._browse(which))
             path_row.addWidget(browse)
             refresh = QPushButton()
             refresh.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
-            refresh.setFixedWidth(27)
+            refresh.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             refresh.setToolTip("刷新目录")
             refresh.clicked.connect(lambda checked=False, which=kind: self._request(which))
             path_row.addWidget(refresh)
