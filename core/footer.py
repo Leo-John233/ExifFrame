@@ -104,9 +104,13 @@ def _generated_row(text):
         if len(parsed.body) != 1 or not isinstance(parsed.body[0], nodes.Output) or len(parsed.body[0].nodes) != 1:
             return None
         call = parsed.body[0].nodes[0]
+        encoded_segments = False
         if isinstance(call, nodes.Filter) and call.name == 'tojson':
             call = call.node
+            encoded_segments = True
         if isinstance(call, nodes.Call) and isinstance(call.node, nodes.Name) and call.node.name in {'footer_row', 'footer_segments'}:
+            if encoded_segments != (call.node.name == 'footer_segments'):
+                return None
             return {'items': call.args[1].as_const(), 'separator': call.args[2].as_const()}, call.args[3].as_const()
     except Exception:
         pass
@@ -175,13 +179,19 @@ def _read_text(text):
 
 
 def _read_row(node):
+    if not isinstance(node, dict):
+        raise FooterError('当前模板需要使用高级源码编辑')
     text = node.get('text', '')
     generated = _generated_row(text if 'text_segments' not in node else node['text_segments'])
     if generated:
         return generated
     segments = node.get('text_segments')
+    if segments is not None and not isinstance(segments, list):
+        raise FooterError('当前模板需要使用高级源码编辑')
     if not isinstance(segments, list):
         return _read_text(text), 'hide'
+    if any(not isinstance(segment, dict) for segment in segments):
+        raise FooterError('当前模板需要使用高级源码编辑')
     parsed = [_read_text(segment.get('text', '')) for segment in segments]
     field_keys = {item['field'] for row in parsed for item in row['items'] if 'field' in item}
     if len(segments) > 1 and (len(field_keys) <= 1):
