@@ -266,12 +266,14 @@ def _cached_metadata(source: str, modified: int, tool_signature) -> dict:
         shutter = details.get(33434)
         aperture = details.get(33437)
         focal = details.get(37386)
+        equivalent = details.get(41989) or focal
         result = {
             'Make': str(details.get(271, 'default')),
             'CameraModelName': str(details.get(272, '未记录相机')),
             'LensModel': str(details.get(42036, '未记录镜头')),
             'FNumber': f'{float(aperture):g}' if aperture else '-',
-            'FocalLengthIn35mmFormat': str(details.get(41989) or (f'{float(focal):g} mm' if focal else '-')),
+            'FocalLength': f'{float(focal):g} mm' if focal else '-',
+            'FocalLengthIn35mmFormat': f'{float(equivalent):g} mm' if equivalent else '-',
             'ShutterSpeed': (f'1/{round(1 / float(shutter))}' if float(shutter) < 1 else f'{float(shutter):g}') if shutter else '-',
             'ISO': str(details.get(34855, '-')),
             'DateTimeOriginal': str(details.get(36867) or details.get(306) or '未记录时间'),
