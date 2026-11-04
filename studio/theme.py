@@ -4,8 +4,8 @@ import os
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, Qt
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QPainter, QPalette
-from PySide6.QtWidgets import QApplication, QProxyStyle, QStyleFactory, QWidget
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QPalette
+from PySide6.QtWidgets import QApplication, QWidget
 
 
 STYLESHEET = """
@@ -80,35 +80,6 @@ QToolTip { background: #3F3F3F; color: #F0F0F0; border: 1px solid #707173; paddi
 """
 
 
-class NeutralIconStyle(QProxyStyle):
-    """保留系统图标形状并去除工具栏和目录图标的蓝色"""
-
-    def __init__(self):
-        super().__init__(QStyleFactory.create("Fusion"))
-        self._icons = {}
-
-    def standardIcon(self, icon, option=None, widget=None):
-        key = int(icon)
-        if key not in self._icons:
-            original = super().standardIcon(icon, option, widget)
-            neutral = QIcon()
-            for size in (16, 20, 24, 32):
-                for mode, color in ((QIcon.Mode.Normal, "#D1D2D4"),
-                                    (QIcon.Mode.Disabled, "#6B6C6E"),
-                                    (QIcon.Mode.Active, "#F0F1F3"),
-                                    (QIcon.Mode.Selected, "#F0F1F3")):
-                    pixmap = original.pixmap(size, size)
-                    if pixmap.isNull():
-                        continue
-                    painter = QPainter(pixmap)
-                    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-                    painter.fillRect(pixmap.rect(), QColor(color))
-                    painter.end()
-                    neutral.addPixmap(pixmap, mode)
-            self._icons[key] = neutral
-        return QIcon(self._icons[key])
-
-
 def apply_native_titlebar(widget: QWidget) -> bool:
     """只调整本应用的 Windows 标题栏，不改变系统外观设置"""
     app = QApplication.instance()
@@ -160,9 +131,8 @@ def apply_theme(app: QApplication) -> None:
                 QFontDatabase.addApplicationFont(str(fonts / name))
     if hasattr(app.styleHints(), "setColorScheme"):
         app.styleHints().setColorScheme(Qt.ColorScheme.Dark)
-    style = NeutralIconStyle()
-    app.setStyle(style)
-    app._neutral_icon_style = style
+    # 控件使用中性灰，功能图标保留系统原色和禁用状态
+    app.setStyle("Fusion")
     app.setFont(QFont("Microsoft YaHei UI", 9))
     palette = QPalette()
     colors = {"Window": "#1E1F21", "Base": "#1B1C1E", "AlternateBase": "#242527", "Text": "#DDDFE2",
