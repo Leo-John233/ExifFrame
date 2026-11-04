@@ -13,6 +13,7 @@ import numpy as np
 from PIL import ImageFont, Image, ImageDraw
 
 from core.configs import fonts_dir
+from core.font_fallback import render_with_fallback
 from processor.core import PipelineContext, ImageProcessor, Direction, _parse_color
 
 BASE_FONT_SIZE = 512
@@ -228,12 +229,14 @@ class RichTextGenerator(Generator):
         # 获取文本尺寸
         metrics = font.getmetrics()
         text = ' ' if not segment.text or segment.text == '' else segment.text
-        bbox = font.getbbox(text)
-        # 创建透明画布
-        image = Image.new('RGBA', (int(bbox[2] - bbox[0]), metrics[0] + abs(metrics[1])), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(image)
-        # 直接绘制文本
-        draw.text((0, 0), text, font=font, fill=_parse_color(segment.color))
+        color = _parse_color(segment.color)
+        image = render_with_fallback(text, font, load_font, color)
+        if image is None:
+            bbox = font.getbbox(text)
+            # 普通文字保留原有尺寸和绘制方式
+            image = Image.new('RGBA', (int(bbox[2] - bbox[0]), metrics[0] + abs(metrics[1])), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(image)
+            draw.text((0, 0), text, font=font, fill=color)
 
         # 使用 start_process 处理图片，解耦对 Filter 的直接依赖
         pipeline = [

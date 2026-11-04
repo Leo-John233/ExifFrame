@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QApplication, QWidget
 
 
 STYLESHEET = """
-QWidget { color: #DDDFE2; font-family: 'Microsoft YaHei UI', 'Segoe UI'; font-size: 12px; }
+QWidget { color: #DDDFE2; font-family: 'Microsoft YaHei UI', 'Segoe UI', 'Segoe UI Symbol', 'Cambria Math'; font-size: 12px; }
 QMainWindow, QDialog { background: #1E1F21; }
 QWidget#filesPanel, QWidget#inspectorPanel { background: #252629; }
 QWidget#previewPanel { background: #1B1C1E; }
@@ -126,14 +126,17 @@ def apply_theme(app: QApplication) -> None:
     """统一深色界面并补足无窗口测试环境的字体"""
     if os.name == "nt" and not QFontDatabase.families():
         fonts = Path(os.environ.get("SystemRoot", "C:/Windows")) / "Fonts"
-        for name in ("msyh.ttc", "msyhbd.ttc", "segoeui.ttf", "consola.ttf"):
+        for name in ("msyh.ttc", "msyhbd.ttc", "segoeui.ttf", "consola.ttf", "seguisym.ttf", "cambria.ttc"):
             if (fonts / name).is_file():
                 QFontDatabase.addApplicationFont(str(fonts / name))
     if hasattr(app.styleHints(), "setColorScheme"):
         app.styleHints().setColorScheme(Qt.ColorScheme.Dark)
     # 控件使用中性灰，功能图标保留系统原色和禁用状态
     app.setStyle("Fusion")
-    app.setFont(QFont("Microsoft YaHei UI", 9))
+    font = QFont("Microsoft YaHei UI", 9)
+    # 显式指定符号回退，中文标签旁的数学字母也能正常显示
+    font.setFamilies(["Microsoft YaHei UI", "Segoe UI", "Segoe UI Symbol", "Cambria Math"])
+    app.setFont(font)
     palette = QPalette()
     colors = {"Window": "#1E1F21", "Base": "#1B1C1E", "AlternateBase": "#242527", "Text": "#DDDFE2",
               "WindowText": "#DDDFE2", "Button": "#363739", "ButtonText": "#DDDFE2", "Highlight": "#48494B",
