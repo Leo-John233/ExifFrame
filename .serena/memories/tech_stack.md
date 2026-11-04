@@ -3,7 +3,8 @@
 - Two dependency routes coexist: project dependencies + `uv.lock` for uv; `requirements.txt` for pip and Windows CI. Do not assume lockfile edits affect the pip-based release workflow.
 - Backend: Flask/Jinja2; image work: Pillow, pillow-heif (registered on processor package import), NumPy; logging: Loguru; project TOML loading: tomli.
 - `pystray` is declared in project dependencies but absent from requirements.txt; assess which installation path a dependency change must support.
-- Frontend is one Jinja HTML template with Alpine.js, Tailwind CDN, Ace JSON editor and Toastify loaded from CDNs. No Node package manifest or frontend build pipeline; a fully offline backend does not imply offline UI asset availability.
-- EXIF metadata comes from the bundled external `./exiftool/exiftool.exe`, not a Python package. No system PATH lookup or executable fallback.
+- Legacy browser frontend is one Jinja HTML template with Alpine.js, Tailwind CDN, Ace JSON editor and Toastify loaded from CDNs. No Node package manifest or frontend build pipeline; a fully offline backend does not imply offline UI asset availability.
+- Bundled EXIF extraction uses ./exiftool/exiftool.exe with no PATH executable lookup. The native desktop service can fall back to Pillow EXIF when the executable is absent.
 - Config INI is read and written explicitly as UTF-8; retain this for Chinese template names under Windows' default GBK locale.
-- Windows CI installs requirements + PyInstaller, builds `build_win_pkg.spec`, then adds external config/project metadata and downloaded ExifTool. Spec bundles HTML templates.
+- Native UI uses PySide6, declared in requirements and pyproject, resolved in uv.lock. Windows CI builds main.py through build_win_pkg.spec, then adds config, static, pyproject.toml and downloaded ExifTool beside ExifFrame.exe. Assets remain external and replaceable.
+- PyInstaller child-process compatibility bootstrap is in build_support/sitecustomize.py; Conda Pillow decoding DLLs are collected explicitly. Native architecture details: `mem:studio/core`.

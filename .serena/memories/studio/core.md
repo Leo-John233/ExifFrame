@@ -1,0 +1,11 @@
+# Native photo workspace
+- `main.py` is the Windows desktop entrypoint; `studio/` owns Qt widgets, file browsing, workers and template editing. Keep the entrypoint and package names; do not reintroduce the previous desktop_ui/desktop.py names.
+- PySide6 UI runs offline. User prefers a compact professional dark photo workspace: native menus/toolbars, input/output file trees, central image canvas and parameter inspector, without decorative cards, slogans or step labels. Source browser UI remains under app.py/templates for existing users.
+- `core/desktop_service.py` adapts existing processor pipelines for previews/full-resolution exports, template CRUD and workspace settings. `WatermarkSettings` snapshots isolate background jobs from edits.
+- Default `use_template_styles=True` preserves template source behavior; quick style edits explicitly opt into overrides. `template_source` holds an unsaved preview draft and is never persisted in personal JSON.
+- Settings auto-save to ignored config/desktop.json; explicit workspace save also updates config/config.ini while preserving unrelated keys. Template source writes remain explicit.
+- Within input_dir, exports preserve relative directories and original stem (JPEG), skip existing output unless overwrite is enabled. Ad hoc photos outside the input root use *_watermarked names with unique numbering by default. Reject replacing source images or existing photos inside the input directory.
+- EXIF fallback uses Pillow when bundled ExifTool is unavailable; preview images and spatial parameters scale together. Never use screenshots as the source for exported images.
+- Qt object mutations stay on the GUI thread. Background image tasks signal detached QImage copies, stale preview generations are ignored, cancellation occurs between photos, closing waits for tasks to finish.
+- Conda can provide an incompatible icuuc.dll with versioned symbols. main.prepare_windows_runtime preloads Windows System32 ICU for the current process before importing Qt. build_support/sitecustomize.py applies the same fix to PyInstaller child processes; do not replace DLLs in the user environment.
+- For pipeline implementation invariants: `mem:processor/core`. For local run/build validation: `mem:suggested_commands` and `mem:task_completion`.

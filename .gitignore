@@ -11,5 +11,6 @@ logs
 tmp
 config/desktop.json
 config/desktop.json.tmp
+config/*.tmp
 /test/
 /tests/

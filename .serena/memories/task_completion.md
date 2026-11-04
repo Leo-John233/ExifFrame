@@ -1,8 +1,11 @@
 # Completion and validation
-- No automated test suite, pytest/unittest runner configuration, formatter, linter, or type-checker configuration was found in the supplied project. CI workflows package releases; they do not define a test gate. Do not report nonexistent checks as passed.
-- For Python changes, use the user-supplied local interpreter: `& 'D:/miniconda3/envs/Python3.13/python.exe' -m compileall -q app.py core processor`. Syntax checking does not validate runtime dependencies or image behavior. Environment selection and run commands: `mem:suggested_commands`.
-- For behavior/UI changes, run app.py from root using `mem:suggested_commands`; verify the relevant config/template/file operation and browser rendering.
-- For pipeline/template changes, process representative copies of photos with ExifTool available; inspect output dimensions, orientation, fonts, logo and image quality. Check progress completion/error/skip behavior for changes affecting batch orchestration; avoid overwriting originals.
-- For packaging changes, validate the appropriate release workflow and its resource/ExifTool layout in addition to local execution.
-- Report which checks actually ran and any unavailable prerequisite; the checked-out folder may not contain .git, so verify Git availability before relying on diff/status.
-- For memory-only updates, verify every referenced memory exists. From project root, `serena memories check` can audit memory references when the Serena CLI is available.
+- Use the existing user environment D:/miniconda3/envs/Python3.13; never rely on WindowsApps python. Run commands from project root unless main.py handles the directory itself.
+- Native startup/clean shutdown: `& 'D:/miniconda3/envs/Python3.13/python.exe' main.py --smoke-test`. This runs Qt offscreen, opens/closes the window and must exit 0.
+- Syntax: `& 'D:/miniconda3/envs/Python3.13/python.exe' -m compileall -q main.py core studio build_support`.
+- test/ and tests/ are intentionally ignored by user request. Local tests, when present: `& 'D:/miniconda3/envs/Python3.13/python.exe' -m unittest discover -s tests -v`. Do not add them back to Git or imply they are distributed with the repository.
+- For UI work, verify actual directory scans, checked photo scope, template CRUD/source edits, raw-template mode, output preview, skip/overwrite counters, cancellation and close during work. Capture screenshots and inspect them. Qt workers returning signals must not mutate widgets directly.
+- For pipeline/template work, verify real image outputs, source preservation, orientation, Unicode/quotes, preview/export proportions, filename collisions and fallback metadata. Missing ExifTool must not prevent desktop previews.
+- For packaging changes, `& 'D:/miniconda3/envs/Python3.13/python.exe' -m PyInstaller build_win_pkg.spec`; assemble config/static/pyproject.toml beside ExifFrame.exe, exclude personal config/desktop.json, then invoke the executable with --smoke-test using a process wait and inspect its exit code.
+- Requirements and pyproject changes must keep uv.lock current. No configured formatter/linter/type-checker gate exists.
+- Complete and verify each module, then commit it locally as requested. Do not push without a request. Keep test directories and personal settings untracked.
+- Check memory references for existence; Serena CLI `serena memories check` can audit them. Runtime/architecture invariants are in `mem:studio/core` and `mem:processor/core`.

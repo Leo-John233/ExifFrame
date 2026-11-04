@@ -1,4 +1,6 @@
 # Source and template conventions
+- New code uses concise Chinese comments/docstrings without terminal full stops, per user preference.
+- Complete and verify each module before making its own local Git commit. Keep test/ and tests/ local and ignored, including previously tracked tests.
 - Python uses four-space indentation, snake_case functions/variables, PascalCase classes, uppercase constants. Existing code mixes built-in and typing collection annotations and quote styles; follow nearby code rather than imposing repository-wide formatting.
 - Comments and docstrings are predominantly Chinese; nontrivial public functions commonly document Args/Returns. UI and shipped template names are Chinese. Preserve UTF-8 and existing asset names.
 - Prefer `core.logger.logger` (Loguru) over new print-based logging.

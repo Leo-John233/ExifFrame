@@ -10,6 +10,44 @@
 
 当前仅支持 Windows，运行源码需 Python 3.13 或更高版本。照片元数据读取使用项目内的 `exiftool/exiftool.exe`。
 
+## 桌面窗口
+
+ExifFrame 提供独立桌面操作窗口，无需启动浏览器，也不依赖在线界面资源。
+
+1. 设置输入、输出目录，在文件树中浏览并勾选照片，也可以添加或拖入照片
+2. 选择模板，按需新建、另存副本或编辑 JSON/Jinja 源码
+3. 预览水印并切换原图对照，选择按模板原样处理或使用快捷样式参数
+4. 设置质量和覆盖选项，批量导出后在输出文件树中查看结果
+
+输入目录内的照片按相对目录结构导出为 JPEG，同名输出默认跳过，启用覆盖后仅替换独立输出目录中的文件。单独添加的照片使用 `_watermarked` 后缀，默认自动编号。程序始终保护原照片。预览使用缩小图，导出保留原始分辨率。没有 ExifTool 时会读取照片自带的 EXIF 信息。
+
+在项目目录安装依赖后启动：
+
+```powershell
+python -m pip install -r requirements.txt
+python main.py
+```
+
+使用本机已配置的 Conda 环境：
+
+```powershell
+& 'D:\miniconda3\envs\Python3.13\python.exe' -m pip install -r requirements.txt
+& 'D:\miniconda3\envs\Python3.13\python.exe' main.py
+```
+
+本机水印参数保存在 `config/desktop.json`，显式保存配置时会同步原项目的 `config/config.ini`。原有浏览器入口仍可通过 `python app.py` 使用。
+
+### 验证与打包
+
+```powershell
+python main.py --smoke-test
+python -m PyInstaller build_win_pkg.spec
+```
+
+桌面发布目录应包含 `ExifFrame.exe`、`config`、`static`、`pyproject.toml`，完整 EXIF 支持还需 `exiftool` 目录。GitHub Windows 发布流程会组装这些资源。
+
+`test/` 和 `tests/` 作为本地验证目录忽略，不随仓库提交。保留本地测试文件时可运行 `python -m unittest discover -s tests -v`。
+
 如果您觉得程序对您有所帮助的话，可以点击 [Sponsor](https:/su/cdn.lsvm.xyz/wechat.jpg) 按钮请作者喝杯咖啡，谢谢！
 
 
