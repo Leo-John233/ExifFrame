@@ -3,7 +3,7 @@
 import configparser
 import json
 import re
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, fields, field
 from functools import lru_cache
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -15,6 +15,8 @@ from core.configs import logos_dir, templates_dir
 from core import CONFIG_PATH
 from core.jinja2renders import auto_logo, vh, vw
 from core.util import find_exiftool, get_exif
+from core.metadata import merge_overrides, metadata_key
+from core.template_render import compiled_template
 from processor.core import start_process
 
 SUPPORTED_SUFFIXES = {'.jpg', '.jpeg', '.png', '.heic', '.heif'}
@@ -54,6 +56,7 @@ class WatermarkSettings:
     use_template_styles: bool = True
     template_source: str = ''
     input_files: tuple[str, ...] = ()
+    metadata_overrides: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
 _PRESET_INFO = {
@@ -128,7 +131,7 @@ def load_settings() -> WatermarkSettings:
         data = json.loads(SETTINGS_PATH.read_text(encoding='utf-8'))
         valid = {field.name for field in fields(WatermarkSettings)}
         values = asdict(defaults)
-        values.update({key: value for key, value in data.items() if key in valid and key not in {'template_source', 'input_files'}})
+        values.update({key: value for key, value in data.items() if key in valid and key not in {'template_source', 'input_files', 'metadata_overrides'}})
         # 共用字段始终以原项目配置为准，旧桌面缓存不再覆盖模板和导出参数
         if WORKSPACE_CONFIG_PATH.is_file():
             for key in ('template_name', 'input_dir', 'output_dir', 'quality', 'subsampling', 'overwrite_existing'):
@@ -153,6 +156,7 @@ def save_settings(settings: WatermarkSettings) -> None:
     # 未保存的模板草稿不写入个人配置
     values.pop('template_source', None)
     values.pop('input_files', None)
+    values.pop('metadata_overrides', None)
     temporary.write_text(json.dumps(values, ensure_ascii=False, indent=2), encoding='utf-8')
     temporary.replace(SETTINGS_PATH)
 
@@ -268,11 +272,6 @@ def _cached_metadata(source: str, modified: int, tool_signature) -> dict:
     return result
 
 
-def _json_fragment(value) -> str:
-    """转义模板变量中的引号和换行，保证渲染结果仍是合法 JSON"""
-    return json.dumps(str(value) if value is not None else '', ensure_ascii=False)[1:-1]
-
-
 @pass_context
 def _desktop_logo(context, brand=None):
     """没有相机品牌时使用项目自带标识"""
@@ -377,10 +376,11 @@ def _scale_nodes(value, scale):
 
 
 @lru_cache(maxsize=2)
-def _original_preview(source, modified, template_name, template_source, files, tool_signature):
+def _original_preview(source, modified, template_name, template_source, files, tool_signature, overrides):
     """原样预览从完整结果缩略，避免默认像素参数改变版式"""
     settings = WatermarkSettings(template_name=template_name, template_source=template_source,
-                                 input_files=files, use_template_styles=True)
+                                 input_files=files, use_template_styles=True,
+                                 metadata_overrides={metadata_key(Path(source)): dict(overrides)} if overrides else {})
     result = render_photo(Path(source), settings, preview=False).convert('RGB')
     result.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
     return result
@@ -397,7 +397,8 @@ def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True) 
         signature = (str(tool), tool.stat().st_mtime_ns, tool.stat().st_size) if tool else None
         return _original_preview(str(source), source.stat().st_mtime_ns, settings.template_name,
                                  settings.template_source or read_template(settings.template_name),
-                                 tuple(settings.input_files), signature).copy()
+                                 tuple(settings.input_files), signature,
+                                 tuple(sorted(settings.metadata_overrides.get(metadata_key(source), {}).items()))).copy()
     with Image.open(source) as opened:
         encoded_size = opened.size
         image = ImageOps.exif_transpose(opened).copy()
@@ -406,6 +407,9 @@ def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True) 
     if preview:
         image.thumbnail((1400, 1400), Image.Resampling.LANCZOS)
     metadata = dict(_metadata(str(source), source.stat().st_mtime_ns))
+    changes = settings.metadata_overrides.get(metadata_key(source), {})
+    if changes:
+        metadata = merge_overrides(metadata, changes)
     if settings.use_template_styles:
         # 原模板按编码尺寸计算 vh/vw，不使用方向修正后的宽高覆盖已有标签
         metadata.setdefault('ImageWidth', str(encoded_size[0]))
@@ -416,9 +420,8 @@ def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True) 
         metadata['CameraModelName'] = settings.title
     if settings.subtitle and not settings.use_template_styles:
         metadata['LensModel'] = settings.subtitle
-    environment = Environment(finalize=None if settings.use_template_styles else _json_fragment, autoescape=False)
-    environment.globals.update(vh=vh, vw=vw, auto_logo=auto_logo if settings.use_template_styles else _desktop_logo)
-    template = environment.from_string(settings.template_source or read_template(settings.template_name))
+    template = compiled_template(settings.template_source or read_template(settings.template_name),
+                                 auto_logo if settings.use_template_styles else _desktop_logo)
     rendered = template.render(exif=metadata, filename=source.stem,
                                file_dir=source.parent.as_posix(), file_path=source.as_posix(),
                                files=list(settings.input_files) or [str(source)])

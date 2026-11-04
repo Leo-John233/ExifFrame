@@ -14,6 +14,7 @@ from jinja2 import Template
 from core.configs import templates_dir
 from core.jinja2renders import vh, vw, auto_logo
 from core.logger import logger
+from core.template_render import compiled_template
 
 RESOURCE_ROOT = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parents[1]
 EXIFTOOL_PATH = RESOURCE_ROOT / 'exiftool/exiftool.exe'
@@ -175,11 +176,7 @@ def get_template(template_name: str) -> Template:
     template_path = get_template_path(template_name)
     with open(template_path, encoding='utf-8') as f:
         template_str = f.read()
-    template = Template(template_str)
-    template.globals['vh'] = vh
-    template.globals['vw'] = vw
-    template.globals['auto_logo'] = auto_logo
-    return template
+    return compiled_template(template_str)
 
 
 def get_template_content(template_name: str) -> str:
