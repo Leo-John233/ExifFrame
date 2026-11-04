@@ -1,0 +1,9 @@
+# EXIF editing integration
+- core/metadata.py defines 27 standard fields across creator/copyright, camera/lens, exposure, time/GPS. MetadataError carries stable code/field/detail for UI localization.
+- User preference: edits default to watermark-only session overrides, never modify original photographs. WatermarkSettings.metadata_overrides maps metadata_key(path) to canonical changes; deep-copy each worker snapshot and exclude overrides from personal/shared settings files.
+- merge_overrides updates template aliases (Model -> CameraModelName; ExposureTime -> ShutterSpeed; FNumber -> aperture aliases), so raw-template and shortcut previews both reflect edits. Raw-preview cache keys include the per-photo override tuple.
+- save_metadata_copy copies the target into a controlled temporary directory, writes via ExifTool JSON import (safe for Unicode/newlines), then exclusively creates a new destination. Refuse original/existing paths and remove partial output on copy failure. Never recompress image pixels.
+- Reference migration uses tagsFromFile/All:All, optionally excludes source MakerNotes, and preserves target orientation. Normalize numeric units/fractional exposure, valid timestamps/timezones, GPS magnitude+hemisphere; negative altitude uses GPSAltitudeRef, WhiteBalance presets coordinate LightSource.
+- studio/metadata_editor.py reads/writes asynchronously, applies only explicitly selected nonempty fields, supports checked-photo batches, reference loading, saving/transfer copies, restore overrides and safe close while a job runs.
+- Functional reference was E:/GitHub/ExifEditor-GUI; README claims MIT while LICENSE is GPLv3. Current integration is an independent Qt/ExifTool implementation, not an embedded copy of its Tkinter source.
+- Render/UI lifecycle and localization conventions: `mem:studio/core`. Validation and build commands: `mem:task_completion`.

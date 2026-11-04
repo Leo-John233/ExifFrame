@@ -19,7 +19,8 @@ Run in project root.
 
 ## Windows packaging
 - `& 'D:/miniconda3/envs/Python3.13/python.exe' -m pip install pyinstaller`
-- `& 'D:/miniconda3/envs/Python3.13/python.exe' -m PyInstaller ./build_win_pkg.spec`
+- `& 'D:/miniconda3/envs/Python3.13/python.exe' scripts/build_windows.py`
+- Built entry: dist/ExifFrame/ExifFrame.exe; retain its entire directory including _internal. Do not reuse the old dist/ExifFrame.exe single-file build.
 - Executable generation alone is not the full package: follow `.github/workflows/build_win_pkg.yml` for external config/metadata/resources and ExifTool.
 
 ## Windows file inspection

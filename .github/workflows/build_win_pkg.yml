@@ -32,7 +32,7 @@ jobs:
 
     - name: Build Executable
       run: |
-        pyinstaller ./build_win_pkg.spec
+        python ./scripts/build_windows.py --no-resources
 
     - name: Prepare Package and Unpack ExifTool
       shell: pwsh
@@ -41,7 +41,7 @@ jobs:
         $ErrorActionPreference = "Stop"
 
         # 2. 定义目标目录变量，便于维护
-        $distPath = "./dist"
+        $distPath = "./dist/ExifFrame"
 
         # 3. 批量移动文件和文件夹，代码更简洁
         Write-Host "Moving resources to $distPath"
@@ -106,4 +106,4 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: ${{ steps.artifact_name.outputs.artifact_name }}
-        path: dist
+        path: dist/ExifFrame

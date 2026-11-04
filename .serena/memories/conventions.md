@@ -1,4 +1,5 @@
 # Source and template conventions
+- Desktop UI text goes through studio.i18n with Chinese+English registration, including dynamic progress/errors and dialogs. User text, file names and brands retain their original values. Color buttons remain compact side-by-side with inset swatches, per user correction.
 - New code uses concise Chinese comments/docstrings without terminal full stops, per user preference.
 - Complete and verify each module before making its own local Git commit. Keep test/ and tests/ local and ignored, including previously tracked tests.
 - Python uses four-space indentation, snake_case functions/variables, PascalCase classes, uppercase constants. Existing code mixes built-in and typing collection annotations and quote styles; follow nearby code rather than imposing repository-wide formatting.

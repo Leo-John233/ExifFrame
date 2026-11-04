@@ -19,6 +19,14 @@ ExifFrame 提供独立桌面操作窗口，无需启动浏览器，也不依赖�
 3. 预览水印并切换原图对照，选择按模板原样处理或使用快捷样式参数
 4. 设置质量和覆盖选项，批量导出后在输出文件树中查看结果
 
+### 照片信息与语言
+
+在“照片信息”菜单或使用 `Ctrl+I` 打开编辑器，可编辑相机、镜头、曝光、拍摄时间、版权及 GPS 等 27 项信息。修改默认只用于当前会话的水印预览和导出，保留原照片。需要把信息写入文件时，可保存修改副本，或从 RAW/JPG 参考照片迁移信息到目标照片副本。
+
+通过“语言”菜单可即时切换简体中文与英文，照片队列、勾选范围和未保存内容会保留，语言偏好保存在本机的 `config/ui.json`。
+
+新建模板可从内置样式、当前模板或空白边框开始，通过勾选相机、镜头、曝光、日期、版权与摄影师字段生成，再按需打开高级源码编辑。
+
 输入目录内的照片按相对目录结构导出，PNG 保留为 PNG，其他支持格式导出为 JPEG。同名输出默认跳过，启用覆盖后仅替换独立输出目录中的文件。单独添加的照片使用 `_watermarked` 后缀，默认自动编号。程序始终保护原照片。“按模板原样处理”的预览从完整渲染结果缩略，快捷调整模式使用快速预览。没有 ExifTool 时会读取照片自带的 EXIF 信息。
 
 在项目目录安装依赖后启动：
@@ -43,10 +51,16 @@ python main.py
 
 ```powershell
 python main.py --smoke-test
-python -m PyInstaller build_win_pkg.spec
+python scripts/build_windows.py
 ```
 
-桌面发布目录应包含 `ExifFrame.exe`、`config`、`static`、`pyproject.toml`，完整 EXIF 支持还需 `exiftool` 目录。GitHub Windows 发布流程会组装这些资源。
+构建结果位于 `dist/ExifFrame/ExifFrame.exe`。发布时保留整个 `dist/ExifFrame` 文件夹，包括 `_internal`、`config`、`static`、`pyproject.toml` 和 `exiftool`。分目录发布避免每次启动解压依赖，GitHub Windows 发布流程会组装这些资源。
+
+构建脚本使用独立暂存目录，重复构建不会清空发布目录中的已有配置与照片。已有资源保留；需要更新自定义模板时，请通过应用内模板编辑器操作。
+
+更新发布目录内的模板可运行 `python scripts/build_windows.py --refresh-templates`，旧版本会先备份至 `config/template-backups`。“品牌标识居中”显示居中标识及两侧完整 EXIF，“仅标识居中”保留简洁的单标识版式。
+
+模板样图采用缩放解码，照片缩略图、标识、编译模板与字体均有有界缓存；文件修改后自动更新，不使用旧缓存替代新的照片内容。
 
 `test/` 和 `tests/` 作为本地验证目录忽略，不随仓库提交。保留本地测试文件时可运行 `python -m unittest discover -s tests -v`。
 
