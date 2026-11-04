@@ -24,7 +24,7 @@
     },
     "right_bottom": {
       "processor_name": "rich_text",
-      "text": "{{(exif.DateTimeOriginal or exif.CreateDate or exif.DigitalCreationDate or exif.DateCreated or exif.DateTimeCreated or exif.DigitalCreationDateTime|default('0'))[:16]}}",
+      "text": "{{ watermark_date((exif.DateTimeOriginal or exif.CreateDate or exif.DigitalCreationDate or exif.DateCreated or exif.DateTimeCreated or exif.DigitalCreationDateTime|default('0'))) }}",
       "color": "#242424"
     },
     "right_logo": "{{auto_logo()|replace('\\', '/')}}",

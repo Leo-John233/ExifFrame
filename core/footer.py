@@ -8,6 +8,7 @@ from functools import lru_cache
 
 from jinja2 import Environment, nodes, pass_context
 from core.geography import format_location
+from core.dates import watermark_date
 
 
 @dataclass(frozen=True)
@@ -37,9 +38,9 @@ FIELD_CATALOG = (
     FooterField('exposure_bias', '曝光补偿', '拍摄参数', '+0.3', "exif.ExposureCompensation|default('')", '', ' EV'),
     FooterField('flash', '闪光灯', '拍摄参数', 'Off', "exif.Flash|default('')"),
     FooterField('white_balance', '白平衡', '拍摄参数', 'Auto', "exif.WhiteBalance|default('')"),
-    FooterField('date', '拍摄日期', '时间与位置', '2026-10-05', _DATE + '[:10]'),
+    FooterField('date', '拍摄日期', '时间与位置', '2026.10.05', 'watermark_date(' + _DATE + ')'),
     FooterField('time', '拍摄时间', '时间与位置', '11:11:39', _DATE + '[11:19]'),
-    FooterField('datetime', '日期与时间', '时间与位置', '2026-10-05 11:11', _DATE + '[:16]'),
+    FooterField('datetime', '日期与时间', '时间与位置', '2026.10.05 11:11', 'watermark_date(' + _DATE + ', true)'),
     FooterField('timezone', '时区偏移', '时间与位置', '+08:00', "exif.OffsetTimeOriginal|default('')"),
     FooterField('location', '地理位置', '时间与位置', '26°9\'12"N 119°17\'8"E', 'geo_location(exif)'),
     FooterField('gps_altitude', '海拔', '时间与位置', '100', "exif.GPSAltitude|default('')", '', ' m'),
@@ -127,6 +128,10 @@ def _generated_row(text):
 
 
 def _field_key(expression):
+    if 'watermark_date(' in expression:
+        if '~' in expression:
+            return None
+        return 'datetime' if re.search(r',\s*(?:true|True)\s*\)', expression) else 'date'
     if 'geo_location(exif)' in expression and not re.search(r'exif\.', expression):
         return 'location'
     if 'footer_row' in expression or 'footer_segments' in expression:
@@ -364,6 +369,8 @@ def _item_parts(context, metadata, item, missing, base_style):
         field = _FIELDS[item['field']]
         value = _expression(context.environment, item.get('expression') or field.expression)(**values)
         value = str(value).strip() if value is not None else ''
+        if item['field'] in {'date', 'datetime'} and re.fullmatch(r'\d{4}[-:./]\d{1,2}[-:./]\d{1,2}(?:[T ]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?', value):
+            value = watermark_date(value, include_time=item['field'] == 'datetime')
         if value in _EMPTY:
             return [{**style, 'text': '—'}] if missing == 'dash' else []
         return [{**style, 'text': item.get('prefix', field.prefix) + value + item.get('suffix', field.suffix)}]
@@ -410,7 +417,8 @@ def preview_rows(layout: dict, metadata=None, filename='', file_dir='') -> dict[
             if match:
                 metadata.setdefault(match.group(1), field.example)
     environment = Environment(autoescape=False)
-    environment.globals.update(footer_row=footer_row, footer_segments=footer_segments, geo_location=format_location)
+    environment.globals.update(footer_row=footer_row, footer_segments=footer_segments,
+                               geo_location=format_location, watermark_date=watermark_date)
     output = {}
     for region, row in layout['rows'].items():
         try:
