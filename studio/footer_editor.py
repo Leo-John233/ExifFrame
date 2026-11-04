@@ -4,16 +4,17 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtCore import QPoint, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QImage, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
-    QAbstractItemView, QButtonGroup, QComboBox, QDialog,
+    QApplication, QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDialog, QFrame,
+    QGraphicsPixmapItem, QGraphicsScene, QGraphicsView, QScrollArea,
     QGridLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMessageBox, QPushButton, QSizePolicy,
     QSplitter, QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from core.desktop_service import write_template
+from core.desktop_service import validate_template, write_template
 from core.footer import FIELD_CATALOG, REGION_LABELS, FooterError, get_footer_field, normalize_layout, preview_rows, read_layout, write_layout
 from studio.i18n import bind, localize_error, register_translations, tr, translator
 
@@ -89,6 +90,16 @@ register_translations({
     '合并本区域的经纬度，使用首个坐标项的文字样式': 'Combine coordinates in this region using the first coordinate’s text style',
     '{region}的内容': '{region} content',
     '纬度（旧字段）': 'Latitude (legacy)', '经度（旧字段）': 'Longitude (legacy)',
+    '添加字段…': 'Add field…', '文字…': 'Text…', '格式与布局': 'Format and layout',
+    '文字示例': 'Text example', '点击“添加字段”或“文字”开始组合': 'Use Add field or Text to begin',
+    '前面': 'Before', '后面': 'After', '适应': 'Fit', '水印细节': 'Watermark detail',
+    '滚轮缩放，拖动查看；双击适应窗口': 'Scroll to zoom, drag to pan; double-click to fit',
+    '选择照片后显示水印预览': 'Select a photo to see the watermark preview',
+    '等待照片预览': 'Waiting for photo preview', '正在更新预览…': 'Updating preview…',
+    '预览已更新': 'Preview updated', '实时预览': 'Live preview', '更新预览': 'Update preview',
+    '收起编辑': 'View main window', '保留草稿并查看主窗口': 'Keep the draft and return to the main window',
+    '预览失败，保留上次结果：{error}': 'Preview failed; previous result kept: {error}',
+    '修改会自动更新左侧预览，保存后写入模板': 'Changes update the preview; Save template writes them to the template file',
 })
 
 
@@ -107,6 +118,84 @@ class _ItemsList(QListWidget):
             self.reordered.emit()
 
 
+class _ImageView(QGraphicsView):
+    """保留缩放状态的照片预览与底部细节导航"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setScene(QGraphicsScene(self))
+        self.photo = QGraphicsPixmapItem()
+        self.photo.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
+        self.scene().addItem(self.photo)
+        self._mode = 'fit'
+        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setMinimumSize(220, 160)
+        bind(self, '滚轮缩放，拖动查看；双击适应窗口', 'setToolTip')
+
+    def set_image(self, image):
+        pixmap = QPixmap.fromImage(image) if isinstance(image, QImage) else QPixmap(image) if isinstance(image, QPixmap) else QPixmap()
+        old_size = self.photo.pixmap().size()
+        self.photo.setPixmap(pixmap)
+        self.setSceneRect(QRectF(pixmap.rect()))
+        if old_size != pixmap.size() and self._mode is None:
+            self._mode = 'fit'
+        self._apply_mode()
+
+    def _apply_mode(self):
+        if self.photo.pixmap().isNull():
+            return
+        if self._mode == 'fit':
+            self.fitInView(self.photo, Qt.AspectRatioMode.KeepAspectRatio)
+        elif self._mode == 'detail':
+            self.resetTransform()
+            self.centerOn(self.sceneRect().center().x(), self.sceneRect().bottom() - self.viewport().height() / 2)
+
+    def fit_photo(self):
+        self._mode = 'fit'
+        self._apply_mode()
+
+    def actual_size(self):
+        self._mode = None
+        self.resetTransform()
+
+    def footer_detail(self):
+        self._mode = 'detail'
+        self._apply_mode()
+
+    def wheelEvent(self, event):
+        if self.photo.pixmap().isNull():
+            event.ignore()
+            return
+        factor = 1.0015 ** event.angleDelta().y()
+        current = self.transform().m11()
+        target = max(0.05, min(20, current * factor))
+        self._mode = None
+        self.scale(target / current, target / current)
+        event.accept()
+
+    def mouseDoubleClickEvent(self, event):
+        self.fit_photo()
+        event.accept()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_mode()
+
+
+def _fit_editor_window(window, width, height):
+    """按当前屏幕可用区域设置初始窗口尺寸"""
+    screen = window.screen() or QApplication.primaryScreen()
+    if screen:
+        available = screen.availableGeometry()
+        window.resize(min(width, max(640, available.width() - 64)),
+                      min(height, max(440, available.height() - 72)))
+    else:
+        window.resize(width, height)
+
+
 class FooterPanel(QWidget):
     """可嵌入新建流程的可视化底部编辑面板"""
 
@@ -117,8 +206,9 @@ class FooterPanel(QWidget):
     LOGOS = (('沿用模板', 'keep'), ('隐藏', 'none'), ('左侧', 'left'), ('居中', 'center'), ('右侧', 'right'))
     MISSING = (('隐藏该字段', 'hide'), ('显示破折号', 'dash'))
 
-    def __init__(self, source: str, parent=None, metadata=None, filename='', file_dir=''):
+    def __init__(self, source: str, parent=None, metadata=None, filename='', file_dir='', compact=True):
         super().__init__(parent)
+        self.compact = bool(compact)
         self._source = source
         self._layout = {}
         self._region = ''
@@ -148,81 +238,49 @@ class FooterPanel(QWidget):
     def _build_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-        splitter = QSplitter()
-        library = QWidget()
-        library_layout = QVBoxLayout(library)
-        library_layout.setContentsMargins(0, 0, 6, 0)
-        heading = QLabel()
-        bind(heading, '可添加字段')
-        library_layout.addWidget(heading)
-        self.search = QLineEdit()
-        bind(self.search, '搜索字段', 'setPlaceholderText')
-        self.search.textChanged.connect(self._filter_fields)
-        library_layout.addWidget(self.search)
-        self.catalog = QTreeWidget()
-        self.catalog.setObjectName('footerFieldCatalog')
-        self.catalog.setHeaderHidden(True)
-        self.catalog.setIndentation(14)
-        self.catalog.setMinimumWidth(170)
-        bind(self.catalog, '双击字段添加到当前区域', 'setToolTip')
-        self.catalog.itemDoubleClicked.connect(lambda item, column: self.add_field(item.data(0, Qt.ItemDataRole.UserRole)))
-        self.catalog.currentItemChanged.connect(self._update_add_button)
-        self._catalog_groups = {}
-        self._catalog_items = {}
-        for field in FIELD_CATALOG:
-            if field.group not in self._catalog_groups:
-                group = QTreeWidgetItem(self.catalog)
-                group.setFlags(group.flags() & ~Qt.ItemFlag.ItemIsSelectable)
-                group.setExpanded(True)
-                self._catalog_groups[field.group] = group
-            item = QTreeWidgetItem(self._catalog_groups[field.group])
-            item.setData(0, Qt.ItemDataRole.UserRole, field.key)
-            self._catalog_items[field.key] = item
-        library_layout.addWidget(self.catalog, 1)
-        self.add_button = self._button('添加所选字段', self._add_selected)
-        self.add_button.setObjectName('primaryButton')
-        library_layout.addWidget(self.add_button)
-        self.custom_button = self._button('添加自定义文字', self.add_text)
-        library_layout.addWidget(self.custom_button)
-        splitter.addWidget(library)
-
-        editing = QWidget()
-        edit_layout = QVBoxLayout(editing)
-        edit_layout.setContentsMargins(6, 0, 0, 0)
-        self.region_group = QGroupBox()
-        bind(self.region_group, '水印区域', 'setTitle')
+        layout.setSpacing(7 if self.compact else 10)
+        layout.addWidget(bind(QLabel(), '水印区域'))
+        self.region_group = QWidget()
         self.region_grid = QGridLayout(self.region_group)
+        self.region_grid.setContentsMargins(0, 0, 0, 0)
+        self.region_grid.setSpacing(3)
         self.button_group = QButtonGroup(self)
         self.button_group.setExclusive(True)
-        edit_layout.addWidget(self.region_group)
+        layout.addWidget(self.region_group)
+
+        row = QHBoxLayout()
         self.row_heading = QLabel()
-        edit_layout.addWidget(self.row_heading)
+        row.addWidget(self.row_heading, 1)
+        self.open_catalog_button = self._button('添加字段…', self._open_catalog)
+        self.open_catalog_button.setObjectName('primaryButton')
+        row.addWidget(self.open_catalog_button)
+        self.custom_button = self._button('文字…', self.add_text)
+        row.addWidget(self.custom_button)
+        layout.addLayout(row)
         self.items = _ItemsList()
         self.items.setObjectName('footerRegionItems')
         self.items.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.items.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.items.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.items.setMinimumHeight(110)
+        self.items.setMinimumHeight(158)
+        self.items.setMaximumHeight(240 if self.compact else 320)
         self.items.setSpacing(1)
         bind(self.items, '拖动字段调整顺序，也可使用上移和下移按钮', 'setToolTip')
         self.items.currentRowChanged.connect(self._select_item)
         self.items.reordered.connect(self._reordered)
-        edit_layout.addWidget(self.items, 1)
+        layout.addWidget(self.items)
         self.empty_label = QLabel()
-        bind(self.empty_label, '双击左侧字段，或添加自定义文字')
+        bind(self.empty_label, '点击“添加字段”或“文字”开始组合')
+        self.empty_label.setWordWrap(True)
         self.empty_label.setObjectName('secondaryText')
-        edit_layout.addWidget(self.empty_label)
+        layout.addWidget(self.empty_label)
         move_row = QHBoxLayout()
-        reorder_hint = QLabel()
-        bind(reorder_hint, '拖动排序')
-        reorder_hint.setObjectName('secondaryText')
-        move_row.addWidget(reorder_hint)
+        move_row.addWidget(bind(QLabel(), '拖动排序'))
         move_row.addStretch()
         self.up_button = QPushButton('↑')
         self.down_button = QPushButton('↓')
         for button, label, direction in ((self.up_button, '上移', -1), (self.down_button, '下移', 1)):
-            button.setFixedWidth(34)
+            button.setFixedWidth(32)
             button.setAutoDefault(False)
             bind(button, label, 'setToolTip')
             bind(button, label, 'setAccessibleName')
@@ -230,31 +288,29 @@ class FooterPanel(QWidget):
         self.remove_button = self._button('删除', self.remove_item)
         for button in (self.up_button, self.down_button, self.remove_button):
             move_row.addWidget(button)
-        edit_layout.addLayout(move_row)
+        layout.addLayout(move_row)
         self.merge_location_button = self._button('合并已有经纬度', self.merge_location)
         bind(self.merge_location_button, '合并本区域的经纬度，使用首个坐标项的文字样式', 'setToolTip')
         self.merge_location_button.hide()
-        edit_layout.addWidget(self.merge_location_button)
+        layout.addWidget(self.merge_location_button)
         delete_action = QAction(self.items)
         delete_action.setShortcut(QKeySequence.StandardKey.Delete)
         delete_action.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
         delete_action.triggered.connect(self.remove_item)
         self.items.addAction(delete_action)
 
-        self.details = QGroupBox()
-        bind(self.details, '选中内容', 'setTitle')
+        self.details = QWidget()
         form = QGridLayout(self.details)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setSpacing(5)
         self.item_hint = QLabel()
         self.item_hint.setWordWrap(True)
+        self.item_hint.setObjectName('secondaryText')
         form.addWidget(self.item_hint, 0, 0, 1, 4)
-        self.prefix_input = QLineEdit()
-        self.suffix_input = QLineEdit()
-        self.text_input = QLineEdit()
-        self.prefix_label = QLabel()
-        self.suffix_label = QLabel()
-        self.text_label = QLabel()
-        bind(self.prefix_label, '前面文字')
-        bind(self.suffix_label, '后面文字')
+        self.prefix_input, self.suffix_input, self.text_input = QLineEdit(), QLineEdit(), QLineEdit()
+        self.prefix_label, self.suffix_label, self.text_label = QLabel(), QLabel(), QLabel()
+        bind(self.prefix_label, '前面')
+        bind(self.suffix_label, '后面')
         bind(self.text_label, '文字内容')
         form.addWidget(self.prefix_label, 1, 0)
         form.addWidget(self.prefix_input, 1, 1)
@@ -267,11 +323,17 @@ class FooterPanel(QWidget):
         self.prefix_input.textEdited.connect(lambda value: self._edit_item('prefix', value))
         self.suffix_input.textEdited.connect(lambda value: self._edit_item('suffix', value))
         self.text_input.textEdited.connect(lambda value: self._edit_item('text', value))
-        edit_layout.addWidget(self.details)
+        layout.addWidget(self.details)
 
-        options = QGridLayout()
-        separator_label = QLabel()
-        bind(separator_label, '区域内分隔符')
+        self.format_toggle = QToolButton()
+        bind(self.format_toggle, '格式与布局')
+        self.format_toggle.setCheckable(True)
+        self.format_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.format_toggle.setArrowType(Qt.ArrowType.RightArrow)
+        layout.addWidget(self.format_toggle)
+        self.format_body = QWidget()
+        options = QGridLayout(self.format_body)
+        options.setContentsMargins(0, 0, 0, 0)
         self.separator = QComboBox()
         for label, value in self.SEPARATORS:
             self.separator.addItem(tr(label), value)
@@ -279,42 +341,96 @@ class FooterPanel(QWidget):
         self.custom_separator = QLineEdit()
         bind(self.custom_separator, '输入分隔符', 'setPlaceholderText')
         self.custom_separator.textEdited.connect(self._custom_separator_changed)
-        options.addWidget(separator_label, 0, 0)
+        options.addWidget(bind(QLabel(), '区域内分隔符'), 0, 0)
         options.addWidget(self.separator, 0, 1)
-        options.addWidget(self.custom_separator, 0, 2)
-        missing_label = QLabel()
-        bind(missing_label, '信息缺失时')
+        options.addWidget(self.custom_separator, 1, 1)
         self.missing = QComboBox()
         for label, value in self.MISSING:
             self.missing.addItem(tr(label), value)
         self.missing.currentIndexChanged.connect(lambda: self._global_option('missing', self.missing.currentData()))
-        options.addWidget(missing_label, 1, 0)
-        options.addWidget(self.missing, 1, 1, 1, 2)
-        logo_label = QLabel()
-        bind(logo_label, '品牌标识位置')
+        options.addWidget(bind(QLabel(), '信息缺失时'), 2, 0)
+        options.addWidget(self.missing, 2, 1)
         self.logo = QComboBox()
         for label, value in self.LOGOS:
             self.logo.addItem(tr(label), value)
         self.logo.currentIndexChanged.connect(lambda: self._global_option('logo', self.logo.currentData()))
-        options.addWidget(logo_label, 2, 0)
-        options.addWidget(self.logo, 2, 1, 1, 2)
+        options.addWidget(bind(QLabel(), '品牌标识位置'), 3, 0)
+        options.addWidget(self.logo, 3, 1)
         options.setColumnStretch(1, 1)
-        options.setColumnStretch(2, 1)
-        edit_layout.addLayout(options)
-        splitter.addWidget(editing)
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([230, 600])
-        layout.addWidget(splitter, 1)
-
+        self.format_body.hide()
+        self.format_toggle.toggled.connect(lambda checked: self._fold(self.format_toggle, self.format_body, checked))
+        layout.addWidget(self.format_body)
+        self.text_preview_toggle = QToolButton()
+        bind(self.text_preview_toggle, '文字示例')
+        self.text_preview_toggle.setCheckable(True)
+        self.text_preview_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.text_preview_toggle.setArrowType(Qt.ArrowType.RightArrow)
+        layout.addWidget(self.text_preview_toggle)
         self.preview_group = QGroupBox()
         self.preview_grid = QGridLayout(self.preview_group)
+        self.preview_group.hide()
+        self.text_preview_toggle.toggled.connect(lambda checked: self._fold(self.text_preview_toggle, self.preview_group, checked))
         layout.addWidget(self.preview_group)
         self.error_label = QLabel()
         self.error_label.setObjectName('errorText')
         self.error_label.setWordWrap(True)
         self.error_label.hide()
         layout.addWidget(self.error_label)
+        layout.addStretch()
+
+        # 字段库按需弹出，避免长期占用预览宽度
+        self.catalog_popup = QFrame(self, Qt.WindowType.Popup)
+        self.catalog_popup.setFrameShape(QFrame.Shape.StyledPanel)
+        popup_layout = QVBoxLayout(self.catalog_popup)
+        popup_layout.setContentsMargins(9, 9, 9, 9)
+        self.search = QLineEdit()
+        bind(self.search, '搜索字段', 'setPlaceholderText')
+        self.search.textChanged.connect(self._filter_fields)
+        popup_layout.addWidget(self.search)
+        self.catalog = QTreeWidget()
+        self.catalog.setObjectName('footerFieldCatalog')
+        self.catalog.setHeaderHidden(True)
+        self.catalog.setIndentation(14)
+        bind(self.catalog, '双击字段添加到当前区域', 'setToolTip')
+        self.catalog.itemActivated.connect(lambda item, column: self._add_from_popup(item.data(0, Qt.ItemDataRole.UserRole)))
+        self.catalog.currentItemChanged.connect(self._update_add_button)
+        self.search.returnPressed.connect(self._add_selected)
+        self._catalog_groups, self._catalog_items = {}, {}
+        for field in FIELD_CATALOG:
+            if field.group not in self._catalog_groups:
+                group = QTreeWidgetItem(self.catalog)
+                group.setFlags(group.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+                group.setExpanded(True)
+                self._catalog_groups[field.group] = group
+            item = QTreeWidgetItem(self._catalog_groups[field.group])
+            item.setData(0, Qt.ItemDataRole.UserRole, field.key)
+            self._catalog_items[field.key] = item
+        popup_layout.addWidget(self.catalog, 1)
+        self.add_button = self._button('添加所选字段', self._add_selected)
+        self.add_button.setObjectName('primaryButton')
+        popup_layout.addWidget(self.add_button)
+        self.catalog_popup.resize(300, 400)
+
+    def _fold(self, button, body, expanded):
+        body.setVisible(expanded)
+        button.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+
+    def _open_catalog(self):
+        point = self.open_catalog_button.mapToGlobal(QPoint(0, self.open_catalog_button.height() + 4))
+        screen = self.screen()
+        if screen:
+            bounds = screen.availableGeometry()
+            point.setX(max(bounds.left(), min(point.x(), bounds.right() - self.catalog_popup.width())))
+            point.setY(max(bounds.top(), min(point.y(), bounds.bottom() - self.catalog_popup.height())))
+        self.catalog_popup.move(point)
+        self.catalog_popup.show()
+        self.search.setFocus()
+        self.search.selectAll()
+
+    def _add_from_popup(self, key):
+        if key in self._catalog_items:
+            self.add_field(key)
+            self.catalog_popup.hide()
 
     def set_source(self, source: str) -> None:
         """重新读入源码时不广播用户修改事件"""
@@ -383,7 +499,7 @@ class FooterPanel(QWidget):
             button = QToolButton()
             button.setCheckable(True)
             button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-            button.setMinimumHeight(32)
+            button.setFixedHeight(25)
             button.clicked.connect(lambda checked=False, region=region: self.select_region(region))
             self.button_group.addButton(button)
             self.region_grid.addWidget(button, row, column)
@@ -444,6 +560,7 @@ class FooterPanel(QWidget):
         self.custom_separator.setEnabled(bool(self._region))
         self._update_add_button()
         self.custom_button.setEnabled(bool(self._region))
+        self.open_catalog_button.setEnabled(bool(self._region))
         self.row_heading.setText(tr('{region}的内容', region=self._region_label(self._region)) if self._region else tr('字段与文字'))
         legacy = {item.get('field') for item in self._row().get('items', [])}
         self.merge_location_button.setVisible({'gps_latitude', 'gps_longitude'} <= legacy)
@@ -495,7 +612,7 @@ class FooterPanel(QWidget):
     def _add_selected(self):
         item = self.catalog.currentItem()
         if item:
-            self.add_field(item.data(0, Qt.ItemDataRole.UserRole))
+            self._add_from_popup(item.data(0, Qt.ItemDataRole.UserRole))
 
     def _update_add_button(self, *args):
         if not hasattr(self, 'add_button'):
@@ -663,9 +780,11 @@ class FooterEditor(QDialog):
     saved = Signal(str)
     advanced_requested = Signal(str)
     metadata_requested = Signal()
+    view_main_requested = Signal()
 
     def __init__(self, parent=None, name: str = '', source: str = '',
-                 metadata=None, filename: str = '', file_dir: str = '', saved_source: str | None = None):
+                 metadata=None, filename: str = '', file_dir: str = '', saved_source: str | None = None,
+                 preview_image=None):
         super().__init__(parent)
         self.name = name
         self._saved_name = name
@@ -673,63 +792,105 @@ class FooterEditor(QDialog):
         self._initial_source = source
         self._new = not bool(name)
         self._close_approved = False
-        self._status = ('组合完成后可应用到当前照片预览', {})
+        self._last_preview_source = None
+        self._status = ('修改会自动更新左侧预览，保存后写入模板', {})
+        self._image_status = ('等待照片预览', {})
         self.setObjectName('footerEditor')
+        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowTitleHint |
+                            Qt.WindowType.WindowSystemMenuHint | Qt.WindowType.WindowMinMaxButtonsHint |
+                            Qt.WindowType.WindowCloseButtonHint)
         self.setWindowModality(Qt.WindowModality.NonModal)
-        self.resize(1040, 790)
-        self.setMinimumSize(780, 650)
+        self.setMinimumSize(680, 430)
+        _fit_editor_window(self, 1120, 710)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setContentsMargins(10, 9, 10, 9)
         name_row = QHBoxLayout()
-        label = QLabel()
-        bind(label, '模板名称')
-        name_row.addWidget(label)
+        name_row.addWidget(bind(QLabel(), '模板名称'))
         self.name_input = QLineEdit(name)
         self.name_input.setReadOnly(not self._new)
         name_row.addWidget(self.name_input, 1)
         name_row.addWidget(QLabel('.json'))
-        self.advanced_button = QPushButton()
-        bind(self.advanced_button, '高级源码…')
-        self.advanced_button.setAutoDefault(False)
+        self.advanced_button = bind(QPushButton(), '高级源码…')
         self.advanced_button.clicked.connect(self._advanced)
         name_row.addWidget(self.advanced_button)
+        self.main_button = bind(QPushButton(), '收起编辑')
+        bind(self.main_button, '保留草稿并查看主窗口', 'setToolTip')
+        self.main_button.clicked.connect(lambda: self.view_main_requested.emit())
+        name_row.addWidget(self.main_button)
         layout.addLayout(name_row)
-        self.panel = FooterPanel(source, self, metadata, filename, file_dir)
+
+        self.splitter = QSplitter()
+        preview_area = QWidget()
+        preview_layout = QVBoxLayout(preview_area)
+        preview_layout.setContentsMargins(0, 0, 6, 0)
+        preview_tools = QHBoxLayout()
+        self.photo_view = _ImageView()
+        self.fit_button = bind(QPushButton(), '适应')
+        self.fit_button.clicked.connect(self.photo_view.fit_photo)
+        self.actual_button = QPushButton('100%')
+        self.actual_button.clicked.connect(self.photo_view.actual_size)
+        self.detail_button = bind(QPushButton(), '水印细节')
+        self.detail_button.clicked.connect(self.photo_view.footer_detail)
+        for button in (self.fit_button, self.actual_button, self.detail_button):
+            preview_tools.addWidget(button)
+        preview_tools.addStretch()
+        preview_layout.addLayout(preview_tools)
+        self.empty_preview = QLabel()
+        bind(self.empty_preview, '选择照片后显示水印预览')
+        self.empty_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty_preview.setWordWrap(True)
+        preview_layout.addWidget(self.empty_preview, 1)
+        preview_layout.addWidget(self.photo_view, 1)
+        self.image_status_label = QLabel()
+        self.image_status_label.setWordWrap(True)
+        self.image_status_label.setObjectName('secondaryText')
+        preview_layout.addWidget(self.image_status_label)
+        self.splitter.addWidget(preview_area)
+
+        self.panel = FooterPanel(source, self, metadata, filename, file_dir, compact=True)
         self._initial_layout = self.panel.layout_data()
         try:
             self._saved_layout = read_layout(self._saved_source)
         except Exception:
             self._saved_layout = self.panel.layout_data()
-        layout.addWidget(self.panel, 1)
+        self.settings_scroll = QScrollArea()
+        self.settings_scroll.setWidgetResizable(True)
+        self.settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.settings_scroll.setWidget(self.panel)
+        self.settings_scroll.setMinimumWidth(335)
+        self.splitter.addWidget(self.settings_scroll)
+        self.splitter.setStretchFactor(0, 3)
+        self.splitter.setStretchFactor(1, 2)
+        self.splitter.setSizes([650, 430])
+        layout.addWidget(self.splitter, 1)
+
         self.status_label = QLabel()
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
         actions = QHBoxLayout()
-        self.preview_button = QPushButton()
-        self.preview_button.setObjectName('primaryButton')
-        bind(self.preview_button, '应用预览')
+        self.live_preview = bind(QCheckBox(), '实时预览')
+        self.live_preview.setChecked(True)
+        self.live_preview.toggled.connect(self._live_toggled)
+        actions.addWidget(self.live_preview)
+        self.preview_button = bind(QPushButton(), '更新预览')
         self.preview_button.clicked.connect(self.apply_preview)
         actions.addWidget(self.preview_button)
-        self.metadata_button = QPushButton()
-        bind(self.metadata_button, '修改照片信息…')
-        self.metadata_button.setAutoDefault(False)
+        self.metadata_button = bind(QPushButton(), '修改照片信息…')
         self.metadata_button.clicked.connect(lambda checked=False: self.metadata_requested.emit())
         actions.addWidget(self.metadata_button)
         actions.addStretch()
-        self.save_button = QPushButton()
-        bind(self.save_button, '保存模板')
+        self.save_button = bind(QPushButton(), '保存模板')
+        self.save_button.setObjectName('primaryButton')
         self.save_button.clicked.connect(self.save)
         actions.addWidget(self.save_button)
-        self.save_as_button = QPushButton()
-        bind(self.save_as_button, '另存为')
+        self.save_as_button = bind(QPushButton(), '另存为')
         self.save_as_button.clicked.connect(self.save_as)
         actions.addWidget(self.save_as_button)
-        self.close_button = QPushButton()
-        bind(self.close_button, '关闭')
+        self.close_button = bind(QPushButton(), '关闭')
         self.close_button.clicked.connect(self.close)
         actions.addWidget(self.close_button)
         layout.addLayout(actions)
-        for button in (self.preview_button, self.save_button, self.save_as_button, self.close_button):
+        for button in self.findChildren(QPushButton):
             button.setAutoDefault(False)
         for shortcut, callback in [('Ctrl+S', self.save), ('Ctrl+Shift+S', self.save_as), ('Ctrl+Return', self.apply_preview)]:
             action = QAction(self)
@@ -737,10 +898,62 @@ class FooterEditor(QDialog):
             action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
             action.triggered.connect(callback)
             self.addAction(action)
-        self.panel.changed.connect(self._changed)
+        self.preview_timer = QTimer(self)
+        self.preview_timer.setSingleShot(True)
+        self.preview_timer.setInterval(400)
+        self.preview_timer.timeout.connect(self._auto_preview)
+        self.panel.changed.connect(self._composition_changed)
         self.name_input.textChanged.connect(self._changed)
         translator.language_changed.connect(self.retranslate_ui)
+        self.set_preview(preview_image)
         self.retranslate_ui()
+
+    def set_preview(self, image):
+        valid = isinstance(image, (QImage, QPixmap)) and not image.isNull()
+        self.photo_view.set_image(image if valid else None)
+        self.photo_view.setVisible(valid)
+        self.empty_preview.setVisible(not valid)
+        for button in (self.fit_button, self.actual_button, self.detail_button):
+            button.setEnabled(valid)
+        self._set_image_status('预览已更新' if valid else '等待照片预览')
+
+    def set_preview_error(self, error):
+        self._set_image_status('预览失败，保留上次结果：{error}', error=error)
+
+    def _set_image_status(self, source, **kwargs):
+        self._image_status = (source, kwargs)
+        self.image_status_label.setText(tr(source, **{key: _error_text(value) if isinstance(value, Exception) else value for key, value in kwargs.items()}))
+
+    def _composition_changed(self):
+        self._changed()
+        if self.live_preview.isChecked():
+            self.preview_timer.start()
+
+    def _live_toggled(self, enabled):
+        if not hasattr(self, 'preview_timer'):
+            return
+        self.preview_timer.stop()
+        if enabled and self.is_dirty():
+            self.preview_timer.start()
+
+    def _auto_preview(self):
+        if self.live_preview.isChecked():
+            self._request_preview(force=False)
+
+    def _request_preview(self, force=True):
+        self.preview_timer.stop()
+        try:
+            source = self.source()
+            validate_template(source)
+        except Exception as exc:
+            self._set_status('预览失败：{error}', error=exc)
+            return False
+        if not force and source == self._last_preview_source:
+            return True
+        self._last_preview_source = source
+        self._set_image_status('正在更新预览…')
+        self.source_preview.emit(source)
+        return True
 
     def source(self) -> str:
         # 未编辑时保留原字节排版与未识别的模板内容
@@ -766,14 +979,7 @@ class FooterEditor(QDialog):
         self.status_label.setText(tr(source, **{key: _error_text(value) if isinstance(value, Exception) else value for key, value in kwargs.items()}))
 
     def apply_preview(self):
-        try:
-            source = self.source()
-        except Exception as exc:
-            self._set_status('预览失败：{error}', error=exc)
-            return False
-        self.source_preview.emit(source)
-        self._set_status('已应用到照片预览，模板尚未保存' if self.is_dirty() else '组合完成后可应用到当前照片预览')
-        return True
+        return self._request_preview(force=True)
 
     def save(self):
         name = self.name_input.text().strip()
@@ -791,6 +997,8 @@ class FooterEditor(QDialog):
             self._set_status('保存失败：{error}', error=exc)
             return False
         self.name = self._saved_name = name
+        self.preview_timer.stop()
+        self._last_preview_source = source
         self._saved_source = self._initial_source = source
         self.panel.set_source(source)
         self._initial_layout = self.panel.layout_data()
@@ -820,11 +1028,13 @@ class FooterEditor(QDialog):
         except Exception as exc:
             self._set_status('无法组合此模板：{error}', error=exc)
             return
+        self.preview_timer.stop()
         self.advanced_requested.emit(source)
 
     def close_for_handoff(self):
         """调用方已接管完整源码后关闭，不再次确认同一草稿"""
         self._close_approved = True
+        self.preview_timer.stop()
         self.close()
 
     def confirm_close(self):
@@ -841,6 +1051,7 @@ class FooterEditor(QDialog):
     def closeEvent(self, event):
         if self.confirm_close():
             self._close_approved = True
+            self.preview_timer.stop()
             super().closeEvent(event)
         else:
             event.ignore()
@@ -848,9 +1059,12 @@ class FooterEditor(QDialog):
     def reject(self):
         if self.confirm_close():
             self._close_approved = True
+            self.preview_timer.stop()
             super().reject()
 
     def retranslate_ui(self):
         self._update_title()
         source, values = self._status
         self._set_status(source, **values)
+        source, values = self._image_status
+        self._set_image_status(source, **values)

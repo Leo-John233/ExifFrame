@@ -8,12 +8,12 @@ from PySide6.QtCore import QEvent, QSize, Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton, QSplitter,
+    QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton, QScrollArea, QSplitter,
     QVBoxLayout, QWidget,
 )
 
 from core.desktop_service import list_presets, read_template, validate_template, _template_path
-from studio.footer_editor import FooterPanel
+from studio.footer_editor import FooterPanel, _fit_editor_window
 from studio.i18n import bind, tr, register_translations, translator, localize_error
 from studio.template_editor import TemplateHighlighter
 from studio.pixmaps import preview_pixmap
@@ -78,8 +78,8 @@ class TemplateWizard(QDialog):
         self._context = dict(metadata=metadata, filename=filename, file_dir=file_dir)
         self._presets = [preset for preset in list_presets() if preset.name in self.BUILT_INS]
         self.setObjectName('templateWizard')
-        self.resize(1180, 820)
-        self.setMinimumSize(900, 640)
+        self.setMinimumSize(680, 480)
+        _fit_editor_window(self, 960, 730)
         self._build_ui()
         self._loading = False
         self._change_style()
@@ -139,10 +139,14 @@ class TemplateWizard(QDialog):
         self.mode_hint.setWordWrap(True)
         self.mode_hint.setObjectName('secondaryText')
         content.addWidget(self.mode_hint)
-        self.footer_panel = FooterPanel(self._style_source(), parent=self, **self._context)
+        self.footer_panel = FooterPanel(self._style_source(), parent=self, compact=True, **self._context)
         self.footer_panel.setObjectName('templateWizardFooterPanel')
         self.footer_panel.changed.connect(self._content_changed)
-        content.addWidget(self.footer_panel, 1)
+        self.panel_scroll = QScrollArea()
+        self.panel_scroll.setWidgetResizable(True)
+        self.panel_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.panel_scroll.setWidget(self.footer_panel)
+        content.addWidget(self.panel_scroll, 1)
         source_controls = QHBoxLayout()
         self.advanced_button = bind(QPushButton(), '高级源码…')
         self.advanced_button.setAutoDefault(False)
@@ -155,7 +159,7 @@ class TemplateWizard(QDialog):
         source_controls.addStretch()
         content.addLayout(source_controls)
         splitter.addWidget(right)
-        splitter.setSizes([245, 900])
+        splitter.setSizes([245, 670])
         layout.addWidget(splitter, 1)
         self.summary = QLabel()
         self.summary.setWordWrap(True)

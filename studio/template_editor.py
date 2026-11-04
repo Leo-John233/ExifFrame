@@ -20,7 +20,8 @@ PLACEHOLDERS = (
     ('相机', "{{ exif.CameraModelName | default('') }}"),
     ('镜头', "{{ exif.LensModel | default('') }}"),
     ('拍摄参数', "{{ exif.FocalLengthIn35mmFormat | default('') }} f/{{ exif.FNumber | default('') }} {{ exif.ShutterSpeed | default('') }}s ISO{{ exif.ISO | default('') }}"),
-    ('拍摄日期', "{{ exif.DateTimeOriginal | default('') }}"),
+    ('拍摄日期', "{{ watermark_date((exif.DateTimeOriginal or exif.CreateDate) | default('')) }}"),
+    ('日期与时间', "{{ watermark_date((exif.DateTimeOriginal or exif.CreateDate) | default(''), True) }}"),
     ('版权', "{{ exif.Copyright | default('') }}"),
     ('摄影师', "{{ exif.Artist | default('') }}"),
     ('品牌标识', "{{ auto_logo() }}"),
@@ -32,6 +33,7 @@ register_translations({
     '另存为': 'Save as', '检查格式': 'Validate', '应用到预览': 'Preview', '撤销': 'Undo',
     '重做': 'Redo', '恢复已保存': 'Revert', '关闭': 'Close', '插入字段': 'Insert field',
     '保存模板': 'Save template', '地理位置': 'Location',
+    '日期与时间': 'Date and time',
     '格式化 JSON': 'Format JSON', '相机': 'Camera', '镜头': 'Lens', '拍摄参数': 'Exposure',
     '拍摄日期': 'Capture date', '版权': 'Copyright', '摄影师': 'Photographer', '品牌标识': 'Brand logo',
     'JSON 和 Jinja 模板源码': 'JSON and Jinja template source',
@@ -106,7 +108,11 @@ class TemplateEditor(QDialog):
         self._close_approved = False
         self._status = ('修改源码后可先检查格式，再应用到当前照片预览', {})
         self.setObjectName("templateEditor")
-        self.resize(900, 680)
+        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowTitleHint |
+                            Qt.WindowType.WindowSystemMenuHint | Qt.WindowType.WindowMinMaxButtonsHint |
+                            Qt.WindowType.WindowCloseButtonHint)
+        available = self.screen().availableGeometry()
+        self.resize(min(900, max(620, available.width() - 64)), min(680, max(440, available.height() - 72)))
         self.setMinimumSize(620, 440)
         self.setWindowModality(Qt.WindowModality.NonModal)
         self._build_ui()
