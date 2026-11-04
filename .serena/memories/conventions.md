@@ -1,4 +1,5 @@
 # Source and template conventions
+- Latest UI reference is strictly neutral gray-black (#1E1F21/#252629); no blue borders, primary fills, focus or selection, including native titlebars and standard icons. Error color may remain semantic muted red. Keep actual-result viewing central to editing, not an obscured main window.
 - Keep advanced source editing available in the template area, template menu and composer (Ctrl+E); the visual composer is the routine entry (Ctrl+Shift+E). Preserve source/drafts on transitions, per user preference.
 - Desktop UI text goes through studio.i18n with Chinese+English registration, including dynamic progress/errors and dialogs. User text, file names and brands retain their original values. Color buttons remain compact side-by-side with inset swatches, per user correction.
 - New code uses concise Chinese comments/docstrings without terminal full stops, per user preference.
