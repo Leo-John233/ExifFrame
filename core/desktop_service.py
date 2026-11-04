@@ -14,7 +14,7 @@ from PIL import Image, ImageColor, ImageOps
 from core.configs import logos_dir, templates_dir
 from core import CONFIG_PATH
 from core.jinja2renders import auto_logo, vh, vw
-from core.util import EXIFTOOL_PATH, get_exif
+from core.util import find_exiftool, get_exif
 from processor.core import start_process
 
 SUPPORTED_SUFFIXES = {'.jpg', '.jpeg', '.png', '.heic', '.heif'}
@@ -46,12 +46,14 @@ class WatermarkSettings:
     background: str = '#FFFFFF'
     text_color: str = '#20252C'
     quality: int = 95
+    subsampling: int = 2
     output_dir: str = ''
     input_dir: str = ''
     overwrite_existing: bool = False
     preserve_structure: bool = True
     use_template_styles: bool = True
     template_source: str = ''
+    input_files: tuple[str, ...] = ()
 
 
 _PRESET_INFO = {
@@ -100,6 +102,8 @@ def _validate(settings: WatermarkSettings) -> None:
         raise ValueError('边框高度需在 6% 到 30% 之间')
     if not 1 <= settings.quality <= 100:
         raise ValueError('导出质量需在 1 到 100 之间')
+    if settings.subsampling not in (0, 1, 2):
+        raise ValueError('JPEG 色度采样需为 0、1 或 2')
     for color in (settings.background, settings.text_color):
         ImageColor.getrgb(color)
 
@@ -114,6 +118,7 @@ def load_settings() -> WatermarkSettings:
         defaults.input_dir = config.get('DEFAULT', 'input_folder', fallback='')
         defaults.output_dir = config.get('DEFAULT', 'output_folder', fallback='')
         defaults.quality = config.getint('DEFAULT', 'quality', fallback=95)
+        defaults.subsampling = config.getint('DEFAULT', 'subsampling', fallback=2)
         defaults.overwrite_existing = config.getboolean('DEFAULT', 'override_existed', fallback=False)
         defaults.template_name = config.get('render', 'template_name', fallback=defaults.template_name)
         _validate(defaults)
@@ -123,7 +128,11 @@ def load_settings() -> WatermarkSettings:
         data = json.loads(SETTINGS_PATH.read_text(encoding='utf-8'))
         valid = {field.name for field in fields(WatermarkSettings)}
         values = asdict(defaults)
-        values.update({key: value for key, value in data.items() if key in valid and key != 'template_source'})
+        values.update({key: value for key, value in data.items() if key in valid and key not in {'template_source', 'input_files'}})
+        # 共用字段始终以原项目配置为准，旧桌面缓存不再覆盖模板和导出参数
+        if WORKSPACE_CONFIG_PATH.is_file():
+            for key in ('template_name', 'input_dir', 'output_dir', 'quality', 'subsampling', 'overwrite_existing'):
+                values[key] = getattr(defaults, key)
         settings = WatermarkSettings(**values)
         _validate(settings)
         if not isinstance(settings.title, str) or not isinstance(settings.subtitle, str):
@@ -143,6 +152,7 @@ def save_settings(settings: WatermarkSettings) -> None:
     values = asdict(settings)
     # 未保存的模板草稿不写入个人配置
     values.pop('template_source', None)
+    values.pop('input_files', None)
     temporary.write_text(json.dumps(values, ensure_ascii=False, indent=2), encoding='utf-8')
     temporary.replace(SETTINGS_PATH)
 
@@ -153,7 +163,8 @@ def save_workspace_settings(settings: WatermarkSettings) -> None:
     config = configparser.ConfigParser()
     config.read(WORKSPACE_CONFIG_PATH, encoding='utf-8')
     config['DEFAULT'].update(input_folder=settings.input_dir, output_folder=settings.output_dir,
-                             quality=str(settings.quality), override_existed=str(settings.overwrite_existing))
+                             quality=str(settings.quality), subsampling=str(settings.subsampling),
+                             override_existed=str(settings.overwrite_existing))
     if not config.has_section('render'):
         config.add_section('render')
     config.set('render', 'template_name', settings.template_name)
@@ -216,9 +227,20 @@ def write_template(name: str, source: str, create: bool = False) -> None:
         temporary.unlink(missing_ok=True)
 
 
-@lru_cache(maxsize=64)
 def _metadata(source: str, modified: int) -> dict:
-    """按文件修改时间缓存信息，没有 ExifTool 时使用照片自带的 EXIF"""
+    """工具新增或更换后自动刷新缓存，避免继续使用缺失的回退信息"""
+    tool = find_exiftool()
+    signature = (str(tool), tool.stat().st_mtime_ns, tool.stat().st_size) if tool else None
+    return dict(_cached_metadata(source, modified, signature))
+
+
+@lru_cache(maxsize=64)
+def _cached_metadata(source: str, modified: int, tool_signature) -> dict:
+    """优先使用完整 ExifTool 数据，仅读取失败时回退照片自带信息"""
+    if tool_signature:
+        extracted = get_exif(source)
+        if extracted:
+            return extracted
     with Image.open(source) as opened:
         exif = opened.getexif()
         # 部分相机将镜头和拍摄参数放在子目录中
@@ -240,8 +262,9 @@ def _metadata(source: str, modified: int) -> dict:
             'ISO': str(details.get(34855, '-')),
             'DateTimeOriginal': str(details.get(36867) or details.get(306) or '未记录时间'),
         }
-    if Path(EXIFTOOL_PATH).is_file():
-        result.update(get_exif(source))
+    # 清理相机写入的字符串终止符并统一回退时间格式
+    result = {key: str(value).replace('\x00', '').strip() for key, value in result.items()}
+    result['DateTimeOriginal'] = re.sub(r'^(\d{4}):(\d{2}):(\d{2})', r'\1-\2-\3', result['DateTimeOriginal'])
     return result
 
 
@@ -256,7 +279,7 @@ def _desktop_logo(context, brand=None):
     return auto_logo(context, brand) or (logos_dir / 'default.png').as_posix()
 
 
-def _configure_nodes(nodes, image, settings, metadata, source):
+def _configure_nodes(nodes, image, settings, metadata, source, preview=False):
     """为现有处理器注入尺寸与样式，同时复用内存中的预览图"""
     title = '' if settings.use_template_styles else settings.title
     subtitle = '' if settings.use_template_styles else settings.subtitle
@@ -289,15 +312,16 @@ def _configure_nodes(nodes, image, settings, metadata, source):
             return
         kind = node.get('processor_name')
         if kind:
-            node['exif'] = metadata
-            node['save_buffer'] = False
+            node.setdefault('exif', metadata)
+            if preview:
+                node['save_buffer'] = False
         if settings.use_template_styles:
             for value in list(node.values()):
                 if isinstance(value, (dict, list)):
                     visit(value)
             paths = node.get('buffer_path')
-            if paths and len(paths) == 1 and Path(paths[0]).resolve() == source:
-                node.update(buffer=[image.copy()], buffer_loaded=True)
+            if preview and paths and len(paths) == 1 and Path(paths[0]).resolve() == source:
+                node.update(input_buffer=[image.copy()], buffer_loaded=True)
             return
         if kind == 'watermark':
             footer = max(48, round(image.height * settings.border_percent / 100))
@@ -326,8 +350,8 @@ def _configure_nodes(nodes, image, settings, metadata, source):
                 visit(value)
         # 模糊背景等模板重新读取原图时也使用等比缩小后的图像
         paths = node.get('buffer_path')
-        if paths and len(paths) == 1 and Path(paths[0]).resolve() == source:
-            node.update(buffer=[image.copy()], buffer_loaded=True)
+        if preview and paths and len(paths) == 1 and Path(paths[0]).resolve() == source:
+            node.update(input_buffer=[image.copy()], buffer_loaded=True)
 
     visit(nodes)
 
@@ -352,36 +376,60 @@ def _scale_nodes(value, scale):
                 _scale_nodes(child, scale)
 
 
+@lru_cache(maxsize=2)
+def _original_preview(source, modified, template_name, template_source, files, tool_signature):
+    """原样预览从完整结果缩略，避免默认像素参数改变版式"""
+    settings = WatermarkSettings(template_name=template_name, template_source=template_source,
+                                 input_files=files, use_template_styles=True)
+    result = render_photo(Path(source), settings, preview=False).convert('RGB')
+    result.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
+    return result
+
+
 def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True) -> Image.Image:
     """让实时预览和原始分辨率导出走相同的水印流水线"""
     _validate(settings)
     source = Path(path).resolve()
     if source.suffix.lower() not in SUPPORTED_SUFFIXES or not source.is_file():
         raise ValueError('请选择存在的 JPG、PNG 或 HEIC 照片')
+    if preview and settings.use_template_styles:
+        tool = find_exiftool()
+        signature = (str(tool), tool.stat().st_mtime_ns, tool.stat().st_size) if tool else None
+        return _original_preview(str(source), source.stat().st_mtime_ns, settings.template_name,
+                                 settings.template_source or read_template(settings.template_name),
+                                 tuple(settings.input_files), signature).copy()
     with Image.open(source) as opened:
-        image = ImageOps.exif_transpose(opened).convert('RGBA' if 'A' in opened.getbands() else 'RGB')
+        encoded_size = opened.size
+        image = ImageOps.exif_transpose(opened).copy()
         profile = opened.info.get('icc_profile')
     original_size = image.size
     if preview:
         image.thumbnail((1400, 1400), Image.Resampling.LANCZOS)
     metadata = dict(_metadata(str(source), source.stat().st_mtime_ns))
-    metadata.update(ImageWidth=str(original_size[0]), ImageHeight=str(original_size[1]))
+    if settings.use_template_styles:
+        # 原模板按编码尺寸计算 vh/vw，不使用方向修正后的宽高覆盖已有标签
+        metadata.setdefault('ImageWidth', str(encoded_size[0]))
+        metadata.setdefault('ImageHeight', str(encoded_size[1]))
+    else:
+        metadata.update(ImageWidth=str(original_size[0]), ImageHeight=str(original_size[1]))
     if settings.title and not settings.use_template_styles:
         metadata['CameraModelName'] = settings.title
     if settings.subtitle and not settings.use_template_styles:
         metadata['LensModel'] = settings.subtitle
-    environment = Environment(finalize=_json_fragment, autoescape=False)
-    environment.globals.update(vh=vh, vw=vw, auto_logo=_desktop_logo)
+    environment = Environment(finalize=None if settings.use_template_styles else _json_fragment, autoescape=False)
+    environment.globals.update(vh=vh, vw=vw, auto_logo=auto_logo if settings.use_template_styles else _desktop_logo)
     template = environment.from_string(settings.template_source or read_template(settings.template_name))
     rendered = template.render(exif=metadata, filename=source.stem,
-                               file_dir=source.parent.as_posix(), file_path=source.as_posix(), files=[str(source)])
+                               file_dir=source.parent.as_posix(), file_path=source.as_posix(),
+                               files=list(settings.input_files) or [str(source)])
     nodes = json.loads(rendered)
     if not isinstance(nodes, list) or not nodes:
         raise ValueError('水印模板需要至少一个处理步骤')
     if image.size != original_size:
         _scale_nodes(nodes, image.width / original_size[0])
-    metadata.update(ImageWidth=str(image.width), ImageHeight=str(image.height))
-    _configure_nodes(nodes, image, settings, metadata, source)
+    if not settings.use_template_styles:
+        metadata.update(ImageWidth=str(image.width), ImageHeight=str(image.height))
+    _configure_nodes(nodes, image, settings, metadata, source, preview=preview)
     result = start_process(nodes, initial_buffer=[image])
     if profile:
         result.info['icc_profile'] = profile
@@ -401,7 +449,9 @@ def export_photo(path: Path, settings: WatermarkSettings, output_dir: Path) -> P
         destination /= relative.parent
     destination.mkdir(parents=True, exist_ok=True)
     basename = source.stem if in_workspace else f'{source.stem}_watermarked'
-    target = destination / f'{basename}.jpg'
+    extension = '.png' if source.suffix.lower() == '.png' else '.jpg'
+    image_format = 'PNG' if extension == '.png' else 'JPEG'
+    target = destination / f'{basename}{extension}'
     if target.resolve() == source or (target.exists() and target.samefile(source)):
         raise ValueError('输出文件与原照片相同，请选择其他输出目录')
     # 同名 PNG 与 JPEG 可能属于两张原片，不允许覆盖输入目录中的其他照片
@@ -413,14 +463,20 @@ def export_photo(path: Path, settings: WatermarkSettings, output_dir: Path) -> P
         raise FileExistsError(f'已跳过同名输出：{target.name}')
     image = render_photo(source, settings, preview=False)
     # JPEG 不支持透明通道，使用所选边框色铺底
-    canvas = Image.new('RGB', image.size, settings.background)
-    canvas.paste(image, mask=image.getchannel('A') if image.mode == 'RGBA' else None)
+    if settings.use_template_styles:
+        # 原样模式沿用原版的透明度转换与保存参数
+        canvas = image.convert('RGB')
+        save_options = {'quality': settings.quality, 'subsampling': settings.subsampling}
+    else:
+        canvas = Image.new('RGB', image.size, settings.background)
+        canvas.paste(image, mask=image.getchannel('A') if image.mode == 'RGBA' else None)
+        save_options = {'quality': settings.quality, 'subsampling': settings.subsampling,
+                        'icc_profile': image.info.get('icc_profile')}
     if settings.overwrite_existing:
         with NamedTemporaryFile(dir=destination, prefix='.export-', suffix='.tmp', delete=False) as stream:
             temporary = Path(stream.name)
         try:
-            canvas.save(temporary, format='JPEG', quality=settings.quality, subsampling=0,
-                        icc_profile=image.info.get('icc_profile'))
+            canvas.save(temporary, format=image_format, **save_options)
             temporary.replace(target)
         finally:
             temporary.unlink(missing_ok=True)
@@ -428,7 +484,7 @@ def export_photo(path: Path, settings: WatermarkSettings, output_dir: Path) -> P
     number = 0
     while True:
         suffix = f'_{number}' if number else ''
-        target = destination / f'{basename}{suffix}.jpg'
+        target = destination / f'{basename}{suffix}{extension}'
         try:
             stream = target.open('xb')
         except FileExistsError:
@@ -438,8 +494,7 @@ def export_photo(path: Path, settings: WatermarkSettings, output_dir: Path) -> P
             continue
         try:
             with stream:
-                canvas.save(stream, format='JPEG', quality=settings.quality, subsampling=0,
-                            icc_profile=image.info.get('icc_profile'))
+                canvas.save(stream, format=image_format, **save_options)
         except Exception:
             target.unlink(missing_ok=True)
             raise

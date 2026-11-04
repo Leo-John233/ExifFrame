@@ -154,6 +154,7 @@ class MainWindow(QMainWindow):
         self.files.directory_requested.connect(self._directory_requested)
         self.files.file_selected.connect(self._file_selected)
         self.files.selection_changed.connect(self._update_actions)
+        self.files.selection_changed.connect(self._schedule_preview)
         self.files.clear_requested.connect(self._clear_photos)
         self.input_tree, self.output_tree = self.files.input_tree, self.files.output_tree
         self.input_input, self.output_input = self.files.input_path, self.files.output_path
@@ -592,7 +593,10 @@ class MainWindow(QMainWindow):
         self.preview_status.setToolTip("")
         # 输出树始终读取已有成品以免重复添加水印
         kind = "original" if self._current_kind == "output" or self.original_toggle.isChecked() else "preview"
-        self._start_task(kind, token=self._generation, paths=[path], settings=replace(self.settings))
+        # 与实际导出共用勾选文件快照，支持模板中的跨照片处理
+        selected = tuple(str(item) for item in self.files.selected_paths())
+        self._start_task(kind, token=self._generation, paths=[path],
+                         settings=replace(self.settings, input_files=selected))
 
     def _start_task(self, kind, token=None, **kwargs):
         self._serial += 1
@@ -723,7 +727,9 @@ class MainWindow(QMainWindow):
         self.progress.setRange(0, len(paths))
         self.progress.setValue(0)
         self.statusBar().showMessage(f"处理 0/{len(paths)}")
-        self._start_task("export", paths=paths, settings=replace(self.settings), output=self._last_output)
+        self._start_task("export", paths=paths,
+                         settings=replace(self.settings, input_files=tuple(str(path) for path in paths)),
+                         output=self._last_output)
 
     def _set_exporting(self, active):
         self._exporting = active

@@ -301,7 +301,11 @@ def start_process(data: List[dict], input_path: str = None, output_path: str = N
             raise RuntimeError(f"Processor '{node.get_processor_name()}' not found")
 
         processor_instance: ImageProcessor = processor()
-        if 'select' in node:
+        # 预览节点可指定独立输入，避免重新读取原图的步骤被上一输出覆盖
+        if 'input_buffer' in node:
+            node.update_buffer(node['input_buffer'])
+            node['buffer_loaded'] = True
+        elif 'select' in node:
             indexes = json.loads(node['select'])
             flattened = list(chain.from_iterable([all_buffer[i] for i in indexes]))
             node.update_buffer(flattened)

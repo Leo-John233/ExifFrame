@@ -3,6 +3,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 from functools import wraps
 from pathlib import Path
@@ -14,44 +15,48 @@ from core.configs import templates_dir
 from core.jinja2renders import vh, vw, auto_logo
 from core.logger import logger
 
-EXIFTOOL_PATH = Path('./exiftool/exiftool.exe')
+RESOURCE_ROOT = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parents[1]
+EXIFTOOL_PATH = RESOURCE_ROOT / 'exiftool/exiftool.exe'
+
+
+def find_exiftool() -> Path | None:
+    """同时识别命令行名称和官网下载包的默认名称"""
+    for candidate in (EXIFTOOL_PATH, EXIFTOOL_PATH.with_name('exiftool(-k).exe')):
+        if candidate.is_file():
+            return candidate.resolve()
+    return None
 
 
 def get_exif(path) -> dict:
-    """
-    获取exif信息
-    :param path: 照片路径
-    :return: exif信息
-    """
-    exif_dict = {}
+    """读取 UTF-8 元数据并兼容原模板使用的字段名称"""
+    tool = find_exiftool()
+    if tool is None:
+        logger.warning('未找到 ExifTool，将使用照片自带的 EXIF 信息')
+        return {}
     try:
-        output_bytes = subprocess.check_output([EXIFTOOL_PATH, '-d', '%Y-%m-%d %H:%M:%S%3f%z', path])
-        output = output_bytes.decode('utf-8', errors='ignore')
-
-        lines = output.splitlines()
-        utf8_lines = [line for line in lines]
-
-        for line in utf8_lines:
-            # 将每一行按冒号分隔成键值对
-            kv_pair = line.split(':')
-            if len(kv_pair) < 2:
-                continue
-            key = kv_pair[0].strip()
-            value = ':'.join(kv_pair[1:]).strip()
-            # 将键中的空格移除
-            key = re.sub(r'\s+', '', key)
-            key = re.sub(r'/', '', key)
-            # 将键值对添加到字典中
-            exif_dict[key] = value
-        for key, value in exif_dict.items():
-            # 过滤非 ASCII 字符
-            value_clean = ''.join(c for c in value if ord(c) < 128)
-            # 将处理后的值更新到 exif_dict 中
-            exif_dict[key] = value_clean
-    except Exception as e:
-        logger.error(f'get_exif error: {path} : {e}')
-
-    return exif_dict
+        # 路径通过 UTF-8 参数流传入，结束输入后带 -k 的程序也不会等待按键
+        result = subprocess.run(
+            [str(tool), '-j', '-l', '-lang', 'en', '-charset', 'filename=UTF8',
+             '-d', '%Y-%m-%d %H:%M:%S%3f%z', '-@', '-'],
+            input=(str(Path(path).resolve()) + '\n').encode('utf-8'), capture_output=True, timeout=20,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), check=True,
+        )
+        records = json.loads(result.stdout)
+        metadata = {}
+        for tag, entry in records[0].items():
+            description = entry.get('desc', tag) if isinstance(entry, dict) else tag
+            value = entry.get('val', '') if isinstance(entry, dict) else entry
+            if isinstance(value, list):
+                value = ', '.join(str(item) for item in value)
+            value = str(value).replace('\x00', '').strip() if value is not None else ''
+            # 描述名对应原版键，标准标签名同时保留给自定义模板
+            legacy_key = re.sub(r'[\s/]+', '', description)
+            metadata[legacy_key] = value
+            metadata[tag] = value
+        return metadata
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError, TypeError) as error:
+        logger.error(f'读取 EXIF 失败 {path}: {error}')
+        return {}
 
 
 def list_files(path: str, suffixes: set[str], depth: int = 0, max_depth: int = 20):
