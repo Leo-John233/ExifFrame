@@ -169,7 +169,12 @@ def normalize_changes(changes: dict[str, str]) -> dict[str, str]:
             lower, upper = limits.get(tag, (-math.inf, math.inf))
             if not lower <= number <= upper:
                 raise MetadataError('invalid_gps' if tag.startswith('GPS') else 'invalid_value', tag)
-            value = str(int(number)) if tag in {'ISO', 'Rating'} else f'{number:g}'
+            if tag in {'ISO', 'Rating'}:
+                value = str(int(number))
+            elif tag.startswith('GPS'):
+                value = f'{number:.12g}'
+            else:
+                value = f'{number:g}'
             if tag == 'ExposureTime' and '/' in number_input:
                 value = str(Fraction(number_input))
         result[tag] = value
@@ -180,7 +185,8 @@ def normalize_changes(changes: dict[str, str]) -> dict[str, str]:
             if number < 0 and result.get(reference, negative) != negative:
                 raise MetadataError('invalid_gps', tag)
             result[reference] = result.get(reference, negative if number < 0 else positive)
-            result[tag] = f'{abs(number):g}'
+            # 坐标保留足够精度，避免常规六位格式将秒数舍入到错误的位置
+            result[tag] = f'{abs(number):.12g}'
     return result
 
 
