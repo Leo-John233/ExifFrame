@@ -7,6 +7,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
 from core.util import get_exif
+from core.image_cache import resized_logo
 from processor.core import ImageProcessor, PipelineContext, start_process, get_processor
 from processor.types import Alignment
 
@@ -266,10 +267,10 @@ class WatermarkFilter(FilterProcessor):
         right_top = start_process([ctx.get("right_top")])
         right_bottom = start_process([ctx.get("right_bottom")])
 
-        left_logo = Image.open(ctx.get("left_logo")).convert('RGBA') if ctx.get("left_logo") else None
-        right_logo = Image.open(ctx.get("right_logo")).convert('RGBA') if ctx.get("right_logo") else None
-        center_logo = Image.open(ctx.get("center_logo")).convert('RGBA') if ctx.get("center_logo") else None
-        center_logo_height = ctx.getint("center_logo_height")
+        left_logo = ctx.get("left_logo")
+        right_logo = ctx.get("right_logo")
+        center_logo = ctx.get("center_logo")
+        center_logo_height = ctx.getint("center_logo_height", ctx.getint("center_height", 0))
 
         canvas_width = img.width + left_margin + right_margin
         canvas_height = img.height + top_margin + bottom_margin
@@ -286,18 +287,17 @@ class WatermarkFilter(FilterProcessor):
         if left_logo:
             logo_size = canvas_height - footer_start_y
             # 缩放图标以适应底部高度 (正方形)
-            left_logo = left_logo.resize((logo_size, logo_size), Image.Resampling.LANCZOS)
+            left_logo = resized_logo(left_logo, (logo_size, logo_size))
             canvas.paste(left_logo, (left_margin, footer_start_y), mask=left_logo if left_logo.mode == 'RGBA' else None)
             left_logo_width = logo_size
 
-        if center_logo:
-            logo_height = center_logo_height if center_logo_height else canvas_height - footer_start_y
-            resize_ctx = PipelineContext({
-                'buffer': [center_logo],
-                'height': logo_height
-            })
-            ResizeFilter().process(resize_ctx)
-            center_logo = resize_ctx.get_buffer()[0]
+        if center_logo and bottom_margin > 0:
+            # 四周预留空间并同时限制宽高，完整展示宽标识和底部文字
+            padding = max(1, ctx.getint('center_logo_padding', round(bottom_margin * .12)))
+            available_width = max(1, canvas_width - left_margin - right_margin - padding * 2)
+            available_height = max(1, bottom_margin - padding * 2)
+            logo_height = min(center_logo_height or available_height, available_height)
+            center_logo = resized_logo(center_logo, (available_width, max(1, logo_height)), contain=True)
             center_x = (canvas.width - center_logo.width) // 2
             center_y = footer_start_y + ((canvas.height - footer_start_y) - center_logo.height) // 2
             canvas.paste(center_logo, (center_x, center_y), mask=center_logo if center_logo.mode == 'RGBA' else None)
@@ -354,7 +354,7 @@ class WatermarkFilter(FilterProcessor):
             delimiter_y = int(footer_start_y + elem_margin - logo_size * .05)
             canvas.paste(delimiter, (delimiter_x, delimiter_y), mask=delimiter)
 
-            right_logo = right_logo.resize((logo_size, logo_size), Image.Resampling.LANCZOS)
+            right_logo = resized_logo(right_logo, (logo_size, logo_size))
             right_logo_x = delimiter_x - common_spacing - logo_size
             right_logo_y = footer_start_y + elem_margin
             canvas.paste(right_logo, (right_logo_x, right_logo_y),

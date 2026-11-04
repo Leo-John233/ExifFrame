@@ -1,5 +1,7 @@
 import os.path
 import sys
+from collections import OrderedDict
+from threading import local
 from abc import ABC
 from dataclasses import dataclass, asdict
 from enum import Enum
@@ -15,7 +17,33 @@ from processor.core import PipelineContext, ImageProcessor, Direction, _parse_co
 BASE_FONT_SIZE = 512
 
 
+_font_state = local()
+
+
 def load_font(font_path: str):
+    """同一工作线程复用字体，避免并发共享字体对象"""
+    candidate = Path(font_path) if font_path else fonts_dir / 'AlibabaPuHuiTi-2-45-Light.otf'
+    if font_path and not candidate.is_absolute():
+        candidate = fonts_dir / candidate
+    try:
+        info = candidate.stat()
+        version = (info.st_mtime_ns, info.st_size)
+    except OSError:
+        version = None
+    key = (str(font_path) if font_path else None, str(candidate), version, BASE_FONT_SIZE)
+    if not hasattr(_font_state, 'fonts'):
+        _font_state.fonts = OrderedDict()
+    cache = _font_state.fonts
+    if key not in cache:
+        cache[key] = _load_font(font_path)
+        if len(cache) > 16:
+            cache.popitem(last=False)
+    cache.move_to_end(key)
+    return cache[key]
+
+
+def _load_font(font_path: str):
+    """沿用原字体加载与回退顺序"""
     try:
         if font_path:
             font_file = Path(font_path)
