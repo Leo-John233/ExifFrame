@@ -9,5 +9,6 @@
 - Without input_buffer/select: non-mergers receive previous output; mergers gather outputs since the previous implicit merger. Preserve these indexing semantics for existing templates.
 - Nodes may override buffer_path to load an independent source. get_buffer only loads when buffer_loaded is false; update_buffer does not itself set that flag.
 - EXIF is inserted into node contexts when an input file is supplied and the node lacks it. Output writing converts the final first image to RGB and uses configured quality/subsampling; return value is the final first Pillow image.
+- RichTextGenerator keeps the original drawing path when the configured font covers the whole text. core/font_fallback.py reads bounded cached OpenType cmap/OS/2 tables (including TTC) to choose per-run Windows symbol/CJK fonts only for missing glyphs. Match the primary font's weight for fallback strokes, align shared baselines, include actual glyph extents beyond font metrics, and preserve ordinary-text render parity. Do not replace Unicode symbols with visually similar ASCII or alter source fonts.
 - `save_buffer` / `success` participate in node completion/debug flow; inspect their implementations before changing processing lifecycle.
 - For caller/template context and batch event flow: `mem:core`. For processor/template coding representation: `mem:conventions`.
