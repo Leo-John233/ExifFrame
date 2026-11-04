@@ -7,9 +7,9 @@ import json
 from PySide6.QtCore import QEvent, QSize, Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QLineEdit,
+    QAbstractItemView, QComboBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton, QScrollArea, QSplitter,
-    QVBoxLayout, QWidget,
+    QSizePolicy, QVBoxLayout, QWidget,
 )
 
 from core.desktop_service import list_presets, read_template, validate_template, _template_path
@@ -36,6 +36,8 @@ register_translations({
     '经典相机边框': 'Classic camera frame', '留白与阴影': 'Border and shadow',
     '沉浸模糊背景': 'Blurred background', '尼康模糊背景': 'Nikon blurred background',
     '极简参数': 'Minimal exposure', '旅途与时间': 'Journey and time', '品牌居中': 'Centered brand',
+    '{regions} 个文字区 · {items} 个信息项': '{regions} text regions · {items} items',
+    '输入模板名称后即可创建': 'Enter a template name to create it',
 })
 
 
@@ -51,6 +53,8 @@ class _WizardButtons(QDialogButtonBox):
     def _translate(self):
         self.button(QDialogButtonBox.StandardButton.Ok).setText(tr(self._accept_label))
         self.button(QDialogButtonBox.StandardButton.Cancel).setText(tr('取消'))
+        # 英文动作名称更长，切换语言时同步按钮区域的最小宽度
+        self.setMinimumWidth(self.sizeHint().width())
 
     def changeEvent(self, event):
         super().changeEvent(event)
@@ -78,8 +82,11 @@ class TemplateWizard(QDialog):
         self._context = dict(metadata=metadata, filename=filename, file_dir=file_dir)
         self._presets = [preset for preset in list_presets() if preset.name in self.BUILT_INS]
         self.setObjectName('templateWizard')
-        self.setMinimumSize(680, 480)
-        _fit_editor_window(self, 960, 730)
+        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowTitleHint |
+                            Qt.WindowType.WindowSystemMenuHint | Qt.WindowType.WindowMinMaxButtonsHint |
+                            Qt.WindowType.WindowCloseButtonHint)
+        self.setMinimumSize(760, 500)
+        _fit_editor_window(self, 960, 640)
         self._build_ui()
         self._loading = False
         self._change_style()
@@ -95,16 +102,28 @@ class TemplateWizard(QDialog):
         names.addWidget(bind(QLabel(), '模板名称'))
         self.name_input = QLineEdit()
         self.name_input.setObjectName('templateWizardName')
+        self.name_input.setClearButtonEnabled(True)
+        self.name_input.setMaximumWidth(420)
         bind(self.name_input, '新模板名称', 'setPlaceholderText')
         names.addWidget(self.name_input, 1)
-        names.addWidget(QLabel('.json'))
+        names.addStretch()
+        self.visual_button = bind(QPushButton(), '返回可视化组合')
+        self.visual_button.setAutoDefault(False)
+        self.visual_button.clicked.connect(self._return_visual)
+        names.addWidget(self.visual_button)
+        self.advanced_button = bind(QPushButton(), '高级源码…')
+        self.advanced_button.setAutoDefault(False)
+        self.advanced_button.clicked.connect(self._advanced)
+        names.addWidget(self.advanced_button)
         layout.addLayout(names)
-        splitter = QSplitter()
+        self.splitter = QSplitter()
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setHandleWidth(6)
         left = QWidget()
         left.setMinimumWidth(205)
-        left.setMaximumWidth(315)
+        left.setMaximumWidth(270)
         choices = QVBoxLayout(left)
-        choices.setContentsMargins(0, 0, 12, 0)
+        choices.setContentsMargins(0, 0, 10, 0)
         choices.setSpacing(8)
         choices.addWidget(bind(QLabel(), '起始样式'))
         self.mode = QComboBox()
@@ -116,72 +135,94 @@ class TemplateWizard(QDialog):
         choices.addWidget(self.mode)
         self.styles = QListWidget()
         self.styles.setObjectName('templateWizardStyles')
-        self.styles.setIconSize(QSize(82, 54))
-        self.styles.setSpacing(4)
+        self.styles.setIconSize(QSize(66, 44))
+        self.styles.setSpacing(2)
+        self.styles.setUniformItemSizes(True)
+        self.styles.setWordWrap(True)
+        self.styles.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.styles.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.styles.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.styles.setResizeMode(QListWidget.ResizeMode.Adjust)
         for preset in self._presets:
             item = QListWidgetItem(self.styles)
             item.setData(Qt.ItemDataRole.UserRole, preset.name)
             if preset.thumbnail:
-                item.setIcon(QIcon(preview_pixmap(preset.thumbnail, 82, 54)))
-            item.setSizeHint(QSize(225, 60))
+                item.setIcon(QIcon(preview_pixmap(preset.thumbnail, 66, 44)))
+            # 行宽由视口决定，避免固定宽度挤出横向滚动条
+            item.setSizeHint(QSize(0, 58))
         if self.styles.count():
             self.styles.setCurrentRow(0)
         choices.addWidget(self.styles, 1)
-        self.preview = QLabel()
-        self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview.setFixedHeight(110)
-        choices.addWidget(self.preview)
-        self.description = QLabel()
-        self.description.setWordWrap(True)
-        self.description.setMinimumHeight(38)
-        choices.addWidget(self.description)
-        splitter.addWidget(left)
+        self.splitter.addWidget(left)
         right = QWidget()
         content = QVBoxLayout(right)
-        content.setContentsMargins(8, 0, 0, 0)
+        content.setContentsMargins(12, 0, 0, 0)
         content.setSpacing(8)
+        heading = QHBoxLayout()
+        heading.setSpacing(12)
+        self.style_title = QLabel()
+        title_font = self.style_title.font()
+        title_font.setBold(True)
+        self.style_title.setFont(title_font)
+        self.style_title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        heading.addWidget(self.style_title, 1)
+        self.summary = QLabel()
+        self.summary.setObjectName('secondaryText')
+        heading.addWidget(self.summary)
+        content.addLayout(heading)
+        self.description = QLabel()
+        self.description.setWordWrap(True)
+        self.description.setObjectName('secondaryText')
+        content.addWidget(self.description)
         self.mode_hint = QLabel()
         self.mode_hint.setWordWrap(True)
         self.mode_hint.setObjectName('secondaryText')
         content.addWidget(self.mode_hint)
         self.footer_panel = FooterPanel(self._style_source(), parent=self, compact=True, **self._context)
         self.footer_panel.setObjectName('templateWizardFooterPanel')
+        self.footer_panel.layout().setContentsMargins(0, 4, 8, 0)
+        self.footer_panel.region_group.setMinimumWidth(280)
+        self.footer_panel.region_group.setMaximumWidth(360)
+        self.footer_panel.layout().setAlignment(self.footer_panel.region_group, Qt.AlignmentFlag.AlignLeft)
+        self.footer_panel.item_hint.hide()
+        # 列表随内容显示两到五行，不让少量字段撑出大片空白
+        model = self.footer_panel.items.model()
+        model.rowsInserted.connect(self._fit_content_list)
+        model.rowsRemoved.connect(self._fit_content_list)
+        model.modelReset.connect(self._fit_content_list)
+        self._fit_content_list()
         self.footer_panel.changed.connect(self._content_changed)
         self.panel_scroll = QScrollArea()
         self.panel_scroll.setWidgetResizable(True)
         self.panel_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.panel_scroll.setWidget(self.footer_panel)
         content.addWidget(self.panel_scroll, 1)
-        source_controls = QHBoxLayout()
-        source_controls.setContentsMargins(12, 8, 12, 0)
-        source_controls.setSpacing(8)
-        self.advanced_button = bind(QPushButton(), '高级源码…')
-        self.advanced_button.setAutoDefault(False)
-        self.advanced_button.clicked.connect(self._advanced)
-        source_controls.addWidget(self.advanced_button)
-        self.visual_button = bind(QPushButton(), '返回可视化组合')
-        self.visual_button.setAutoDefault(False)
-        self.visual_button.clicked.connect(self._return_visual)
-        source_controls.addWidget(self.visual_button)
-        source_controls.addStretch()
-        content.addLayout(source_controls)
-        splitter.addWidget(right)
-        splitter.setSizes([245, 670])
-        layout.addWidget(splitter, 1)
-        self.summary = QLabel()
-        self.summary.setWordWrap(True)
-        self.summary.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        layout.addWidget(self.summary)
+        self.splitter.addWidget(right)
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setSizes([245, 690])
+        layout.addWidget(self.splitter, 1)
+        bottom = QHBoxLayout()
+        bottom.setSpacing(12)
+        bottom.setContentsMargins(0, 8, 0, 0)
         self.status = QLabel()
         self.status.setWordWrap(True)
-        layout.addWidget(self.status)
+        self.status.setObjectName('secondaryText')
+        self.status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        bottom.addWidget(self.status, 1)
         self.buttons = _WizardButtons('创建模板')
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
-        layout.addWidget(self.buttons)
+        bottom.addWidget(self.buttons)
+        layout.addLayout(bottom)
         self.name_input.textChanged.connect(self._refresh)
         self.mode.currentIndexChanged.connect(self._change_style)
         self.styles.currentRowChanged.connect(self._change_style)
+
+    def _fit_content_list(self, *args):
+        """区域切换后按信息数量收紧列表，较多内容在列表内滚动"""
+        rows = min(5, max(2, self.footer_panel.items.count()))
+        self.footer_panel.items.setFixedHeight(rows * 26 + 8)
 
     def _style_source(self):
         mode = self.mode.currentData()
@@ -273,16 +314,14 @@ class TemplateWizard(QDialog):
         self.mode_hint.setText(tr('正在使用高级源码，返回可视化后可继续组合字段'))
         row = self.styles.currentRow()
         preset = self._presets[row] if row >= 0 else None
-        self.preview.clear()
         if mode == '内置样式' and preset:
-            if preset.thumbnail:
-                self.preview.setPixmap(preview_pixmap(preset.thumbnail, 245, 106))
             style = tr(preset.title)
             self.description.setText(tr(preset.description))
         else:
             style = tr(self.current_template) if mode == '复制当前模板' else tr(mode)
-            self.preview.setText(style)
             self.description.setText(tr('保留当前模板的完整样式和处理步骤' if mode == '复制当前模板' else '从空白边框开始，按需组合每个文字区域'))
+        self.style_title.setText(style)
+        self.style_title.setToolTip(style)
         error = ''
         try:
             if self._composition_error is not None:
@@ -299,12 +338,11 @@ class TemplateWizard(QDialog):
             error = localize_error(exc)
         model = self.footer_panel.layout_data()
         rows = model.get('rows', {})
-        self.summary.setText(tr('名称：{name} · 样式：{style} · {regions} 个文字区 · {items} 个信息项',
-                                name=self.name_input.text().strip() or tr('未命名模板'), style=style,
+        self.summary.setText(tr('{regions} 个文字区 · {items} 个信息项',
                                 regions=len(model.get('regions', [])),
                                 items=sum(len(row.get('items', [])) for row in rows.values())))
         self.status.setText(error if self._composition_error is not None or self.name_input.text().strip() or not self.source
-                            else tr('创建后可继续组合底部信息或编辑高级源码'))
+                            else tr('输入模板名称后即可创建'))
         self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(not error)
 
     def _advanced(self):
