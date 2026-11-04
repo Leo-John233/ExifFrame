@@ -1,3 +1,5 @@
+"""独立运行原版浏览器界面与本地接口服务"""
+
 import json
 import os
 import threading
@@ -14,6 +16,9 @@ from core.logger import logger, init_from_config
 from core.util import (list_files, log_rt, get_exif, convert_heic_to_jpeg, get_template, get_template_content,
                        save_template, list_templates)
 from processor.core import start_process
+
+# 从其他目录启动时也使用项目内的配置和模板
+os.chdir(Path(__file__).resolve().parent)
 
 # 加载配置
 config = load_config()

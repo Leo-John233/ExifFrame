@@ -8,7 +8,7 @@
 >
 > **这是一个用于给照片批量添加水印、处理照片像素比、图像色彩和质量的工具。**
 
-当前仅支持 Windows，运行源码需 Python 3.13 或更高版本。照片元数据读取使用项目内的 `exiftool/exiftool.exe`。
+当前仅支持 Windows，运行源码需 Python 3.13 或更高版本。照片元数据读取使用项目内的 ExifTool，支持 `exiftool/exiftool.exe` 和官网下载包中的 `exiftool/exiftool(-k).exe`，请将 `exiftool_files` 与程序保留在同一目录。
 
 ## 桌面窗口
 
@@ -19,7 +19,7 @@ ExifFrame 提供独立桌面操作窗口，无需启动浏览器，也不依赖�
 3. 预览水印并切换原图对照，选择按模板原样处理或使用快捷样式参数
 4. 设置质量和覆盖选项，批量导出后在输出文件树中查看结果
 
-输入目录内的照片按相对目录结构导出为 JPEG，同名输出默认跳过，启用覆盖后仅替换独立输出目录中的文件。单独添加的照片使用 `_watermarked` 后缀，默认自动编号。程序始终保护原照片。预览使用缩小图，导出保留原始分辨率。没有 ExifTool 时会读取照片自带的 EXIF 信息。
+输入目录内的照片按相对目录结构导出，PNG 保留为 PNG，其他支持格式导出为 JPEG。同名输出默认跳过，启用覆盖后仅替换独立输出目录中的文件。单独添加的照片使用 `_watermarked` 后缀，默认自动编号。程序始终保护原照片。“按模板原样处理”的预览从完整渲染结果缩略，快捷调整模式使用快速预览。没有 ExifTool 时会读取照片自带的 EXIF 信息。
 
 在项目目录安装依赖后启动：
 
@@ -35,7 +35,9 @@ python main.py
 & 'D:\miniconda3\envs\Python3.13\python.exe' main.py
 ```
 
-本机水印参数保存在 `config/desktop.json`，显式保存配置时会同步原项目的 `config/config.ini`。原有浏览器入口仍可通过 `python app.py` 使用。
+`main.py` 仅负责启动桌面窗口；需要原版浏览器界面时运行 `python web_server.py`。两个入口共用水印处理器和 ExifTool 读取逻辑。
+
+输入输出目录、模板、JPEG 质量、色度采样和覆盖开关以 `config/config.ini` 为准，桌面旧缓存不会覆盖这些共用配置。桌面独有的样式参数保存在 `config/desktop.json`。选择“按模板原样处理”后，导出沿用原版处理与保存方式。
 
 ### 验证与打包
 
