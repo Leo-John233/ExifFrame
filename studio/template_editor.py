@@ -24,12 +24,14 @@ PLACEHOLDERS = (
     ('版权', "{{ exif.Copyright | default('') }}"),
     ('摄影师', "{{ exif.Artist | default('') }}"),
     ('品牌标识', "{{ auto_logo() }}"),
+    ('地理位置', "{{ geo_location(exif) }}"),
 )
 
 register_translations({
     '模板名称': 'Template name', '新模板名称': 'New template name', '保存': 'Save',
     '另存为': 'Save as', '检查格式': 'Validate', '应用到预览': 'Preview', '撤销': 'Undo',
     '重做': 'Redo', '恢复已保存': 'Revert', '关闭': 'Close', '插入字段': 'Insert field',
+    '保存模板': 'Save template', '地理位置': 'Location',
     '格式化 JSON': 'Format JSON', '相机': 'Camera', '镜头': 'Lens', '拍摄参数': 'Exposure',
     '拍摄日期': 'Capture date', '版权': 'Copyright', '摄影师': 'Photographer', '品牌标识': 'Brand logo',
     'JSON 和 Jinja 模板源码': 'JSON and Jinja template source',
@@ -137,7 +139,7 @@ class TemplateEditor(QDialog):
         toolbar.setObjectName("templateEditorToolbar")
         toolbar.setMovable(False)
         toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.save_action = self._action("保存", self.save, "Ctrl+S", QStyle.StandardPixmap.SP_DialogSaveButton)
+        self.save_action = self._action("保存模板", self.save, "Ctrl+S", QStyle.StandardPixmap.SP_DialogSaveButton)
         self.save_as_action = self._action("另存为", self.save_as, "Ctrl+Shift+S")
         self.validate_action = self._action("检查格式", self.check_format, "F7", QStyle.StandardPixmap.SP_DialogApplyButton)
         self.preview_action = self._action("应用到预览", self.apply_preview, "Ctrl+Return")
@@ -146,6 +148,7 @@ class TemplateEditor(QDialog):
         toolbar.addSeparator()
         toolbar.addAction(self.validate_action)
         toolbar.addAction(self.preview_action)
+        toolbar.widgetForAction(self.preview_action).setObjectName('primaryButton')
         toolbar.addSeparator()
         self.undo_action = self._action("撤销", self._undo, "Ctrl+Z")
         self.redo_action = self._action("重做", self._redo, "Ctrl+Y")

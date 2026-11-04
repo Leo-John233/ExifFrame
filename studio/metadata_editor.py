@@ -66,6 +66,8 @@ register_translations({
     '操作失败：{error}': 'Operation failed: {error}',
     '字段：{field}': 'Field: {field}',
     '修改坐标时同时选择对应的半球方向': 'Editing a coordinate also selects its hemisphere',
+    '地理位置': 'Location',
+    '纬度与经度合为地理位置，在水印中以度分秒显示': 'Latitude and longitude form one Location field, shown in degrees, minutes and seconds in the watermark',
 })
 
 PHOTO_EXTENSIONS = '*.jpg *.jpeg *.png *.heic *.heif *.tif *.tiff *.dng *.nef *.nrw *.cr2 *.cr3 *.crw *.arw *.sr2 *.raf *.rw2 *.orf *.pef *.srw *.3fr *.iiq'
@@ -185,7 +187,15 @@ class MetadataEditor(QDialog):
                 header = QLabel()
                 bind(header, title)
                 grid.addWidget(header, 0, column)
-            for row, field in enumerate((f for f in FIELDS if f.group == group), 1):
+            row = 1
+            for field in (f for f in FIELDS if f.group == group):
+                if field.tag == 'GPSLatitude':
+                    location_hint = QLabel()
+                    bind(location_hint, '纬度与经度合为地理位置，在水印中以度分秒显示')
+                    location_hint.setWordWrap(True)
+                    location_hint.setObjectName('secondaryText')
+                    grid.addWidget(location_hint, row, 0, 1, 3)
+                    row += 1
                 check = QCheckBox()
                 bind(check, field.label)
                 check.setToolTip(field.tag)
@@ -203,6 +213,7 @@ class MetadataEditor(QDialog):
                 grid.addWidget(original, row, 1)
                 grid.addWidget(editor, row, 2)
                 self._field_rows[field.tag] = (field, check, original, editor)
+                row += 1
             grid.setRowStretch(grid.rowCount(), 1)
             scroll.setWidget(body)
             self.tabs.addTab(scroll, tr(group))

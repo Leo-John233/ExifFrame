@@ -15,7 +15,7 @@ from PySide6.QtCore import QCoreApplication, QLibraryInfo, QLocale, QObject, QTr
 
 PREFERENCES_PATH = Path("config/ui.json")
 _messages = {}
-_messages.update({'相机显示文字': 'Camera display text', '镜头显示文字': 'Lens display text'})
+_messages.update({'相机显示文字': 'Camera text', '镜头显示文字': 'Lens text'})
 _messages.update({
     '仅标识居中': 'Centered logo only', '仅品牌标识': 'Logo only',
     '品牌标识居中，两侧显示相机、镜头与拍摄参数': 'Centered logo with camera, lens and exposure details on both sides',
@@ -172,6 +172,31 @@ def localize_error(error) -> str:
 
 
 register_translations({
+    "地理位置": "Location",
+    "导出 1 张照片": "Export 1 photo",
+    "导出这张勾选照片，原文件保持不变（Ctrl+R）": "Export this checked photo and keep the source file unchanged (Ctrl+R)",
+    "导出已取消，已保存 1 张照片": "Export cancelled; 1 photo saved",
+    "导出完成，已保存 1 张照片": "Export complete; 1 photo saved",
+    "导出照片": "Export photos", "导出 {count} 张照片": "Export {count} photos", "正在导出…": "Exporting…",
+    "取消导出": "Cancel export", "保存设置": "Save settings", "重置设置": "Reset settings",
+    "锁定设置": "Lock settings", "编辑设置": "Edit settings", "设置已载入": "Settings loaded",
+    "设置有修改，尚未保存": "Settings have unsaved changes", "设置已保存": "Settings saved", "保存设置失败": "Unable to save settings",
+    "保存输入输出目录、模板选择和导出选项，不改写模板内容": "Save folders, template selection and export options without changing the template content",
+    "对照原图": "Compare original", "仅切换预览，不改变导出内容（Ctrl+Tab）": "Switch the preview only; exported photos remain unchanged (Ctrl+Tab)",
+    "编辑当前照片的水印信息，原片保持不变（Ctrl+I）": "Edit the current photo's watermark information; keep the source photo unchanged (Ctrl+I)",
+    "自由组合水印字段、顺序和分隔符（Ctrl+Shift+E）": "Arrange watermark fields, order and separators (Ctrl+Shift+E)",
+    "编辑完整 JSON / Jinja 模板（Ctrl+E）": "Edit the complete JSON / Jinja template (Ctrl+E)",
+    "正在读取照片，完成后可以导出": "Photos are loading; export will be available when loading finishes",
+    "导出 {count} 张勾选照片，原文件保持不变（Ctrl+R）": "Export {count} checked photos and keep the source files unchanged (Ctrl+R)",
+    "在输入列表勾选需要导出的照片": "Check the photos you want to export in the input list",
+    "先添加照片，再勾选需要导出的照片": "Add photos, then check the ones you want to export",
+    "正在导出 {current}/{total} · {name}": "Exporting {current}/{total} · {name}",
+    "导出已取消，已保存 {count} 张照片": "Export cancelled; {count} photos saved",
+    "导出完成，已保存 {count} 张照片": "Export complete; {count} photos saved", "导出失败": "Export failed",
+    "当前照片完成后取消导出": "Finishing the current photo, then cancelling export",
+    "添加照片后开始编辑水印\n\n拖入 JPG、PNG、HEIC 文件或文件夹，或点击上方“添加照片”": "Add photos to start editing watermarks\n\nDrop JPG, PNG, HEIC files or folders here, or use Add photos above",
+    "从左侧列表选择一张照片\n\n勾选的输入照片会一并导出": "Select a photo in the list to preview it\n\nChecked input photos will be exported together",
+    "此目录暂无导出照片\n\n导出后可在“输出”标签查看成品": "No exported photos in this folder\n\nExport your photos to review the results in the Output tab",
     "组合底部信息…": "Compose footer information…", "高级源码": "Advanced source", "高级源码…": "Advanced source…",
     "切换编辑方式": "Switch editor", "将未保存的修改带到{editor}继续编辑？": "Continue editing the unsaved changes in {editor}?",
     "可视化组合": "the visual composer", "高级源码编辑器": "the source editor",

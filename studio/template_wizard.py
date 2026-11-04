@@ -45,6 +45,7 @@ class _WizardButtons(QDialogButtonBox):
     def __init__(self, accept_label):
         self._accept_label = accept_label
         super().__init__(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.button(QDialogButtonBox.StandardButton.Ok).setObjectName('primaryButton')
         self._translate()
 
     def _translate(self):
@@ -101,6 +102,7 @@ class TemplateWizard(QDialog):
         left.setMaximumWidth(315)
         choices = QVBoxLayout(left)
         choices.setContentsMargins(0, 0, 7, 0)
+        choices.addWidget(bind(QLabel(), '起始样式'))
         self.mode = QComboBox()
         for value in ('内置样式', '复制当前模板', '空白边框'):
             self.mode.addItem(tr(value), value)

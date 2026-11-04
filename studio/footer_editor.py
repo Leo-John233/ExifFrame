@@ -7,14 +7,14 @@ from copy import deepcopy
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
-    QAbstractItemView, QButtonGroup, QComboBox, QDialog, QFormLayout,
+    QAbstractItemView, QButtonGroup, QComboBox, QDialog,
     QGridLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMessageBox, QPushButton, QSizePolicy,
     QSplitter, QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from core.desktop_service import write_template
-from core.footer import FIELD_CATALOG, REGION_LABELS, FooterError, normalize_layout, preview_rows, read_layout, write_layout
+from core.footer import FIELD_CATALOG, REGION_LABELS, FooterError, get_footer_field, normalize_layout, preview_rows, read_layout, write_layout
 from studio.i18n import bind, localize_error, register_translations, tr, translator
 
 
@@ -81,6 +81,14 @@ register_translations({
     '每个区域最多放置 32 项信息': 'Each region can contain up to 32 items',
     '底部信息字段无效': 'Invalid footer field', '自定义文字过长': 'Custom text is too long',
     '文字区必须保留在原有版式内': 'Text regions must stay within the original layout',
+    '地理位置': 'Location', '水印区域': 'Watermark region',
+    '添加「{field}」': 'Add {field}', '添加到{region}': 'Add to {region}',
+    '先选择要添加的字段': 'Select a field to add', '拖动排序': 'Drag to reorder',
+    '双击左侧字段，或添加自定义文字': 'Double-click a field on the left, or add custom text',
+    '合并已有经纬度': 'Combine latitude and longitude',
+    '合并本区域的经纬度，使用首个坐标项的文字样式': 'Combine coordinates in this region using the first coordinate’s text style',
+    '{region}的内容': '{region} content',
+    '纬度（旧字段）': 'Latitude (legacy)', '经度（旧字段）': 'Longitude (legacy)',
 })
 
 
@@ -120,6 +128,10 @@ class FooterPanel(QWidget):
         self._filename = filename
         self._file_dir = file_dir
         self._fields = {field.key: field for field in FIELD_CATALOG}
+        for key in ('gps_latitude', 'gps_longitude'):
+            field = get_footer_field(key)
+            if field:
+                self._fields[key] = field
         self._region_buttons = {}
         self._preview_labels = {}
         self._build_ui()
@@ -155,6 +167,7 @@ class FooterPanel(QWidget):
         self.catalog.setMinimumWidth(170)
         bind(self.catalog, '双击字段添加到当前区域', 'setToolTip')
         self.catalog.itemDoubleClicked.connect(lambda item, column: self.add_field(item.data(0, Qt.ItemDataRole.UserRole)))
+        self.catalog.currentItemChanged.connect(self._update_add_button)
         self._catalog_groups = {}
         self._catalog_items = {}
         for field in FIELD_CATALOG:
@@ -168,6 +181,7 @@ class FooterPanel(QWidget):
             self._catalog_items[field.key] = item
         library_layout.addWidget(self.catalog, 1)
         self.add_button = self._button('添加所选字段', self._add_selected)
+        self.add_button.setObjectName('primaryButton')
         library_layout.addWidget(self.add_button)
         self.custom_button = self._button('添加自定义文字', self.add_text)
         library_layout.addWidget(self.custom_button)
@@ -177,7 +191,7 @@ class FooterPanel(QWidget):
         edit_layout = QVBoxLayout(editing)
         edit_layout.setContentsMargins(6, 0, 0, 0)
         self.region_group = QGroupBox()
-        bind(self.region_group, '选择要编辑的区域', 'setTitle')
+        bind(self.region_group, '水印区域', 'setTitle')
         self.region_grid = QGridLayout(self.region_group)
         self.button_group = QButtonGroup(self)
         self.button_group.setExclusive(True)
@@ -196,24 +210,43 @@ class FooterPanel(QWidget):
         self.items.reordered.connect(self._reordered)
         edit_layout.addWidget(self.items, 1)
         self.empty_label = QLabel()
-        bind(self.empty_label, '此区域还没有文字，从左侧添加字段')
+        bind(self.empty_label, '双击左侧字段，或添加自定义文字')
         self.empty_label.setObjectName('secondaryText')
         edit_layout.addWidget(self.empty_label)
         move_row = QHBoxLayout()
-        self.up_button = self._button('上移', lambda: self.move_item(-1))
-        self.down_button = self._button('下移', lambda: self.move_item(1))
+        reorder_hint = QLabel()
+        bind(reorder_hint, '拖动排序')
+        reorder_hint.setObjectName('secondaryText')
+        move_row.addWidget(reorder_hint)
+        move_row.addStretch()
+        self.up_button = QPushButton('↑')
+        self.down_button = QPushButton('↓')
+        for button, label, direction in ((self.up_button, '上移', -1), (self.down_button, '下移', 1)):
+            button.setFixedWidth(34)
+            button.setAutoDefault(False)
+            bind(button, label, 'setToolTip')
+            bind(button, label, 'setAccessibleName')
+            button.clicked.connect(lambda checked=False, direction=direction: self.move_item(direction))
         self.remove_button = self._button('删除', self.remove_item)
         for button in (self.up_button, self.down_button, self.remove_button):
             move_row.addWidget(button)
-        move_row.addStretch()
         edit_layout.addLayout(move_row)
+        self.merge_location_button = self._button('合并已有经纬度', self.merge_location)
+        bind(self.merge_location_button, '合并本区域的经纬度，使用首个坐标项的文字样式', 'setToolTip')
+        self.merge_location_button.hide()
+        edit_layout.addWidget(self.merge_location_button)
+        delete_action = QAction(self.items)
+        delete_action.setShortcut(QKeySequence.StandardKey.Delete)
+        delete_action.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
+        delete_action.triggered.connect(self.remove_item)
+        self.items.addAction(delete_action)
 
         self.details = QGroupBox()
         bind(self.details, '选中内容', 'setTitle')
-        form = QFormLayout(self.details)
+        form = QGridLayout(self.details)
         self.item_hint = QLabel()
         self.item_hint.setWordWrap(True)
-        form.addRow(self.item_hint)
+        form.addWidget(self.item_hint, 0, 0, 1, 4)
         self.prefix_input = QLineEdit()
         self.suffix_input = QLineEdit()
         self.text_input = QLineEdit()
@@ -223,9 +256,14 @@ class FooterPanel(QWidget):
         bind(self.prefix_label, '前面文字')
         bind(self.suffix_label, '后面文字')
         bind(self.text_label, '文字内容')
-        form.addRow(self.prefix_label, self.prefix_input)
-        form.addRow(self.suffix_label, self.suffix_input)
-        form.addRow(self.text_label, self.text_input)
+        form.addWidget(self.prefix_label, 1, 0)
+        form.addWidget(self.prefix_input, 1, 1)
+        form.addWidget(self.suffix_label, 1, 2)
+        form.addWidget(self.suffix_input, 1, 3)
+        form.addWidget(self.text_label, 2, 0)
+        form.addWidget(self.text_input, 2, 1, 1, 3)
+        form.setColumnStretch(1, 1)
+        form.setColumnStretch(3, 1)
         self.prefix_input.textEdited.connect(lambda value: self._edit_item('prefix', value))
         self.suffix_input.textEdited.connect(lambda value: self._edit_item('suffix', value))
         self.text_input.textEdited.connect(lambda value: self._edit_item('text', value))
@@ -404,9 +442,11 @@ class FooterPanel(QWidget):
         self.custom_separator.setVisible(index == len(self.SEPARATORS) - 1)
         self.separator.setEnabled(bool(self._region))
         self.custom_separator.setEnabled(bool(self._region))
-        self.add_button.setEnabled(bool(self._region))
+        self._update_add_button()
         self.custom_button.setEnabled(bool(self._region))
-        self.row_heading.setText(tr('当前区域：{region}', region=self._region_label(self._region)) if self._region else tr('字段与文字'))
+        self.row_heading.setText(tr('{region}的内容', region=self._region_label(self._region)) if self._region else tr('字段与文字'))
+        legacy = {item.get('field') for item in self._row().get('items', [])}
+        self.merge_location_button.setVisible({'gps_latitude', 'gps_longitude'} <= legacy)
         for region, button in self._region_buttons.items():
             button.setChecked(region == self._region)
         self._updating = False
@@ -418,6 +458,7 @@ class FooterPanel(QWidget):
             return
         values = self._row().get('items', [])
         item = values[index] if 0 <= index < len(values) else None
+        self.details.setVisible(item is not None)
         field = self._fields.get(item.get('field')) if item else None
         self.up_button.setEnabled(index > 0)
         self.down_button.setEnabled(0 <= index < len(values) - 1)
@@ -446,11 +487,45 @@ class FooterPanel(QWidget):
             item.setHidden(bool(text) and text not in f'{tr(field.label)} {field.label} {key} {field.example}'.casefold())
         for group in self._catalog_groups.values():
             group.setHidden(all(group.child(i).isHidden() for i in range(group.childCount())))
+        current = self.catalog.currentItem()
+        if text and (current is None or current.isHidden()):
+            first = next((item for item in self._catalog_items.values() if not item.isHidden()), None)
+            self.catalog.setCurrentItem(first)
 
     def _add_selected(self):
         item = self.catalog.currentItem()
         if item:
             self.add_field(item.data(0, Qt.ItemDataRole.UserRole))
+
+    def _update_add_button(self, *args):
+        if not hasattr(self, 'add_button'):
+            return
+        selected = self.catalog.currentItem()
+        field = self._fields.get(selected.data(0, Qt.ItemDataRole.UserRole)) if selected else None
+        self.add_button.setEnabled(bool(field and self._region))
+        self.add_button.setText(tr('添加「{field}」', field=tr(field.label)) if field else tr('添加所选字段'))
+        self.add_button.setToolTip(tr('添加到{region}', region=self._region_label(self._region)) if field else tr('先选择要添加的字段'))
+
+    def merge_location(self):
+        """仅在明确点击后合并当前区域的旧坐标字段"""
+        items = self._row().get('items', [])
+        legacy_keys = {'gps_latitude', 'gps_longitude'}
+        if not legacy_keys <= {item.get('field') for item in items}:
+            return
+        first = next(index for index, item in enumerate(items) if item.get('field') in legacy_keys)
+        combined = deepcopy(items[first])
+        for key in ('expression', 'raw', 'segments', 'text', 'label'):
+            combined.pop(key, None)
+        combined.update(field='location', prefix='', suffix='')
+        rows = []
+        for index, item in enumerate(items):
+            if index == first:
+                rows.append(combined)
+            if item.get('field') not in legacy_keys:
+                rows.append(item)
+        self._row()['items'] = rows
+        self._refresh_items(first)
+        self._changed()
 
     def add_field(self, key):
         field = self._fields.get(key)
@@ -631,6 +706,7 @@ class FooterEditor(QDialog):
         layout.addWidget(self.status_label)
         actions = QHBoxLayout()
         self.preview_button = QPushButton()
+        self.preview_button.setObjectName('primaryButton')
         bind(self.preview_button, '应用预览')
         self.preview_button.clicked.connect(self.apply_preview)
         actions.addWidget(self.preview_button)
