@@ -248,24 +248,37 @@ class MarginWithRatioFilter(FilterProcessor):
 class WatermarkFilter(FilterProcessor):
     def process(self, ctx: PipelineContext):
         img = ctx.get_buffer()[0]
+        from processor.watermark_1521 import render_watermark, uses_default_layout, watermark_scale
+        scale = watermark_scale(ctx)
+        if uses_default_layout(ctx):
+            canvas = render_watermark(ctx, img, scale)
+            ctx.update_buffer([canvas]).save_buffer(self.name()).success()
+            return
         color = ctx.get("color", "white")
         delimiter_color = ctx.get("delimiter_color", "black")
         delimiter_width = ctx.getint("delimiter_width", int(img.width * .003))
         left_margin = ctx.getint("left_margin", 0)
         right_margin = ctx.getint("right_margin", 0)
         top_margin = ctx.getint("top_margin", 0)
-        bottom_margin = ctx.getint("bottom_margin", int(img.height * .12))
-        middle_spacing = ctx.getint("middle_spacing", int(bottom_margin * .05))
+        base_bottom_margin = ctx.getint("bottom_margin", int(img.height * .12))
+        fixed_footer = 'bottom_margin' in ctx
+        bottom_margin = base_bottom_margin if fixed_footer or scale == 1 else max(1, round(base_bottom_margin * scale))
+        middle_spacing = ctx.getint("middle_spacing", int(base_bottom_margin * .05))
+        if scale != 1:
+            delimiter_width = max(1, round(delimiter_width * scale))
+            middle_spacing = max(0, round(middle_spacing * scale))
         right_alignment = ctx.getenum("right_alignment", Alignment.RIGHT, Alignment)
 
+        text_nodes = []
         for t_s in [ctx.get("left_top"), ctx.get("left_bottom"), ctx.get("right_top"), ctx.get("right_bottom")]:
             if "height" not in t_s:
-                t_s["height"] = int(bottom_margin * .3)
+                t_s["height"] = int(base_bottom_margin * .3)
+            if scale != 1:
+                t_s = dict(t_s)
+                t_s['height'] = max(1, round(float(t_s['height']) * scale))
+            text_nodes.append(t_s)
 
-        left_top = start_process([ctx.get("left_top")])
-        left_bottom = start_process([ctx.get("left_bottom")])
-        right_top = start_process([ctx.get("right_top")])
-        right_bottom = start_process([ctx.get("right_bottom")])
+        left_top, left_bottom, right_top, right_bottom = (start_process([node]) for node in text_nodes)
 
         left_logo = ctx.get("left_logo")
         right_logo = ctx.get("right_logo")
@@ -275,6 +288,8 @@ class WatermarkFilter(FilterProcessor):
         canvas_width = img.width + left_margin + right_margin
         canvas_height = img.height + top_margin + bottom_margin
         common_spacing = int(.02 * canvas_width)
+        if scale != 1:
+            common_spacing = max(0, round(common_spacing * scale))
 
         # 新建画布
         canvas = Image.new("RGBA", (canvas_width, canvas_height), color)
@@ -286,9 +301,12 @@ class WatermarkFilter(FilterProcessor):
         left_logo_width = 0
         if left_logo:
             logo_size = canvas_height - footer_start_y
+            if fixed_footer and scale != 1:
+                logo_size = max(1, round(logo_size * scale))
             # 缩放图标以适应底部高度 (正方形)
             left_logo = resized_logo(left_logo, (logo_size, logo_size))
-            canvas.paste(left_logo, (left_margin, footer_start_y), mask=left_logo if left_logo.mode == 'RGBA' else None)
+            logo_y = footer_start_y if scale == 1 else footer_start_y + (bottom_margin - logo_size) // 2
+            canvas.paste(left_logo, (left_margin, logo_y), mask=left_logo if left_logo.mode == 'RGBA' else None)
             left_logo_width = logo_size
 
         if center_logo and bottom_margin > 0:
@@ -299,6 +317,8 @@ class WatermarkFilter(FilterProcessor):
                 available_width = min(available_width, max(1, round(canvas_width * .18)))
             available_height = max(1, bottom_margin - padding * 2)
             logo_height = min(center_logo_height or available_height, available_height)
+            if scale != 1 and (fixed_footer or center_logo_height):
+                logo_height = min(available_height, max(1, round(logo_height * scale)))
             center_logo = resized_logo(center_logo, (available_width, max(1, logo_height)), contain=True)
             center_x = (canvas.width - center_logo.width) // 2
             center_y = footer_start_y + ((canvas.height - footer_start_y) - center_logo.height) // 2
