@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 
 from jinja2 import Environment, nodes, pass_context
-from core.geography import format_location
+from core.geography import format_altitude, format_location
 from core.dates import watermark_date
 
 
@@ -43,7 +43,7 @@ FIELD_CATALOG = (
     FooterField('datetime', '日期与时间', '时间与位置', '2026.10.05 11:11', 'watermark_date(' + _DATE + ', true)'),
     FooterField('timezone', '时区偏移', '时间与位置', '+08:00', "exif.OffsetTimeOriginal|default('')"),
     FooterField('location', '地理位置', '时间与位置', '26°9\'12"N 119°17\'8"E', 'geo_location(exif)'),
-    FooterField('gps_altitude', '海拔', '时间与位置', '100', "exif.GPSAltitude|default('')", '', ' m'),
+    FooterField('gps_altitude', '海拔', '时间与位置', '100m', 'geo_altitude(exif)'),
     FooterField('photographer', '摄影师', '作者与文字', 'Alice', "exif.Artist|default('')"),
     FooterField('author', '作者', '作者与文字', 'Alice', "exif.Author|default('')"),
     FooterField('copyright', '版权', '作者与文字', 'All rights reserved', "exif.Copyright|default('')"),
@@ -75,6 +75,7 @@ _ALIASES = {
     'WhiteBalance': 'white_balance', 'GPSLatitude': 'gps_latitude', 'GPSLongitude': 'gps_longitude',
     'GPSAltitude': 'gps_altitude', 'OffsetTimeOriginal': 'timezone',
 }
+_LEGACY_ALTITUDE = re.compile(r'''^\s*exif\s*\.\s*GPSAltitude\s*\|\s*default\s*\(\s*(['"])\1\s*\)\s*$''')
 
 
 class FooterError(ValueError):
@@ -128,6 +129,8 @@ def _generated_row(text):
 
 
 def _field_key(expression):
+    if re.fullmatch(r'geo_altitude\s*\(\s*exif\s*\)', expression):
+        return 'gps_altitude'
     if 'watermark_date(' in expression:
         if '~' in expression:
             return None
@@ -149,6 +152,24 @@ def _field_key(expression):
     return next(iter(choices)) if len(choices) == 1 and len(names) == sum(name in _ALIASES for name in names) else None
 
 
+def _legacy_altitude_unit(literal):
+    for suffix in (' m', 'm'):
+        if not literal.startswith(suffix):
+            continue
+        rest = literal[len(suffix):]
+        if not rest or rest[0].isspace() or rest[0] in ',，;；|·!?。！?)]}':
+            return suffix
+        if rest[0] in '.:' and (len(rest) == 1 or rest[1].isspace()):
+            return suffix
+    return ''
+
+
+def _field_suffix(item, literal):
+    if item['field'] == 'gps_altitude' and _LEGACY_ALTITUDE.fullmatch(item.get('expression', '')):
+        return _legacy_altitude_unit(literal)
+    return _FIELDS[item['field']].suffix
+
+
 def _read_text(text):
     """将原模板中的拍摄参数拆成独立字段，同时保留原表达式"""
     text = str(text or '')
@@ -167,7 +188,7 @@ def _read_text(text):
         item = {'field': key, 'expression': expression, 'prefix': '', 'suffix': ''} if key else {'raw': '{{ ' + expression + ' }}', 'label': '原有自定义内容'}
         literal = text[previous_end:match.start()]
         if items and 'field' in items[-1]:
-            suffix = _FIELDS[items[-1]['field']].suffix
+            suffix = _field_suffix(items[-1], literal)
             if suffix and literal.startswith(suffix):
                 items[-1]['suffix'] = suffix
                 literal = literal[len(suffix):]
@@ -185,7 +206,7 @@ def _read_text(text):
         previous_end = match.end()
     tail = text[previous_end:]
     if items and 'field' in items[-1]:
-        suffix = _FIELDS[items[-1]['field']].suffix
+        suffix = _field_suffix(items[-1], tail)
         if suffix and tail.startswith(suffix):
             items[-1]['suffix'] = suffix
             tail = tail[len(suffix):]
@@ -367,13 +388,23 @@ def _item_parts(context, metadata, item, missing, base_style):
     style = {**base_style, **_resolved_style(item.get('style', {}), context, values)}
     if 'field' in item:
         field = _FIELDS[item['field']]
-        value = _expression(context.environment, item.get('expression') or field.expression)(**values)
+        expression = item.get('expression') or ''
+        suffix = item.get('suffix', field.suffix)
+        legacy_altitude = item['field'] == 'gps_altitude' and (
+            bool(_LEGACY_ALTITUDE.fullmatch(expression)) or not expression and 'suffix' in item)
+        if legacy_altitude:
+            default_unit = suffix in {' m', 'm'} or 'suffix' not in item
+            value = format_altitude(metadata, include_unit=default_unit)
+            if default_unit:
+                suffix = ''
+        else:
+            value = _expression(context.environment, expression or field.expression)(**values)
         value = str(value).strip() if value is not None else ''
         if item['field'] in {'date', 'datetime'} and re.fullmatch(r'\d{4}[-:./]\d{1,2}[-:./]\d{1,2}(?:[T ]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?', value):
             value = watermark_date(value, include_time=item['field'] == 'datetime')
         if value in _EMPTY:
             return [{**style, 'text': '—'}] if missing == 'dash' else []
-        return [{**style, 'text': item.get('prefix', field.prefix) + value + item.get('suffix', field.suffix)}]
+        return [{**style, 'text': item.get('prefix', field.prefix) + value + suffix}]
     if 'text' in item:
         return [{**style, 'text': item['text']}] if item['text'] else []
     text = _raw_template(context.environment, item.get('raw', '')).render(values)
@@ -406,7 +437,7 @@ def footer_row(context, metadata, items, separator=' ', missing='hide'):
 def _preview_environment():
     environment = Environment(autoescape=False)
     environment.globals.update(footer_row=footer_row, footer_segments=footer_segments,
-                               geo_location=format_location, watermark_date=watermark_date)
+                               geo_location=format_location, geo_altitude=format_altitude, watermark_date=watermark_date)
     return environment
 
 
@@ -419,7 +450,7 @@ def preview_rows(layout: dict, metadata=None, filename='', file_dir='', file_pat
                     'ShutterSpeed': '1/250', 'ISO': '160', 'Artist': 'Alice', 'Copyright': 'All rights reserved',
                     'DateTimeOriginal': '2026-10-05 11:11:39',
                     'GPSLatitude': '26.1533333333333', 'GPSLatitudeRef': 'N',
-                    'GPSLongitude': '119.285555555556', 'GPSLongitudeRef': 'E'}
+                    'GPSLongitude': '119.285555555556', 'GPSLongitudeRef': 'E', 'GPSAltitude': '100'}
         for field in FIELD_CATALOG:
             match = re.search(r'exif\.([A-Za-z0-9_]+)', field.expression)
             if match:

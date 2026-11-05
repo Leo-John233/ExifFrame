@@ -2,6 +2,7 @@
 
 import math
 import re
+from decimal import Decimal, InvalidOperation, localcontext
 from fractions import Fraction
 
 
@@ -11,6 +12,9 @@ _DIRECTIONS = {'N': 'N', 'NORTH': 'N', '北': 'N', '北纬': 'N',
                'W': 'W', 'WEST': 'W', '西': 'W', '西经': 'W'}
 _NUMBER = r'[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:/\d+(?:\.\d*)?)?'
 _DIRECTION = r'NORTH|SOUTH|EAST|WEST|北纬|南纬|东经|西经|[NSEW北南东西]'
+_ALTITUDE_NUMBER = r'[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?'
+_ALTITUDE = re.compile(r'^\s*(' + _ALTITUDE_NUMBER + r'(?:\s*/\s*' + _ALTITUDE_NUMBER + r')?)'
+                       r'(?:\s*(?:m|meters?|metres?))?(?:\s*(above|below)\s+sea\s+level)?\s*$', re.I)
 
 
 def _text(value):
@@ -97,3 +101,39 @@ def format_location(metadata: dict) -> str:
     if latitude is None or longitude is None:
         return ''
     return _display_coordinate(latitude, True) + ' ' + _display_coordinate(longitude, False)
+
+
+def format_altitude(metadata: dict, include_unit=True) -> str:
+    """统一海拔数值和海平面方向，仅用于水印显示"""
+    value = metadata.get('GPSAltitude') if metadata else None
+    reference = metadata.get('GPSAltitudeRef') if metadata else None
+    if value is None or isinstance(value, bool):
+        return ''
+    direction = None
+    try:
+        if isinstance(value, (tuple, list)):
+            if len(value) != 2:
+                return ''
+            numerator, denominator = value
+        elif hasattr(value, 'numerator') and hasattr(value, 'denominator'):
+            numerator, denominator = value.numerator, value.denominator
+        else:
+            match = _ALTITUDE.fullmatch(_text(value))
+            if not match:
+                return ''
+            number, direction = match.groups()
+            parts = number.split('/', 1)
+            numerator, denominator = parts[0].strip(), parts[1].strip() if len(parts) == 2 else '1'
+        with localcontext() as context:
+            context.prec = 12
+            number = Decimal(str(numerator)) / Decimal(str(denominator))
+        if not number.is_finite():
+            return ''
+        ref_bytes = isinstance(reference, (bytes, bytearray)) and bytes(reference).rstrip(b'\x00') == b'\x01'
+        ref_number = isinstance(reference, (int, float)) and reference == 1
+        ref_text = _text(reference).lower()
+        below = number < 0 or (direction or '').lower() == 'below' or ref_bytes or ref_number or ref_text == '1' or ref_text.startswith('below')
+        number = (-abs(number) if below else abs(number)) if number else Decimal(0)
+        return format(number.normalize(), 'f') + ('m' if include_unit else '')
+    except (ValueError, TypeError, ArithmeticError, InvalidOperation):
+        return ''

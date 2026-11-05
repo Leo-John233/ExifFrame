@@ -204,6 +204,8 @@ def merge_overrides(metadata: dict, changes: dict) -> dict:
         elif tag in {'FocalLength', 'FocalLengthIn35mmFormat'}:
             display = f'{value} mm'
         result[tag] = display
+        if tag == 'GPSAltitude':
+            result['GPSAltitudeRef'] = '1' if float(value) < 0 else '0'
         for alias in aliases.get(tag, ()):
             result[alias] = display
     return result

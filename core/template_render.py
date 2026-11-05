@@ -7,8 +7,8 @@ from functools import lru_cache
 from jinja2 import Environment
 
 from core.jinja2renders import auto_logo, vh, vw
-from core.footer import footer_row, footer_segments
-from core.geography import format_location
+from core.footer import _LEGACY_ALTITUDE, _legacy_altitude_unit, footer_row, footer_segments
+from core.geography import format_altitude, format_location
 from core.dates import watermark_date
 
 
@@ -48,8 +48,76 @@ def _escape_string_variables(source):
     return ''.join(output)
 
 
+def _prepare_legacy_altitude(source):
+    """仅规范处理器文字中的旧海拔默认表达式和独立米单位"""
+    if 'GPSAltitude' not in source:
+        return source
+    stack, records = [], []
+    decoder = json.JSONDecoder()
+    index = 0
+    while index < len(source):
+        char = source[index]
+        if char == '"':
+            try:
+                value, end = decoder.raw_decode(source, index)
+            except ValueError:
+                return source
+            if stack and stack[-1]['kind'] == 'object':
+                frame = stack[-1]
+                if frame['expect_key']:
+                    frame['key'], frame['expect_key'] = value, False
+                elif frame['key'] == 'processor_name' and isinstance(value, str):
+                    frame['processor'] = True
+                elif frame['key'] == 'text' and isinstance(value, str):
+                    records.append((index, end, value, frame))
+            index = end
+            continue
+        if char == '{' and source[index:index + 2] in ('{{', '{%', '{#'):
+            end_tag = {'{{': '}}', '{%': '%}', '{#': '#}'}[source[index:index + 2]]
+            end = source.find(end_tag, index + 2)
+            if end < 0:
+                return source
+            index = end + 2
+            continue
+        if char in '{[':
+            parent = stack[-1] if stack else None
+            relation = parent.get('key') if parent and parent['kind'] == 'object' else None
+            stack.append({'kind': 'object' if char == '{' else 'array', 'parent': parent,
+                          'relation': relation, 'expect_key': True, 'key': None, 'processor': False})
+        elif char in '}]':
+            if not stack or (char == '}' and stack[-1]['kind'] != 'object') or (char == ']' and stack[-1]['kind'] != 'array'):
+                return source
+            stack.pop()
+        elif char == ',' and stack and stack[-1]['kind'] == 'object':
+            stack[-1]['expect_key'], stack[-1]['key'] = True, None
+        index += 1
+    if stack:
+        return source
+
+    def is_processor_text(frame):
+        if frame['processor']:
+            return True
+        parent = frame['parent']
+        return bool(parent and parent['kind'] == 'array' and parent['relation'] == 'text_segments'
+                    and parent['parent'] and parent['parent']['processor'])
+
+    pattern = re.compile(r'\{\{(.*?)\}\}', re.S)
+    for start, end, value, frame in reversed(records):
+        if not is_processor_text(frame):
+            continue
+        changed = value
+        for match in reversed(list(pattern.finditer(value))):
+            unit = _legacy_altitude_unit(value[match.end():])
+            if unit and _LEGACY_ALTITUDE.fullmatch(match.group(1)):
+                changed = changed[:match.start()] + '{{ geo_altitude(exif) }}' + changed[match.end() + len(unit):]
+        if changed != value:
+            source = source[:start] + json.dumps(changed, ensure_ascii=False) + source[end:]
+    return source
+
+
 def _prepare_footer_calls(source):
     """先解开新组合函数的 JSON 编码，避免引号进入 Jinja 代码位置"""
+    source = _prepare_legacy_altitude(source)
     if 'footer_row' not in source and 'footer_segments' not in source:
         return source
     def prepare(match):
@@ -73,5 +141,6 @@ def compiled_template(source: str, logo=auto_logo):
     environment = Environment(autoescape=False)
     environment.filters['json_string'] = _json_string
     environment.globals.update(vh=vh, vw=vw, auto_logo=logo, footer_row=footer_row,
-                               footer_segments=footer_segments, geo_location=format_location, watermark_date=watermark_date)
+                               footer_segments=footer_segments, geo_location=format_location,
+                               geo_altitude=format_altitude, watermark_date=watermark_date)
     return environment.from_string(_escape_string_variables(_prepare_footer_calls(source)))

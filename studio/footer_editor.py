@@ -552,7 +552,7 @@ class FooterPanel(QWidget):
     def _item_preview(self, item):
         """使用当前照片生成字段显示值，尚未读取照片时才使用示例"""
         field = self._fields.get(item.get('field'))
-        if self._metadata is None and field:
+        if self._metadata is None and field and field.key != 'gps_altitude':
             return f"{item.get('prefix', field.prefix)}{field.example}{item.get('suffix', field.suffix)}"
         region = self._region or 'left_top'
         model = {'kind': self._layout.get('kind', 'footer'), 'regions': [region],
@@ -689,7 +689,10 @@ class FooterPanel(QWidget):
         if not field or not self._region:
             return
         items = self._row().setdefault('items', [])
-        items.append({'field': key, 'prefix': field.prefix, 'suffix': field.suffix})
+        item = {'field': key, 'prefix': field.prefix, 'suffix': field.suffix}
+        if key == 'gps_altitude':
+            item['expression'] = field.expression
+        items.append(item)
         self._refresh_items(len(items) - 1)
         self._changed()
 

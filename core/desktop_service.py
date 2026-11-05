@@ -291,6 +291,17 @@ def _cached_metadata(source: str, modified: int, size: int, tool_signature) -> d
                 result[tag] = f'{abs(coordinate):.12g}'
                 positive, negative = ('N', 'S') if latitude else ('E', 'W')
                 result[reference] = negative if math.copysign(1, coordinate) < 0 else positive
+        altitude, reference = gps.get(6), gps.get(5)
+        if altitude is not None:
+            if isinstance(altitude, (tuple, list)) and len(altitude) == 2:
+                altitude = f'{altitude[0]}/{altitude[1]}'
+            elif hasattr(altitude, 'numerator') and hasattr(altitude, 'denominator'):
+                altitude = f'{altitude.numerator}/{altitude.denominator}'
+            result['GPSAltitude'] = altitude
+        if reference is not None:
+            if isinstance(reference, (bytes, bytearray)):
+                reference = reference[0] if reference and reference[0] in (0, 1) else bytes(reference).decode('ascii', errors='ignore').strip('\x00')
+            result['GPSAltitudeRef'] = reference
     # 清理相机写入的字符串终止符并统一回退时间格式
     result = {key: str(value).replace('\x00', '').strip() for key, value in result.items()}
     result['DateTimeOriginal'] = re.sub(r'^(\d{4}):(\d{2}):(\d{2})', r'\1-\2-\3', result['DateTimeOriginal'])
