@@ -245,133 +245,6 @@ class MarginWithRatioFilter(FilterProcessor):
         return "margin_with_ratio"
 
 
-def _watermark_conflicts(placements, width, footer_y, footer_height, left_margin, right_margin):
-    """检查底栏元素是否越界或互相覆盖"""
-    boxes = []
-    for image, (x, y) in placements.values():
-        if image is None or image.width < 1 or image.height < 1:
-            continue
-        if image.mode in ('RGBA', 'LA') and image.getbbox() is None:
-            continue
-        box = (x, y, x + image.width, y + image.height)
-        if (box[0] < left_margin or box[2] > width - right_margin or
-                box[1] < footer_y or box[3] > footer_y + footer_height):
-            return True
-        for other in boxes:
-            if box[0] < other[2] and other[0] < box[2] and box[1] < other[3] and other[1] < box[3]:
-                return True
-        boxes.append(box)
-    return False
-
-
-def _fit_watermark(placements, width, footer_y, footer_height, left_margin, right_margin,
-                   spacing, row_spacing, right_alignment):
-    """空间不足时按整体比例缩放文字和标识"""
-    visible = {
-        name: image for name, (image, _) in placements.items()
-        if image is not None and image.width > 0 and image.height > 0
-        and (image.mode not in ('RGBA', 'LA') or image.getbbox() is not None)
-    }
-    if not visible:
-        return {}
-
-    def size(name):
-        image = visible.get(name)
-        return image.size if image else (0, 0)
-
-    lt, lb, rt, rb = (size(name) for name in ('left_top', 'left_bottom', 'right_top', 'right_bottom'))
-    left_logo, center_logo, right_logo, delimiter = (
-        size(name) for name in ('left_logo', 'center_logo', 'right_logo', 'delimiter'))
-    left_text = max(lt[0], lb[0])
-    right_text = max(rt[0], rb[0])
-    spacing = max(0, spacing)
-    row_spacing = max(0, row_spacing)
-    left_width = left_logo[0] + (spacing + left_text if left_text else 0)
-    right_width = ((spacing + right_text) if right_text or right_logo[0] else 0)
-    if right_logo[0]:
-        right_width += right_logo[0] + delimiter[0] + 2 * spacing
-    top_height = max(lt[1], rt[1])
-    bottom_height = max(lb[1], rb[1])
-    text_height = top_height + bottom_height + (row_spacing if top_height and bottom_height else 0)
-    required_height = max(text_height, left_logo[1], center_logo[1], right_logo[1], delimiter[1], 1)
-    scale = min(1.0, footer_height / required_height)
-    if center_logo[0]:
-        middle = width // 2
-        if left_width:
-            required = left_width + spacing + (center_logo[0] + 1) / 2
-            scale = min(scale, max(0, middle - left_margin - 1) / max(1, required))
-        if right_width:
-            required = right_width + spacing + (center_logo[0] + 1) / 2
-            scale = min(scale, max(0, width - right_margin - middle - 1) / max(1, required))
-        scale = min(scale, max(0, width - left_margin - right_margin) / center_logo[0])
-    else:
-        required = left_width + right_width + (spacing if left_width and right_width else 0)
-        if required:
-            scale = min(scale, max(0, width - left_margin - right_margin) / required)
-
-    def layout(factor):
-        dimensions = {
-            name: (max(1, int(image.width * factor)), max(1, int(image.height * factor)))
-            for name, image in visible.items()
-        }
-        def dimensions_of(name):
-            return dimensions.get(name, (0, 0))
-
-        gap = int(spacing * factor)
-        line_gap = int(row_spacing * factor)
-        lt_size, lb_size, rt_size, rb_size = (
-            dimensions_of(name) for name in ('left_top', 'left_bottom', 'right_top', 'right_bottom'))
-        left_size, center_size, right_size, delimiter_size = (
-            dimensions_of(name) for name in ('left_logo', 'center_logo', 'right_logo', 'delimiter'))
-        top = max(lt_size[1], rt_size[1])
-        bottom = max(lb_size[1], rb_size[1])
-        if not top or not bottom:
-            line_gap = 0
-        top_y = footer_y + (footer_height - top - bottom - line_gap) // 2
-        top_baseline = top_y + top
-        bottom_baseline = top_baseline + line_gap + bottom
-        left_x = left_margin + left_size[0]
-        if lt_size[0] or lb_size[0]:
-            left_x += gap
-        right_end = width - right_margin - gap
-        right_column_width = max(rt_size[0], rb_size[0])
-        right_column_x = right_end - right_column_width
-        positions = {
-            'left_top': (left_x, top_baseline - lt_size[1]),
-            'left_bottom': (left_x, bottom_baseline - lb_size[1]),
-            'right_top': (right_column_x if right_alignment == Alignment.LEFT else right_end - rt_size[0],
-                          top_baseline - rt_size[1]),
-            'right_bottom': (right_column_x if right_alignment == Alignment.LEFT else right_end - rb_size[0],
-                             bottom_baseline - rb_size[1]),
-            'left_logo': (left_margin, footer_y + (footer_height - left_size[1]) // 2),
-            'center_logo': ((width - center_size[0]) // 2, footer_y + (footer_height - center_size[1]) // 2),
-            'delimiter': (right_column_x - gap - delimiter_size[0],
-                          footer_y + (footer_height - delimiter_size[1]) // 2),
-            'right_logo': (right_column_x - 2 * gap - delimiter_size[0] - right_size[0],
-                           footer_y + (footer_height - right_size[1]) // 2),
-        }
-        return dimensions, positions
-
-    # 整数取整和极小画布的最小像素尺寸需要再次校验
-    for _ in range(256):
-        dimensions, positions = layout(scale)
-        boxes = {
-            name: (Image.new('1', dimensions[name], 1), positions[name])
-            for name in dimensions
-        }
-        if not _watermark_conflicts(boxes, width, footer_y, footer_height, left_margin, right_margin):
-            break
-        scale *= .98
-    else:
-        raise ValueError('底部空间不足以容纳水印内容')
-
-    result = {}
-    for name, image in visible.items():
-        target_size = dimensions[name]
-        fitted = image if image.size == target_size else image.resize(target_size, Image.Resampling.LANCZOS)
-        result[name] = (fitted, positions[name])
-    return result
-
 class WatermarkFilter(FilterProcessor):
     def process(self, ctx: PipelineContext):
         img = ctx.get_buffer()[0]
@@ -384,12 +257,6 @@ class WatermarkFilter(FilterProcessor):
         bottom_margin = ctx.getint("bottom_margin", int(img.height * .12))
         middle_spacing = ctx.getint("middle_spacing", int(bottom_margin * .05))
         right_alignment = ctx.getenum("right_alignment", Alignment.RIGHT, Alignment)
-
-        if bottom_margin <= 0:
-            canvas = Image.new("RGBA", (img.width + left_margin + right_margin, img.height + top_margin), color)
-            canvas.paste(img, (left_margin, top_margin), mask=img if img.mode == 'RGBA' else None)
-            ctx.update_buffer([canvas]).save_buffer(self.name()).success()
-            return
 
         for t_s in [ctx.get("left_top"), ctx.get("left_bottom"), ctx.get("right_top"), ctx.get("right_bottom")]:
             if "height" not in t_s:
@@ -492,8 +359,7 @@ class WatermarkFilter(FilterProcessor):
         canvas.paste(right_bottom, (rb_x, rb_y), mask=right_bottom if right_bottom.mode == 'RGBA' else None)
 
         # 右图标处理 (逻辑类推：放置在右边距内侧)
-        delimiter = None
-        if right_logo and elem_height > 0:
+        if right_logo:
             # 先画一条分割线
             logo_size = elem_height
             delimiter = Image.new("RGBA", (delimiter_width, int(logo_size * 1.1)), delimiter_color)
@@ -507,30 +373,6 @@ class WatermarkFilter(FilterProcessor):
             right_logo_y = footer_start_y + elem_margin
             canvas.paste(right_logo, (right_logo_x, right_logo_y),
                          mask=right_logo if right_logo.mode == 'RGBA' else None)
-
-        placements = {
-            'left_top': (left_top, (l_x, lt_y)),
-            'left_bottom': (left_bottom, (l_x, lb_y)),
-            'right_top': (right_top, (rt_x, rt_y)),
-            'right_bottom': (right_bottom, (rb_x, rb_y)),
-            'left_logo': (left_logo if isinstance(left_logo, Image.Image) else None, (left_margin, footer_start_y)),
-            'center_logo': (center_logo if isinstance(center_logo, Image.Image) else None,
-                            (center_x, center_y) if isinstance(center_logo, Image.Image) else (0, 0)),
-            'right_logo': (right_logo if isinstance(right_logo, Image.Image) else None,
-                           (right_logo_x, right_logo_y) if isinstance(right_logo, Image.Image) else (0, 0)),
-            'delimiter': (delimiter, (delimiter_x, delimiter_y) if delimiter is not None else (0, 0)),
-        }
-        if _watermark_conflicts(placements, canvas_width, footer_start_y, bottom_margin, left_margin, right_margin):
-            fitted = _fit_watermark(placements, canvas_width, footer_start_y, bottom_margin,
-                                    left_margin, right_margin, common_spacing, middle_spacing, right_alignment)
-            canvas.close()
-            canvas = Image.new("RGBA", (canvas_width, canvas_height), color)
-            canvas.paste(img, (left_margin, top_margin), mask=img if img.mode == 'RGBA' else None)
-            for name in ('left_logo', 'center_logo', 'left_top', 'left_bottom',
-                         'right_top', 'right_bottom', 'delimiter', 'right_logo'):
-                if name in fitted:
-                    element, position = fitted[name]
-                    canvas.paste(element, position, mask=element if element.mode == 'RGBA' else None)
 
         # 7. 返回结果
         ctx.update_buffer([canvas]).save_buffer(self.name()).success()
