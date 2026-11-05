@@ -15,6 +15,15 @@ _DIRECTION = r'NORTH|SOUTH|EAST|WEST|北纬|南纬|东经|西经|[NSEW北南东�
 _ALTITUDE_NUMBER = r'[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?'
 _ALTITUDE = re.compile(r'^\s*(' + _ALTITUDE_NUMBER + r'(?:\s*/\s*' + _ALTITUDE_NUMBER + r')?)'
                        r'(?:\s*(?:m|meters?|metres?))?(?:\s*(above|below)\s+sea\s+level)?\s*$', re.I)
+_DISPLAY_ALTITUDE = r'[+-]?[0-9]+(?:\.[0-9]+)?m'
+_DISPLAY_SEPARATOR = r'[ \t|/·,;:：-]{1,32}'
+_LOCATION_LINE = re.compile(
+    rf'(?:(?P<before>{_DISPLAY_ALTITUDE})(?P<before_sep>{_DISPLAY_SEPARATOR}))?'
+    r'(?P<latitude>(?P<lat_degrees>[0-9]{1,2})°[0-5]?[0-9][\'′][0-5]?[0-9]["″][NS])'
+    r'(?P<coordinate_sep> +)'
+    r'(?P<longitude>(?P<lon_degrees>[0-9]{1,3})°[0-5]?[0-9][\'′][0-5]?[0-9]["″][EW])'
+    rf'(?:(?P<after_sep>{_DISPLAY_SEPARATOR})(?P<after>{_DISPLAY_ALTITUDE}))?'
+)
 
 
 def _text(value):
@@ -101,6 +110,19 @@ def format_location(metadata: dict) -> str:
     if latitude is None or longitude is None:
         return ''
     return _display_coordinate(latitude, True) + ' ' + _display_coordinate(longitude, False)
+
+
+def location_typography(text: str) -> str | None:
+    """仅调整完整坐标行的绘制文本，不改变模板或 EXIF 值"""
+    match = _LOCATION_LINE.fullmatch(text) if isinstance(text, str) else None
+    if not match or (match['before'] and match['after']):
+        return None
+    if int(match['lat_degrees']) > 90 or int(match['lon_degrees']) > 180:
+        return None
+    gap = '   ' if match['coordinate_sep'] == ' ' else match['coordinate_sep']
+    before = (match['before'] + match['before_sep']) if match['before'] else ''
+    after = (match['after_sep'] + match['after']) if match['after'] else ''
+    return before + match['latitude'] + gap + match['longitude'] + after
 
 
 def format_altitude(metadata: dict, include_unit=True) -> str:

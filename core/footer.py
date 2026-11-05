@@ -417,13 +417,31 @@ def footer_segments(context, metadata, items, separator=' ', missing='hide', sty
     output = []
     values = {**context.get_all(), 'exif': metadata}
     base = _resolved_style(style or {}, context, values)
+    previous_field = None
+    previous_single = False
     for item in items:
         parts = _item_parts(context, metadata, item, missing, base)
         if not parts:
             continue
+        field = item.get('field')
+        location_pair = {previous_field, field} == {'location', 'gps_altitude'}
+        location_pair = location_pair and output[-1]['text'] != '—' and parts[0]['text'] != '—'
         if output and separator:
-            output.append({**base, 'text': separator})
+            spacing = '   ' if location_pair and separator == ' ' else separator
+            last_style = {key: value for key, value in output[-1].items() if key != 'text'}
+            same_style = previous_single and len(parts) == 1 and last_style == {
+                key: value for key, value in parts[0].items() if key != 'text'
+            }
+            separator_style = spacing.isspace() and all(
+                last_style.get(key) == base.get(key) for key in ('font_path', 'is_bold', 'trim')
+            )
+            if location_pair and same_style and separator_style:
+                output[-1]['text'] += spacing + parts[0]['text']
+                previous_field, previous_single = field, False
+                continue
+            output.append({**base, 'text': spacing})
         output.extend(parts)
+        previous_field, previous_single = field, len(parts) == 1
     return output or [{**base, 'text': ''}]
 
 

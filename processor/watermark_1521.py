@@ -9,7 +9,7 @@ from PIL import Image, ImageDraw, ImageOps
 
 from core.font_fallback import _font_key, _native_z, _supports, _weight, render_with_fallback
 from processor.core import _parse_color
-from processor.generators import _font_state, load_font
+from processor.generators import _font_state, load_font, location_text_font
 from processor.types import Alignment
 
 
@@ -35,20 +35,22 @@ def _font_at_size(path, size):
 
 def _segment_image(segment):
     """按旧版字形边界生成单个文字片段"""
-    text = segment.get('text') or '   '
-    path = segment.get('font_path')
+    original = segment.get('text') or '   '
+    path, text, location = location_text_font(original, segment.get('font_path'), segment.get('is_bold', False))
     primary = load_font(path)
     size = 260 if segment.get('is_bold', False) or _weight(primary) >= 600 else 240
     font = _font_at_size(path, size)
+    original_font = _font_at_size(None, size) if location else None
+    baseline = original_font.getmetrics()[0] if original_font is not None else font.getmetrics()[0]
     color = _parse_color(segment.get('color', 'black'))
-    key = ('watermark_1521', font, text, color)
+    key = ('watermark_1521', font, text, color, original_font, original if original_font is not None else None)
     if not hasattr(_font_state, 'text_images'):
         _font_state.text_images = OrderedDict()
         _font_state.text_bytes = 0
     cache = _font_state.text_images
     if key in cache:
         cache.move_to_end(key)
-        return cache[key][0].copy(), font.getmetrics()[0]
+        return cache[key][0].copy(), baseline
 
     image = render_with_fallback(text, font, lambda fallback: _font_at_size(fallback, size), color)
     can_cache = image is None
@@ -70,6 +72,12 @@ def _segment_image(segment):
         height = max(1, bounds[3], ink[3] if ink else 0)
         if height < image.height:
             image = image.crop((0, 0, image.width, height))
+    if original_font is not None:
+        # 使用原字体的行框和基线，避免带动同列其他字段缩放
+        height = max(1, original_font.getbbox(original)[3])
+        frame = Image.new('RGBA', (image.width, height), (0, 0, 0, 0))
+        frame.alpha_composite(image, (0, baseline - font.getmetrics()[0]))
+        image = frame
     cost = image.width * image.height * 4 + len(text) * 4
     if can_cache and cost <= _TEXT_LIMIT:
         while cache and (_font_state.text_bytes + cost > _TEXT_LIMIT or len(cache) >= 64):
@@ -77,7 +85,7 @@ def _segment_image(segment):
             _font_state.text_bytes -= old_cost
         cache[key] = (image.copy(), cost)
         _font_state.text_bytes += cost
-    return image, font.getmetrics()[0]
+    return image, baseline
 
 
 def _row_image(node):

@@ -14,6 +14,7 @@ from PIL import ImageFont, Image, ImageDraw
 
 from core.configs import fonts_dir
 from core.font_fallback import render_with_fallback
+from core.geography import location_typography
 from processor.core import PipelineContext, ImageProcessor, Direction, _parse_color
 
 BASE_FONT_SIZE = 512
@@ -66,6 +67,26 @@ def _load_font(font_path: str):
                 return ImageFont.load_default()
     except OSError:
         return ImageFont.load_default()
+
+
+def location_text_font(text: str, font_path: str | None, is_bold: bool):
+    """仅在轻体字体可用且未指定字体时调整完整地理行"""
+    location = location_typography(text)
+    if location is None:
+        return font_path, text, False
+    if font_path is not None or is_bold:
+        return font_path, location, False
+    target = fonts_dir / 'Roboto-Light.ttf'
+    if not target.is_file():
+        return font_path, location, False
+    try:
+        selected = load_font('Roboto-Light.ttf')
+        loaded_path = getattr(selected, 'path', None)
+        if isinstance(loaded_path, (str, Path)) and Path(loaded_path).resolve() == target.resolve():
+            return 'Roboto-Light.ttf', location, True
+    except (OSError, RuntimeError, ValueError):
+        pass
+    return font_path, location, False
 
 
 @dataclass
@@ -224,8 +245,9 @@ class GradientColorGenerator(Generator):
 class RichTextGenerator(Generator):
     @staticmethod
     def generate(segment: TextSegment) -> Image.Image:
-        font = load_font(segment.font_path)
         text = ' ' if not segment.text or segment.text == '' else segment.text
+        path, text, _ = location_text_font(text, segment.font_path, segment.is_bold)
+        font = load_font(path)
         color = _parse_color(segment.color)
         key = (font, text, segment.height, segment.is_bold, color, segment.trim)
         if not hasattr(_font_state, 'text_images'):
