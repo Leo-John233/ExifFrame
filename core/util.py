@@ -3,7 +3,6 @@ import json
 import os
 import re
 import subprocess
-import sys
 import time
 from functools import wraps
 from pathlib import Path
@@ -12,19 +11,25 @@ from PIL import Image
 from jinja2 import Template
 
 from core.configs import templates_dir
+from core.exiftool_process import run_exiftool
 from core.jinja2renders import vh, vw, auto_logo
 from core.logger import logger
+from core.runtime_paths import application_root, is_onefile, resource_path
 from core.template_render import compiled_template
 
-RESOURCE_ROOT = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parents[1]
+RESOURCE_ROOT = application_root()
 EXIFTOOL_PATH = RESOURCE_ROOT / 'exiftool/exiftool.exe'
 
 
 def find_exiftool() -> Path | None:
     """同时识别命令行名称和官网下载包的默认名称"""
-    for candidate in (EXIFTOOL_PATH, EXIFTOOL_PATH.with_name('exiftool(-k).exe')):
-        if candidate.is_file():
-            return candidate.resolve()
+    roots = [EXIFTOOL_PATH]
+    if is_onefile():
+        roots.append(resource_path('exiftool/exiftool.exe'))
+    for executable in roots:
+        for candidate in (executable, executable.with_name('exiftool(-k).exe')):
+            if candidate.is_file():
+                return candidate.resolve()
     return None
 
 
@@ -36,11 +41,10 @@ def get_exif(path) -> dict:
         return {}
     try:
         # 路径通过 UTF-8 参数流传入，结束输入后带 -k 的程序也不会等待按键
-        result = subprocess.run(
+        result = run_exiftool(
             [str(tool), '-j', '-l', '-lang', 'en', '-charset', 'filename=UTF8',
              '-d', '%Y-%m-%d %H:%M:%S%3f%z', '-@', '-'],
-            input=(str(Path(path).resolve()) + '\n').encode('utf-8'), capture_output=True, timeout=20,
-            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), check=True,
+            input=(str(Path(path).resolve()) + '\n').encode('utf-8'), timeout=20,
         )
         records = json.loads(result.stdout)
         metadata = {}

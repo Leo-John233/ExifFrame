@@ -4,10 +4,11 @@ from pathlib import Path
 import tomli
 
 from core import CONFIG_PATH, PROJECT_INFO
+from core.runtime_paths import config_path
 
-fonts_dir = Path('config/fonts')
-logos_dir = Path('./config/logos')
-templates_dir = Path('./config/templates')
+fonts_dir = config_path('fonts')
+logos_dir = config_path('logos')
+templates_dir = config_path('templates')
 
 def load_config() -> configparser.ConfigParser:
     config = configparser.ConfigParser()

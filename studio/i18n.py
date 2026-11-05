@@ -11,9 +11,10 @@ from pathlib import Path
 from jinja2 import TemplateSyntaxError
 
 from PySide6.QtCore import QCoreApplication, QLibraryInfo, QLocale, QObject, QTranslator, Signal
+from core.runtime_paths import config_path
 
 
-PREFERENCES_PATH = Path("config/ui.json")
+PREFERENCES_PATH = config_path('ui.json')
 _messages = {}
 _messages.update({'相机显示文字': 'Camera text', '镜头显示文字': 'Lens text'})
 _messages.update({

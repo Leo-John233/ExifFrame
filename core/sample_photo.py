@@ -2,10 +2,13 @@
 
 import sys
 from pathlib import Path
+from core.runtime_paths import is_onefile, resource_path
 
 
 def example_photo_path() -> Path:
     """优先使用程序旁的素材，兼容打包资源且不依赖工作目录"""
+    if is_onefile():
+        return resource_path('static/preview.jpg')
     if getattr(sys, 'frozen', False):
         roots = [Path(sys.executable).resolve().parent]
         bundled = getattr(sys, '_MEIPASS', None)

@@ -15,6 +15,7 @@ from PIL import Image, ImageColor, ImageOps
 
 from core.configs import templates_dir
 from core import CONFIG_PATH
+from core.runtime_paths import config_path, resource_path
 from core.jinja2renders import auto_logo, vh, vw
 from core.util import find_exiftool, get_exif
 from core.metadata import merge_overrides, metadata_key
@@ -23,7 +24,7 @@ from core.template_render import compiled_template, _prepare_footer_calls
 from processor.core import start_process
 
 SUPPORTED_SUFFIXES = {'.jpg', '.jpeg', '.png', '.heic', '.heif'}
-SETTINGS_PATH = Path('config/desktop.json')
+SETTINGS_PATH = config_path('desktop.json')
 WORKSPACE_CONFIG_PATH = Path(CONFIG_PATH)
 _protected_snapshot_lock = Lock()
 
@@ -86,7 +87,7 @@ def list_presets() -> list[Preset]:
         title, description, image = _PRESET_INFO.get(
             path.stem, (path.stem, '自定义水印模板', '')
         )
-        thumbnail = Path('static') / f'{image}.jpeg'
+        thumbnail = resource_path('static') / f'{image}.jpeg'
         source = path.read_text(encoding='utf-8')
         result.append(Preset(
             path.stem, title, description,

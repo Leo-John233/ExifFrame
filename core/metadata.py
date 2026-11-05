@@ -13,6 +13,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from core.util import find_exiftool
+from core.exiftool_process import run_exiftool
 
 
 @dataclass(frozen=True)
@@ -75,10 +76,9 @@ def _run_tool(arguments: list[str]) -> subprocess.CompletedProcess:
     if any('\n' in argument or '\r' in argument for argument in arguments):
         raise MetadataError('invalid_value')
     try:
-        return subprocess.run(
+        return run_exiftool(
             [str(tool), '-charset', 'filename=UTF8', '-@', '-'],
-            input=('\n'.join(arguments) + '\n').encode('utf-8'), capture_output=True,
-            timeout=60, check=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+            input=('\n'.join(arguments) + '\n').encode('utf-8'), timeout=60,
         )
     except (OSError, subprocess.SubprocessError) as error:
         detail = getattr(error, 'stderr', b'') or str(error)

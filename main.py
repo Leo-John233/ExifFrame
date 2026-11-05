@@ -19,9 +19,12 @@ def prepare_windows_runtime():
 
 def _startup_text(chinese, english):
     """Qt 尚未加载时也按已保存语言显示启动错误"""
-    root = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent
+    from core.runtime_paths import application_root, config_path, is_onefile
     try:
-        preference = json.loads((root / 'config/ui.json').read_text(encoding='utf-8'))
+        path = config_path('ui.json')
+        if not is_onefile():
+            path = application_root() / path
+        preference = json.loads(path.read_text(encoding='utf-8'))
         return english if preference.get('language') == 'en_US' else chinese
     except (OSError, ValueError, AttributeError):
         return chinese
@@ -29,14 +32,25 @@ def _startup_text(chinese, english):
 
 def main() -> int:
     """统一资源目录后启动桌面应用"""
+    report_path = None
+    if '--verify-package' in sys.argv:
+        index = sys.argv.index('--verify-package')
+        if index + 1 >= len(sys.argv):
+            return 2
+        report_path = Path(sys.argv[index + 1]).expanduser().resolve()
+        # 验证结果与临时配置均限制在报告所在目录
+        os.environ['EXIFFRAME_DATA_DIR'] = str(report_path.parent / f'.{report_path.stem}-data')
+    from core.runtime_paths import application_root, initialize_user_config, is_onefile, resource_path, user_data_root
     if sys.platform != 'win32':
         raise SystemExit(_startup_text('ExifFrame 桌面版仅支持 Windows', 'ExifFrame desktop is available on Windows only'))
-    root = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent
+    root = user_data_root() if is_onefile() else application_root()
+    if is_onefile():
+        root.mkdir(parents=True, exist_ok=True)
     os.chdir(root)
     # 保留句柄直到事件循环退出，不改动环境中的动态库
     runtime_library = prepare_windows_runtime()
     smoke_test = '--smoke-test' in sys.argv
-    if smoke_test:
+    if smoke_test or report_path is not None:
         os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
     try:
         from PySide6.QtCore import QCoreApplication, QEvent, QTimer
@@ -50,11 +64,15 @@ def main() -> int:
         ctypes.windll.user32.MessageBoxW(0, message, 'ExifFrame', 16)
         return 1
 
-    application = QApplication(sys.argv)
+    application = QApplication([sys.argv[0]] if report_path is not None else sys.argv)
     application.setApplicationName('ExifFrame')
     application.setOrganizationName('ExifFrame')
-    application.setWindowIcon(QIcon(str(root / 'static/logo.ico')))
+    application.setWindowIcon(QIcon(str(resource_path('static/logo.ico'))))
     try:
+        if report_path is not None:
+            from build_support.package_verify import verify_package
+            return verify_package(report_path)
+        initialize_user_config()
         from studio.i18n import install_qt_translations, localize_error, tr
         from studio.theme import apply_theme
         from studio.window import MainWindow
