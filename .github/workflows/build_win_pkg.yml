@@ -27,7 +27,6 @@ jobs:
     - name: Install build dependencies
       run: |
         python -m pip install -r build_support/requirements-windows.txt
-        python -m pip download --only-binary=:all: --no-deps --dest build/wheels numpy==2.5.2
 
     - name: Prepare ExifTool resources
       shell: pwsh
