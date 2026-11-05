@@ -10,10 +10,10 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from threading import Lock
 
-from jinja2 import Environment, pass_context
+from jinja2 import Environment
 from PIL import Image, ImageColor, ImageOps
 
-from core.configs import logos_dir, templates_dir
+from core.configs import templates_dir
 from core import CONFIG_PATH
 from core.jinja2renders import auto_logo, vh, vw
 from core.util import find_exiftool, get_exif
@@ -49,8 +49,11 @@ class WatermarkSettings:
     show_logo: bool = True
     font_scale: float = 1.0
     border_percent: int = 12
+    border_override: bool = False
     background: str = '#FFFFFF'
     text_color: str = '#20252C'
+    background_override: bool = False
+    text_color_override: bool = False
     quality: int = 95
     subsampling: int = 2
     output_dir: str = ''
@@ -100,7 +103,8 @@ def _validate(settings: WatermarkSettings) -> None:
     for name in ('template_name', 'title', 'subtitle', 'input_dir', 'output_dir', 'template_source'):
         if not isinstance(getattr(settings, name), str):
             raise ValueError('文本设置格式无效，请重新加载配置')
-    for name in ('show_logo', 'overwrite_existing', 'preserve_structure', 'use_template_styles'):
+    for name in ('show_logo', 'overwrite_existing', 'preserve_structure', 'use_template_styles', 'border_override',
+                 'background_override', 'text_color_override'):
         if not isinstance(getattr(settings, name), bool):
             raise ValueError('开关设置格式无效，请重新加载配置')
     if settings.template_name not in {preset.name for preset in list_presets()}:
@@ -138,6 +142,12 @@ def load_settings() -> WatermarkSettings:
         valid = {field.name for field in fields(WatermarkSettings)}
         values = asdict(defaults)
         values.update({key: value for key, value in data.items() if key in valid and key not in {'template_source', 'input_files', 'protected_sources', 'metadata_overrides'}})
+        if 'border_override' not in data:
+            # 旧版默认 12 为自动，其他已保存数值保留为手动
+            values['border_override'] = values['border_percent'] != 12
+        for color, enabled in (('background', 'background_override'), ('text_color', 'text_color_override')):
+            if enabled not in data:
+                values[enabled] = ImageColor.getrgb(values[color]) != ImageColor.getrgb(getattr(defaults, color))
         # 共用字段始终以原项目配置为准，旧桌面缓存不再覆盖模板和导出参数
         if WORKSPACE_CONFIG_PATH.is_file():
             for key in ('template_name', 'input_dir', 'output_dir', 'quality', 'subsampling', 'overwrite_existing'):
@@ -308,13 +318,7 @@ def _cached_metadata(source: str, modified: int, size: int, tool_signature) -> d
     return result
 
 
-@pass_context
-def _desktop_logo(context, brand=None):
-    """没有相机品牌时使用项目自带标识"""
-    return auto_logo(context, brand) or (logos_dir / 'default.png').as_posix()
-
-
-def _configure_nodes(nodes, image, settings, metadata, source, preview=False):
+def _configure_nodes(nodes, image, settings, metadata, source, preview=False, source_scale=1.0):
     """为现有处理器注入尺寸与样式，同时复用内存中的预览图"""
     title = '' if settings.use_template_styles else settings.title
     subtitle = '' if settings.use_template_styles else settings.subtitle
@@ -331,21 +335,28 @@ def _configure_nodes(nodes, image, settings, metadata, source, preview=False):
             node = text_nodes[0]
             node['text'] = f"{node.get('text', '')}  {text}"
     for node in nodes:
-        if node.get('processor_name') == 'watermark_with_timestamp':
+        if node.get('processor_name') == 'watermark_with_timestamp' and (title or subtitle):
             segments = node.get('text_segments', [])
-            if title and segments:
+            if isinstance(segments, str):
+                segments = json.loads(segments)
+                node['text_segments'] = segments
+            if title and isinstance(segments, list) and segments:
                 segments[0]['text'] = title
-            if subtitle and segments:
+            if subtitle and isinstance(segments, list) and segments:
                 segments[-1]['text'] = subtitle
 
-    def visit(node):
+    def visit(node, in_watermark=False):
         if isinstance(node, list):
             for child in node:
-                visit(child)
+                visit(child, in_watermark)
             return
         if not isinstance(node, dict):
             return
         kind = node.get('processor_name')
+        if kind == 'watermark':
+            for key in ('left_logo', 'right_logo', 'center_logo'):
+                if key in node and node[key] in (None, '', 'None'):
+                    node[key] = None
         if kind:
             node.setdefault('exif', metadata)
             if preview:
@@ -353,18 +364,18 @@ def _configure_nodes(nodes, image, settings, metadata, source, preview=False):
         if settings.use_template_styles:
             for value in list(node.values()):
                 if isinstance(value, (dict, list)):
-                    visit(value)
+                    visit(value, in_watermark or kind == 'watermark')
             paths = node.get('buffer_path')
             if preview and paths and len(paths) == 1 and Path(paths[0]).resolve() == source:
                 node.update(input_buffer=[image.copy()], buffer_loaded=True)
             return
         if kind == 'watermark':
-            footer = max(48, round(image.height * settings.border_percent / 100))
-            node['bottom_margin'] = footer
-            node['color'] = settings.background
-            for key in ('left_top', 'left_bottom', 'right_top', 'right_bottom'):
-                if isinstance(node.get(key), dict):
-                    node[key]['height'] = max(8, round(footer * 0.27))
+            if settings.border_override:
+                node['bottom_margin'] = max(1, round(image.height * settings.border_percent / 100))
+            if settings.font_scale != 1:
+                node['watermark_scale'] = float(node.get('watermark_scale', 1)) * settings.font_scale
+            if settings.background_override:
+                node['color'] = settings.background
             # 居中标识模板同样支持自定义署名
             if settings.title and not node.get('left_top', {}).get('text'):
                 child = node.get('left_top', {})
@@ -373,16 +384,29 @@ def _configure_nodes(nodes, image, settings, metadata, source, preview=False):
             if settings.subtitle and not node.get('left_bottom', {}).get('text'):
                 node.get('left_bottom', {}).update(text=settings.subtitle)
         if kind in {'rich_text', 'multi_rich_text', 'watermark_with_timestamp'}:
-            node['height'] = max(8, round(float(node.get('height', image.height * .03)) * settings.font_scale))
-            node['color'] = settings.text_color
-            for segment in node.get('text_segments', []):
-                segment['color'] = settings.text_color
+            if not in_watermark:
+                if 'height' in node and settings.font_scale != 1:
+                    node['height'] = max(1, round(float(node['height']) * settings.font_scale))
+                elif 'height' not in node and kind in {'rich_text', 'multi_rich_text'} and (source_scale != 1 or settings.font_scale != 1):
+                    node['height'] = max(1, round(100 * source_scale * settings.font_scale))
+                elif 'height' not in node and kind == 'watermark_with_timestamp' and settings.font_scale != 1:
+                    node['height'] = max(1, round(int(image.height * .02) * settings.font_scale))
+            if settings.text_color_override:
+                node['color'] = settings.text_color
+                segments = node.get('text_segments', [])
+                if isinstance(segments, str):
+                    segments = json.loads(segments)
+                    node['text_segments'] = segments
+                if isinstance(segments, list):
+                    for segment in segments:
+                        if isinstance(segment, dict):
+                            segment['color'] = settings.text_color
         for key in ('left_logo', 'right_logo', 'center_logo'):
             if key in node and not settings.show_logo:
                 node[key] = None
         for value in list(node.values()):
             if isinstance(value, (dict, list)):
-                visit(value)
+                visit(value, in_watermark or kind == 'watermark')
         # 模糊背景等模板重新读取原图时也使用等比缩小后的图像
         paths = node.get('buffer_path')
         if preview and paths and len(paths) == 1 and Path(paths[0]).resolve() == source:
@@ -395,7 +419,8 @@ def _scale_nodes(value, scale):
     """同步缩放绝对像素参数，保持预览与原尺寸导出的布局比例"""
     pixels = {'width', 'height', 'border_radius', 'shadow_radius', 'blur_radius',
               'left_margin', 'right_margin', 'top_margin', 'bottom_margin',
-              'middle_spacing', 'spacing', 'text_spacing', 'delimiter_width', 'center_logo_height'}
+              'middle_spacing', 'spacing', 'text_spacing', 'delimiter_width', 'center_logo_height',
+              'center_logo_padding', 'center_height'}
     if isinstance(value, list):
         for child in value:
             _scale_nodes(child, scale)
@@ -436,6 +461,15 @@ def _original_preview(source, modified, size, template_name, template_source, fi
     return result
 
 
+def _output_rgb(image, settings):
+    """预览和导出共享透明度转换"""
+    if settings.use_template_styles or not settings.background_override:
+        return image.convert('RGB')
+    canvas = Image.new('RGB', image.size, settings.background)
+    canvas.paste(image, mask=image.getchannel('A') if image.mode == 'RGBA' else None)
+    return canvas
+
+
 def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True) -> Image.Image:
     """让实时预览和原始分辨率导出走相同的水印流水线"""
     _validate(settings)
@@ -463,33 +497,29 @@ def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True) 
     changes = settings.metadata_overrides.get(metadata_key(source), {})
     if changes:
         metadata = merge_overrides(metadata, changes)
-    if settings.use_template_styles:
-        # 原模板按编码尺寸计算 vh/vw，不使用方向修正后的宽高覆盖已有标签
-        metadata.setdefault('ImageWidth', str(encoded_size[0]))
-        metadata.setdefault('ImageHeight', str(encoded_size[1]))
-    else:
-        metadata.update(ImageWidth=str(original_size[0]), ImageHeight=str(original_size[1]))
+    # 模板按编码尺寸计算 vh/vw，快捷样式保留相同的方向语义
+    metadata.setdefault('ImageWidth', str(encoded_size[0]))
+    metadata.setdefault('ImageHeight', str(encoded_size[1]))
     if settings.title and not settings.use_template_styles:
         metadata['CameraModelName'] = settings.title
     if settings.subtitle and not settings.use_template_styles:
         metadata['LensModel'] = settings.subtitle
-    template = compiled_template(settings.template_source or read_template(settings.template_name),
-                                 auto_logo if settings.use_template_styles else _desktop_logo)
+    template = compiled_template(settings.template_source or read_template(settings.template_name), auto_logo)
     rendered = template.render(exif=metadata, filename=source.stem,
                                file_dir=source.parent.as_posix(), file_path=source.as_posix(),
                                files=list(settings.input_files) or [str(source)])
     nodes = json.loads(rendered)
     if not isinstance(nodes, list) or not nodes:
         raise ValueError('水印模板需要至少一个处理步骤')
+    source_scale = image.width / original_size[0]
     if image.size != original_size:
-        _scale_nodes(nodes, image.width / original_size[0])
-    if not settings.use_template_styles:
-        metadata.update(ImageWidth=str(image.width), ImageHeight=str(image.height))
-    _configure_nodes(nodes, image, settings, metadata, source, preview=preview)
+        _scale_nodes(nodes, source_scale)
+    _configure_nodes(nodes, image, settings, metadata, source, preview=preview, source_scale=source_scale)
     result = start_process(nodes, initial_buffer=[image])
     if profile:
         result.info['icc_profile'] = profile
     if preview:
+        result = _output_rgb(result, settings)
         result.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
     return result
 
@@ -547,16 +577,10 @@ def export_photo(path: Path, settings: WatermarkSettings, output_dir: Path) -> P
     if in_workspace and target.exists() and not settings.overwrite_existing:
         raise FileExistsError(f'已跳过同名输出：{target.name}')
     image = render_photo(source, settings, preview=False)
-    # JPEG 不支持透明通道，使用所选边框色铺底
-    if settings.use_template_styles:
-        # 原样模式沿用原版的透明度转换与保存参数
-        canvas = image.convert('RGB')
-        save_options = {'quality': settings.quality, 'subsampling': settings.subsampling}
-    else:
-        canvas = Image.new('RGB', image.size, settings.background)
-        canvas.paste(image, mask=image.getchannel('A') if image.mode == 'RGBA' else None)
-        save_options = {'quality': settings.quality, 'subsampling': settings.subsampling,
-                        'icc_profile': image.info.get('icc_profile')}
+    canvas = _output_rgb(image, settings)
+    save_options = {'quality': settings.quality, 'subsampling': settings.subsampling}
+    if not settings.use_template_styles:
+        save_options['icc_profile'] = image.info.get('icc_profile')
     if settings.overwrite_existing:
         with NamedTemporaryFile(dir=destination, prefix='.export-', suffix='.tmp', delete=False) as stream:
             temporary = Path(stream.name)

@@ -211,7 +211,8 @@ class TemplateEditor(QDialog):
         self.editor.undoAvailable.connect(self.undo_action.setEnabled)
         self.editor.redoAvailable.connect(self.redo_action.setEnabled)
         self.highlighter = TemplateHighlighter(self.editor)
-        self.preview = TemplatePreview(self, photo_path=self._preview_photo_path, settings=self._preview_settings)
+        self.preview = TemplatePreview(self, photo_path=self._preview_photo_path, settings=self._preview_settings,
+                                       follow_workspace_style=True)
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.setObjectName('templateSourcePreviewSplitter')
         self.splitter.setChildrenCollapsible(False)

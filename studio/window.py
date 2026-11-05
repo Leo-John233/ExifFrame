@@ -352,12 +352,12 @@ class MainWindow(QMainWindow):
         self.logo_check.setObjectName("showLogoCheck")
         fields.addRow("", self.logo_check)
         self.font_slider = self._slider(50, 200, "fontScaleSlider")
-        self.border_slider = self._slider(6, 30, "borderSlider")
+        self.border_slider = self._slider(5, 30, "borderSlider")
         self.font_value, self.border_value = QLabel(), QLabel()
-        for caption, slider, value in (("文字大小", self.font_slider, self.font_value), ("底部留白", self.border_slider, self.border_value)):
+        for caption, slider, value in (("水印缩放", self.font_slider, self.font_value), ("底部留白", self.border_slider, self.border_value)):
             row = QHBoxLayout()
             row.addWidget(slider, 1)
-            value.setFixedWidth(36)
+            value.setFixedWidth(48)
             row.addWidget(value)
             fields.addRow(caption, row)
         self.background_button = QPushButton("底色")
@@ -428,7 +428,7 @@ class MainWindow(QMainWindow):
         self.subtitle_input.setText(self.settings.subtitle)
         self.logo_check.setChecked(self.settings.show_logo)
         self.font_slider.setValue(round(self.settings.font_scale * 100))
-        self.border_slider.setValue(self.settings.border_percent)
+        self.border_slider.setValue(self.settings.border_percent if self.settings.border_override else 5)
         self.quality_spin.setValue(self.settings.quality)
         self.overwrite_check.setChecked(self.settings.overwrite_existing)
         self.structure_check.setChecked(self.settings.preserve_structure)
@@ -484,8 +484,20 @@ class MainWindow(QMainWindow):
         self._settings_changed()
 
     def _style_changed(self):
+        self._activate_style(sender=self.sender())
+
+    def _activate_style(self, sender=None, color_field=None):
         if self._restoring:
             return
+        if self.settings.use_template_styles:
+            # 从原样切换时只启用本次调整，避免旧比例被其他样式操作激活
+            for slider, neutral in ((self.font_slider, 100), (self.border_slider, 5)):
+                if sender is not slider:
+                    blocked = slider.blockSignals(True)
+                    slider.setValue(neutral)
+                    slider.blockSignals(blocked)
+            self.settings = replace(self.settings, background_override=color_field == 'background',
+                                    text_color_override=color_field == 'text_color')
         # 用户主动调整才覆盖模板参数且界面始终显示当前处理模式
         self.template_styles_check.blockSignals(True)
         self.template_styles_check.setChecked(False)
@@ -498,7 +510,8 @@ class MainWindow(QMainWindow):
         self.settings = replace(self.settings, template_name=self.template_combo.currentData(),
                                 title=self.title_input.text(), subtitle=self.subtitle_input.text(),
                                 show_logo=self.logo_check.isChecked(), font_scale=self.font_slider.value() / 100,
-                                border_percent=self.border_slider.value(), quality=self.quality_spin.value(),
+                                border_percent=self.border_slider.value() if self.border_slider.value() >= 6 else self.settings.border_percent,
+                                border_override=self.border_slider.value() >= 6, quality=self.quality_spin.value(),
                                 input_dir=self.input_input.text().strip(), output_dir=self.output_input.text().strip(),
                                 overwrite_existing=self.overwrite_check.isChecked(), preserve_structure=self.structure_check.isChecked(),
                                 use_template_styles=self.template_styles_check.isChecked())
@@ -506,17 +519,29 @@ class MainWindow(QMainWindow):
         self._update_labels()
         self._update_actions()
         if refresh_preview:
+            self._sync_template_context()
             if self._visible_footer_editors():
                 self._ensure_watermark_mode()
             self._schedule_preview()
 
     def _update_labels(self):
         self.font_value.setText(f"{self.font_slider.value()}%")
-        self.border_value.setText(f"{self.border_slider.value()}%")
+        if self.settings.border_override:
+            self.border_value.setText(f'{self.settings.border_percent}%')
+            tooltip = tr("留白固定为照片高度的 {percent}%，缩放过大可能超出固定底栏",
+                         percent=self.settings.border_percent)
+        else:
+            self.border_value.setText(tr("自动"))
+            tooltip = tr("最左侧为模板自动留白，拖动可按照片高度设置基准比例")
+        self.border_slider.setToolTip(tooltip)
+        self.border_value.setToolTip(tooltip)
+        self.border_slider.setAccessibleName(tr("底部留白"))
+        self.border_slider.setAccessibleDescription(tooltip)
+        self.font_slider.setAccessibleName(tr("水印缩放"))
         self.mode_label.setText(tr("使用模板定义的样式" if self.settings.use_template_styles else "自定义模式 · 快捷参数覆盖模板样式"))
         self.saved_label.setText(tr("设置有修改，尚未保存" if self._dirty else "设置已保存"))
-        for widget, caption, color in ((self.background_button, "底色", self.settings.background),
-                                       (self.text_button, "文字颜色", self.settings.text_color)):
+        for widget, caption, color, active in ((self.background_button, "底色", self.settings.background, self.settings.background_override),
+                                               (self.text_button, "文字颜色", self.settings.text_color, self.settings.text_color_override)):
             # 色块左侧保留透明间距，两个按钮维持紧凑并排
             swatch = QPixmap(24, 16)
             swatch.fill(Qt.GlobalColor.transparent)
@@ -528,7 +553,8 @@ class MainWindow(QMainWindow):
             widget.setIcon(QIcon(swatch))
             widget.setIconSize(QSize(24, 16))
             widget.setText(tr(caption))
-            widget.setToolTip(tr("点击选择{label}，当前颜色 {color}", label=tr(caption), color=color.upper()))
+            source = "点击选择{label}，当前颜色 {color}" if active and not self.settings.use_template_styles else "模板颜色保持不变；点击选择{label}，候选颜色 {color}"
+            widget.setToolTip(tr(source, label=tr(caption), color=color.upper()))
             widget.setAccessibleName(widget.toolTip())
 
     def _set_status(self, source, **values):
@@ -578,8 +604,9 @@ class MainWindow(QMainWindow):
         color = QColorDialog.getColor(QColor(getattr(self.settings, field)), self, tr("选择颜色"),
                                       QColorDialog.ColorDialogOption.DontUseNativeDialog)
         if color.isValid():
-            self.settings = replace(self.settings, **{field: color.name()})
-            self._style_changed()
+            marker = 'background_override' if field == 'background' else 'text_color_override'
+            self.settings = replace(self.settings, **{field: color.name(), marker: True})
+            self._activate_style(color_field=field)
 
     def _set_locked(self, locked):
         self._locked = locked
@@ -758,8 +785,9 @@ class MainWindow(QMainWindow):
             source = ''
         dependencies = _preview_file_signature(source, selected or ((str(path),) if path else ()))
         return (self._current_path(), settings.template_name, settings.template_source, settings.use_template_styles,
-                settings.title, settings.subtitle, settings.show_logo, settings.font_scale, settings.border_percent,
-                settings.background, settings.text_color, settings.metadata_overrides, selected,
+                settings.title, settings.subtitle, settings.show_logo, settings.font_scale, settings.border_percent, settings.border_override,
+                settings.background, settings.text_color, settings.background_override, settings.text_color_override,
+                settings.metadata_overrides, selected,
                 version, source, dependencies)
 
     def _current_footer_image(self):
@@ -840,7 +868,7 @@ class MainWindow(QMainWindow):
         """让已打开的编辑器使用当前勾选和照片信息快照"""
         selected = tuple(str(path) for path in self.files.selected_paths())
         for preview in self._template_previews():
-            preview.update_context(selected, self.settings.metadata_overrides)
+            preview.update_context(selected, self.settings.metadata_overrides, self.settings)
         if self._active_wizard is not None:
             self._active_wizard.refresh_preview_context()
 
@@ -1371,9 +1399,9 @@ class MainWindow(QMainWindow):
         if hasattr(editor, "set_preview") and not editor.isVisible():
             return
         if target == self.settings.template_name:
-            self.settings = replace(self.settings, template_source=source, use_template_styles=True)
+            self.settings = replace(self.settings, template_source=source)
             self._ensure_watermark_mode()
-            self.template_styles_check.setChecked(True)
+            self._sync_template_context()
             self._update_labels()
             self._schedule_preview()
             # 编辑器已完成去抖，主窗直接排入后台预览
@@ -1381,12 +1409,14 @@ class MainWindow(QMainWindow):
             self._set_status("模板草稿已应用，尚未保存到模板文件")
 
     def _template_saved(self, name, owner=None):
+        changed_template = name != self.settings.template_name
         if self._draft_owners.get(name) in (None, owner):
             self._drafts.pop(name, None)
             self._draft_owners.pop(name, None)
         self._reload_presets(name)
         self.settings = replace(self.settings, template_name=name, template_source=self._drafts.get(name, ""))
-        self.template_styles_check.setChecked(True)
+        if changed_template:
+            self.template_styles_check.setChecked(True)
         self._show_template()
         self._settings_changed()
 

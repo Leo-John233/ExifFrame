@@ -128,14 +128,16 @@ class TemplatePreview(QWidget):
 
     metadata_ready = Signal(object, str, str)
 
-    def __init__(self, parent=None, photo_path=None, settings=None):
+    def __init__(self, parent=None, photo_path=None, settings=None, follow_workspace_style=False):
         super().__init__(parent)
         # 延迟导入使源码编辑器也能复用图像视图
         from studio.footer_editor import _ImageView
 
         self.setObjectName('templatePreviewWidget')
         self._settings = deepcopy(settings if settings is not None else WatermarkSettings())
-        self._settings.use_template_styles = True
+        self._follow_workspace_style = follow_workspace_style
+        if not self._follow_workspace_style:
+            self._settings.use_template_styles = True
         self._photo_path = None
         self._source = ''
         self._valid_source = False
@@ -221,7 +223,7 @@ class TemplatePreview(QWidget):
 
     @property
     def session_settings(self):
-        return deepcopy(replace(self._settings, template_source=self._source, use_template_styles=True))
+        return deepcopy(replace(self._settings, template_source=self._source))
 
     @property
     def settings(self):
@@ -232,13 +234,18 @@ class TemplatePreview(QWidget):
                                input_dir='', output_dir='')
         return snapshot
 
-    def update_context(self, input_files, metadata_overrides):
-        """更新照片队列和会话信息而不改变预览照片或源码"""
+    def update_context(self, input_files, metadata_overrides, settings=None):
+        """更新会话上下文而不改变预览照片或源码"""
         if self._closed:
             return
         before = self.settings
         self._settings.input_files = tuple(input_files)
         self._settings.metadata_overrides = deepcopy(metadata_overrides)
+        if self._follow_workspace_style and settings is not None:
+            for name in ('use_template_styles', 'title', 'subtitle', 'show_logo', 'font_scale',
+                         'border_percent', 'border_override', 'background', 'text_color',
+                         'background_override', 'text_color_override'):
+                setattr(self._settings, name, getattr(settings, name))
         if self.settings != before:
             self._failed = False
             self._invalidate()
