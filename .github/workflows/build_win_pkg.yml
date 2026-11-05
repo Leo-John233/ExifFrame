@@ -57,7 +57,7 @@ jobs:
         $env:TEMP = (Resolve-Path build/ci-package-check/temp).Path
         $env:TMP = $env:TEMP
         $env:LOCALAPPDATA = (Resolve-Path build/ci-package-check/appdata).Path
-        $executable = (Resolve-Path dist/single/ExifFrame.exe).Path
+        $executable = (Resolve-Path build/ExifFrame.exe).Path
         $reportPath = Join-Path (Resolve-Path build/ci-package-check).Path 'report.json'
         $expected = @('resources', 'templates', 'fonts', 'persistence', 'translations',
                       'exiftool_read_write', 'heif_round_trip', 'render_and_export')
@@ -101,5 +101,5 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: ${{ steps.artifact_name.outputs.artifact_name }}
-        path: dist/single/ExifFrame.exe
+        path: build/ExifFrame.exe
         if-no-files-found: error

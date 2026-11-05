@@ -18,9 +18,10 @@ Run in project root.
 - Keep in mind the pip CI dependency path described in `mem:tech_stack`.
 
 ## Windows packaging
-- `python build_support/build_windows.py` builds `dist/single/ExifFrame.exe`; templates, fonts, logos, static assets, project metadata and full ExifTool are embedded. If missing, the pinned NumPy wheel is downloaded from PyPI, verified by SHA256 and cached under `build/wheels`; an existing valid cache needs no network. The script temporarily installs it under build without changing the Python environment.
-- `python build_support/build_windows.py --onedir` creates a fresh directory under `dist/onedir`; distribute the entire printed directory. New builds do not overwrite prior user configs or photos.
-- Prepare `exiftool` with an executable and adjacent `exiftool_files` before building; CI downloads ExifTool and uses pinned `build_support/requirements-windows.txt`. Existing `dist/ExifFrame` is not replaced.
+- `python build_support/build_windows.py` builds `build/ExifFrame.exe`; templates, fonts, logos, static assets, project metadata and full ExifTool are embedded. Each build downloads the pinned NumPy wheel from PyPI, verifies SHA256, installs it inside an isolated temporary directory, then cleans only its own temporary files without changing the Python environment.
+- For offline builds, pass `--numpy-wheel` with the full path to a verified official NumPy wheel; this user-provided input is not deleted.
+- `python build_support/build_windows.py --onedir` creates a fresh directory under `build/onedir`; distribute the entire printed directory. New builds do not overwrite prior user configs or photos.
+- Prepare `exiftool` with an executable and adjacent `exiftool_files` before building; CI downloads ExifTool and uses pinned `build_support/requirements-windows.txt`.
 - The single-file app stores user configuration under `%LOCALAPPDATA%/ExifFrame`; preserve it across updates.
 
 ## Windows file inspection

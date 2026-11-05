@@ -10,6 +10,8 @@ import subprocess
 import sys
 import sysconfig
 import tempfile
+import time
+import uuid
 from pathlib import Path
 
 
@@ -30,12 +32,12 @@ def _powershell_quote(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def _wheel_prepare_command(cache_dir: Path):
+def _wheel_prepare_command(directory: Path):
     """提供不依赖当前工作目录的手动准备命令"""
     return (f'& {_powershell_quote(Path(sys.executable).resolve())} -m pip download '
             f'--index-url {NUMPY_INDEX} --only-binary=:all: --no-deps '
             f'--platform win_amd64 --python-version 3.13 --implementation cp --abi cp313 '
-            f'--dest {_powershell_quote(cache_dir)} numpy=={NUMPY_VERSION}')
+            f'--dest {_powershell_quote(directory)} numpy=={NUMPY_VERSION}')
 
 
 def _validate_wheel(wheel: Path):
@@ -43,62 +45,57 @@ def _validate_wheel(wheel: Path):
     if not wheel.is_file() or hashlib.sha256(wheel.read_bytes()).hexdigest() != NUMPY_SHA256:
         raise BuildPreparationError(
             f'NumPy wheel 校验失败：{_powershell_quote(wheel)}\n'
-            '请移除损坏文件后重新运行构建，或将正确的 wheel 放入该目录'
+            '请提供正确版本的 wheel 后重新运行构建'
         )
 
 
-def _ensure_numpy_wheel():
-    """优先使用缓存，缺失时校验下载内容后原子写入"""
-    build_root = (ROOT / 'build').resolve()
-    cache_dir = (build_root / 'wheels').resolve()
-    if not build_root.is_relative_to(ROOT) or not cache_dir.is_relative_to(build_root):
-        raise BuildPreparationError('构建缓存目录必须位于项目目录内')
-    wheel = cache_dir / NUMPY_WHEEL
-    if wheel.exists():
+def _ensure_numpy_wheel(temporary: Path, wheel_input=None, onedir=False):
+    """读取用户提供的 wheel 或下载到本次构建的临时目录"""
+    if wheel_input is not None:
+        wheel = Path(wheel_input).expanduser().resolve()
+        if wheel.name.casefold() != NUMPY_WHEEL.casefold():
+            raise BuildPreparationError(f'需要指定 {_powershell_quote(NUMPY_WHEEL)}')
         _validate_wheel(wheel)
         return wheel
 
-    help_text = (f'请检查网络，或在联网环境准备 wheel 并放入 {_powershell_quote(cache_dir)}\n'
-                 f'手动准备命令：\n{_wheel_prepare_command(cache_dir)}')
+    offline_dir = ROOT / 'build/offline-wheels'
+    offline_wheel = offline_dir / NUMPY_WHEEL
+    offline_build = (f'& {_powershell_quote(Path(sys.executable).resolve())} '
+                     f'{_powershell_quote(ROOT / "build_support/build_windows.py")} '
+                     f'{"--onedir " if onedir else ""}--numpy-wheel {_powershell_quote(offline_wheel)}')
+    help_text = (f'请检查网络，或在联网环境准备 wheel：\n{_wheel_prepare_command(offline_dir)}\n'
+                 f'使用已有 wheel 构建：\n{offline_build}')
     try:
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix='.numpy-download-', dir=cache_dir) as temporary:
-            temporary = Path(temporary)
-            download_dir = temporary / 'download'
-            download_dir.mkdir()
-            temp_dir = temporary / 'temp'
-            temp_dir.mkdir()
-            env = os.environ.copy()
-            # 保留代理和证书设置，不读取自定义 pip 软件源
-            allowed_pip_settings = {'PIP_PROXY', 'PIP_CERT', 'PIP_CLIENT_CERT'}
-            for name in list(env):
-                if name.upper().startswith('PIP_') and name.upper() not in allowed_pip_settings:
-                    env.pop(name)
-            env.update({'TMP': str(temp_dir), 'TEMP': str(temp_dir),
-                        'PIP_CONFIG_FILE': os.devnull, 'PIP_NO_CACHE_DIR': '1',
-                        'PYTHONNOUSERSITE': '1', 'PYTHONDONTWRITEBYTECODE': '1'})
-            env.pop('PYTHONHOME', None)
-            env.pop('PYTHONPATH', None)
-            print(f'正在下载 NumPy {NUMPY_VERSION} wheel', flush=True)
-            command = [sys.executable, '-m', 'pip', 'download', '--index-url', NUMPY_INDEX,
-                       '--only-binary=:all:', '--no-deps', '--platform', 'win_amd64',
-                       '--python-version', '3.13', '--implementation', 'cp', '--abi', 'cp313',
-                       '--disable-pip-version-check', '--progress-bar', 'off', '--timeout', '20',
-                       '--retries', '2', '--dest', str(download_dir), f'numpy=={NUMPY_VERSION}']
-            subprocess.run(command, cwd=ROOT, env=env, check=True, capture_output=True)
-            downloaded = download_dir / NUMPY_WHEEL
-            if not downloaded.is_file() or hashlib.sha256(downloaded.read_bytes()).hexdigest() != NUMPY_SHA256:
-                raise BuildPreparationError(f'下载的 NumPy wheel 校验失败，已丢弃临时文件\n{help_text}')
-            try:
-                # Windows 同盘重命名不会覆盖并发构建先写入的缓存
-                downloaded.rename(wheel)
-            except FileExistsError:
-                _validate_wheel(wheel)
+        download_dir = temporary / 'download'
+        download_dir.mkdir()
+        temp_dir = temporary / 'download-temp'
+        temp_dir.mkdir()
+        env = os.environ.copy()
+        # 保留代理和证书设置，不读取自定义 pip 软件源
+        allowed_pip_settings = {'PIP_PROXY', 'PIP_CERT', 'PIP_CLIENT_CERT'}
+        for name in list(env):
+            if name.upper().startswith('PIP_') and name.upper() not in allowed_pip_settings:
+                env.pop(name)
+        env.update({'TMP': str(temp_dir), 'TEMP': str(temp_dir),
+                    'PIP_CONFIG_FILE': os.devnull, 'PIP_NO_CACHE_DIR': '1',
+                    'PYTHONNOUSERSITE': '1', 'PYTHONDONTWRITEBYTECODE': '1'})
+        env.pop('PYTHONHOME', None)
+        env.pop('PYTHONPATH', None)
+        print(f'正在下载 NumPy {NUMPY_VERSION} wheel', flush=True)
+        command = [sys.executable, '-m', 'pip', 'download', '--index-url', NUMPY_INDEX,
+                   '--only-binary=:all:', '--no-deps', '--platform', 'win_amd64',
+                   '--python-version', '3.13', '--implementation', 'cp', '--abi', 'cp313',
+                   '--disable-pip-version-check', '--progress-bar', 'off', '--timeout', '20',
+                   '--retries', '2', '--dest', str(download_dir), f'numpy=={NUMPY_VERSION}']
+        subprocess.run(command, cwd=ROOT, env=env, check=True, capture_output=True)
+        downloaded = download_dir / NUMPY_WHEEL
+        if not downloaded.is_file() or hashlib.sha256(downloaded.read_bytes()).hexdigest() != NUMPY_SHA256:
+            raise BuildPreparationError(f'下载的 NumPy wheel 校验失败，已丢弃临时文件\n{help_text}')
     except subprocess.CalledProcessError as error:
         raise BuildPreparationError(f'自动下载 NumPy wheel 失败（退出码 {error.returncode}）\n{help_text}') from None
     except OSError as error:
         raise BuildPreparationError(f'准备 NumPy wheel 失败：{error.strerror or error}\n{help_text}') from None
-    return wheel
+    return downloaded
 
 
 def _copy_file(source: Path, target: Path, allowed_root: Path):
@@ -139,7 +136,45 @@ def _check_inputs():
             raise BuildPreparationError(f'发布资源目录为空或不存在：{directory}')
     if not any((ROOT / 'exiftool' / name).is_file() for name in ('exiftool.exe', 'exiftool(-k).exe')):
         raise BuildPreparationError('exiftool 目录中缺少 exiftool.exe 或 exiftool(-k).exe')
-    return _ensure_numpy_wheel()
+
+
+def _is_redirected(path: Path):
+    """拒绝符号链接和 Windows junction 指向其他目录"""
+    return path.is_symlink() or path.is_junction()
+
+
+def _build_root():
+    """限制发布和临时文件位于实际的项目构建目录"""
+    directory = ROOT / 'build'
+    if _is_redirected(directory) or not directory.resolve().is_relative_to(ROOT):
+        raise BuildPreparationError('构建目录不能是符号链接或指向项目外')
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory.resolve()
+
+
+def _onedir_parent(build_root: Path):
+    parent = build_root / 'onedir'
+    if _is_redirected(parent) or not parent.resolve().is_relative_to(build_root):
+        raise BuildPreparationError('目录版发布位置不能是符号链接或指向构建目录外')
+    return parent
+
+
+def _publish_onedir(package: Path, destination: Path, temporary: Path, build_root: Path):
+    """安全发布目录，短暂占用时有限重试原子重命名"""
+    for attempt in range(5):
+        parent = _onedir_parent(build_root)
+        if (_is_redirected(package) or _is_redirected(destination)
+                or not temporary.resolve().is_relative_to(build_root)
+                or not package.resolve().is_relative_to(temporary.resolve())
+                or destination.resolve().parent != parent.resolve()):
+            raise BuildPreparationError('目录版发布路径不安全')
+        try:
+            package.rename(destination)
+            return
+        except OSError as error:
+            if sys.platform != 'win32' or getattr(error, 'winerror', None) not in (5, 32) or attempt == 4:
+                raise
+            time.sleep(0.05 * 2**attempt)
 
 
 def _build_environment(numpy_target: Path, mode: str):
@@ -196,46 +231,48 @@ print(f'NumPy {numpy.__version__}: {module_path} (INSTALLER={installer})', flush
     subprocess.run([sys.executable, '-c', check], cwd=ROOT, env=env, check=True)
 
 
-def build(onedir=False):
+def build(onedir=False, numpy_wheel=None):
     """构建单文件，或将目录版发布到全新的目录"""
-    wheel = _check_inputs()
-    build_root = (ROOT / 'build').resolve()
-    dist_root = (ROOT / 'dist').resolve()
-    if not build_root.is_relative_to(ROOT) or not dist_root.is_relative_to(ROOT):
-        raise ValueError('构建目录必须位于项目目录内')
-    build_root.mkdir(parents=True, exist_ok=True)
+    _check_inputs()
+    build_root = _build_root()
+    if onedir:
+        _onedir_parent(build_root)
+    elif _is_redirected(build_root / 'ExifFrame.exe'):
+        raise BuildPreparationError('单文件发布位置不能是符号链接')
     mode = 'onedir' if onedir else 'onefile'
     with tempfile.TemporaryDirectory(prefix='windows-package-', dir=build_root) as temporary:
         temporary = Path(temporary)
+        wheel = _ensure_numpy_wheel(temporary, numpy_wheel, onedir)
         numpy_target = temporary / 'numpy'
         env = _build_environment(numpy_target, mode)
         _install_numpy(wheel, numpy_target, env)
-        staging = temporary / 'dist'
+        staging = temporary / 'package'
         subprocess.run([sys.executable, '-m', 'PyInstaller', '--noconfirm',
                         '--distpath', str(staging), '--workpath', str(temporary / 'work'),
                         str(ROOT / 'build_support/windows.spec')], cwd=ROOT, env=env, check=True)
 
         if onedir:
-            if not (staging / 'ExifFrame/ExifFrame.exe').is_file():
+            package = staging / 'ExifFrame'
+            if not (package / 'ExifFrame.exe').is_file():
                 raise FileNotFoundError('目录版构建未生成程序')
-            parent = (dist_root / 'onedir').resolve()
-            if not parent.is_relative_to(dist_root):
-                raise ValueError('发布路径超出目标目录')
-            parent.mkdir(parents=True, exist_ok=True)
-            # 每次使用新目录，旧二进制、配置和照片均不被覆盖
-            destination = Path(tempfile.mkdtemp(prefix='ExifFrame-', dir=parent)).resolve()
-            _copy_tree(staging / 'ExifFrame', destination, destination)
             for relative in ('config/fonts', 'config/logos', 'config/templates', 'static', 'exiftool'):
-                _copy_tree(ROOT / relative, destination / relative, destination)
+                _copy_tree(ROOT / relative, package / relative, package)
             for relative in ('config/config.ini', 'pyproject.toml'):
-                _copy_file(ROOT / relative, destination / relative, destination)
+                _copy_file(ROOT / relative, package / relative, package)
+            parent = _onedir_parent(build_root)
+            parent.mkdir(parents=True, exist_ok=True)
+            # 整目录发布避免混入旧二进制，也不覆盖旧版用户文件
+            destination = parent / f'ExifFrame-{uuid.uuid4().hex}'
+            _publish_onedir(package, destination, temporary, build_root)
             executable = destination / 'ExifFrame.exe'
         else:
-            destination = (dist_root / 'single').resolve()
-            if not destination.is_relative_to(dist_root):
-                raise ValueError('发布路径超出目标目录')
-            executable = destination / 'ExifFrame.exe'
-            _copy_file(staging / 'ExifFrame.exe', executable, destination)
+            executable = build_root / 'ExifFrame.exe'
+            generated = staging / 'ExifFrame.exe'
+            if (_is_redirected(executable) or _is_redirected(generated)
+                    or not generated.resolve().is_relative_to(temporary.resolve())
+                    or executable.resolve().parent != build_root):
+                raise BuildPreparationError('单文件发布路径不安全')
+            os.replace(generated, executable)
     print(f'构建完成：{executable}', flush=True)
     return executable
 
@@ -244,9 +281,10 @@ def main(argv=None):
     """显示简洁的准备错误并保留构建工具原始日志"""
     parser = argparse.ArgumentParser(description='构建 Windows 单文件或目录版')
     parser.add_argument('--onedir', action='store_true', help='构建资源外置的目录版')
+    parser.add_argument('--numpy-wheel', type=Path, help='离线构建时使用已下载的官方 NumPy wheel')
     args = parser.parse_args(argv)
     try:
-        build(onedir=args.onedir)
+        build(onedir=args.onedir, numpy_wheel=args.numpy_wheel)
     except BuildPreparationError as error:
         print(f'构建准备失败：{error}', file=sys.stderr)
         return 1
