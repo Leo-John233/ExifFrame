@@ -3,7 +3,7 @@ name: Build Windows Release Package
 on:
   push:
     tags:
-      - 'v*' # Push events to matching build* tags
+      - 'v*'
   workflow_dispatch:
 
 env:
@@ -14,96 +14,93 @@ env:
 jobs:
   build:
     runs-on: windows-latest
-
     steps:
-    - name: Checkout repository source code into 'dist'
+    - name: Checkout repository
       uses: actions/checkout@v4
 
     - name: Set up Python
-      uses: actions/setup-python@v2
+      uses: actions/setup-python@v5
       with:
         python-version: '3.13'
+        architecture: x64
 
-    - name: Install Dependencies
+    - name: Install build dependencies
       run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install pyinstaller
+        python -m pip install -r build_support/requirements-windows.txt
+        python -m pip download --only-binary=:all: --no-deps --dest build/wheels numpy==2.5.2
 
-    - name: Build Executable
-      run: |
-        python ./scripts/build_windows.py --no-resources
-
-    - name: Prepare Package and Unpack ExifTool
+    - name: Prepare ExifTool resources
       shell: pwsh
       run: |
-        # 1. 设置脚本在遇到任何错误时立即停止，这是 CI/CD 的最佳实践
-        $ErrorActionPreference = "Stop"
-
-        # 2. 定义目标目录变量，便于维护
-        $distPath = "./dist/ExifFrame"
-
-        # 3. 批量移动文件和文件夹，代码更简洁
-        Write-Host "Moving resources to $distPath"
-        $itemsToMove = @("./config", "./static", "./pyproject.toml")
-        Move-Item -Path $itemsToMove -Destination $distPath -Force
-
-        # 4. 批量创建所需目录
-        Write-Host "Creating subdirectories in $distPath"
-        @("input", "output", "exiftool") | ForEach-Object {
-            New-Item -Path (Join-Path $distPath $_) -ItemType Directory -Force | Out-Null
-        }
-
-        # 5. 下载并正确解压 ExifTool
-        Write-Host "Downloading ExifTool..."
-        $zipFile = "exiftool.zip"
-        $exiftoolDestPath = Join-Path $distPath "exiftool"
-
-        Invoke-WebRequest -Uri "${{ env.EXIFTOOL_URL }}" -OutFile $zipFile
-
-        Write-Host "Expanding ExifTool archive..."
-        Expand-Archive -Path $zipFile -DestinationPath $exiftoolDestPath -Force
-
-        # 以程序所在目录识别外层包装，保留 exiftool_files 的内部结构
-        $resourceRoot = (Resolve-Path -LiteralPath $exiftoolDestPath).Path
-        $toolExe = Get-ChildItem -LiteralPath $resourceRoot -File -Recurse |
-            Where-Object { $_.Name -in @("exiftool.exe", "exiftool(-k).exe") } |
+        $ErrorActionPreference = 'Stop'
+        New-Item -ItemType Directory -Path build -Force | Out-Null
+        Invoke-WebRequest -Uri "${{ env.EXIFTOOL_URL }}" -OutFile build/exiftool.zip
+        Expand-Archive -Path build/exiftool.zip -DestinationPath build/exiftool-download
+        $toolExe = Get-ChildItem -LiteralPath build/exiftool-download -File -Recurse |
+            Where-Object { $_.Name -in @('exiftool.exe', 'exiftool(-k).exe') } |
             Select-Object -First 1
-        if ($null -eq $toolExe) { throw "ExifTool executable missing" }
-        $toolRoot = $toolExe.Directory.FullName
-        if ($toolRoot -ne $resourceRoot) {
-            if (-not $toolRoot.StartsWith($resourceRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
-                throw "ExifTool package path outside resource directory"
+        if ($null -eq $toolExe) { throw 'ExifTool executable missing' }
+        if (-not (Test-Path -LiteralPath (Join-Path $toolExe.Directory.FullName 'exiftool_files'))) {
+            throw 'ExifTool runtime files missing'
+        }
+        New-Item -ItemType Directory -Path exiftool -Force | Out-Null
+        Get-ChildItem -LiteralPath $toolExe.Directory.FullName -Force |
+            Copy-Item -Destination exiftool -Recurse
+
+    - name: Build single-file executable
+      run: python build_support/build_windows.py
+
+    - name: Verify executable resources and startup
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        New-Item -ItemType Directory -Force -Path build/ci-package-check/temp, build/ci-package-check/appdata | Out-Null
+        $env:TEMP = (Resolve-Path build/ci-package-check/temp).Path
+        $env:TMP = $env:TEMP
+        $env:LOCALAPPDATA = (Resolve-Path build/ci-package-check/appdata).Path
+        $executable = (Resolve-Path dist/single/ExifFrame.exe).Path
+        $reportPath = Join-Path (Resolve-Path build/ci-package-check).Path 'report.json'
+        $expected = @('resources', 'templates', 'fonts', 'persistence', 'translations',
+                      'exiftool_read_write', 'heif_round_trip', 'render_and_export')
+        foreach ($attempt in 1..2) {
+          $process = Start-Process -FilePath $executable -ArgumentList @('--verify-package', "`"$reportPath`"") -WindowStyle Hidden -Wait -PassThru
+          if (Test-Path -LiteralPath $reportPath) {
+            $report = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          } else {
+            throw "Package verification report missing on run $attempt"
+          }
+          if ($process.ExitCode -ne 0 -or -not $report.ok) {
+            Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8 | Write-Host
+            throw "Package verification failed on run $attempt"
+          }
+          foreach ($name in $expected) {
+            if ($null -eq $report.checks.$name -or -not $report.checks.$name.ok) {
+              throw "Package verification check missing or failed: $name"
             }
-            Get-ChildItem -LiteralPath $toolRoot -Force | Move-Item -Destination $resourceRoot -Force
+          }
+          if ($attempt -eq 2 -and -not $report.checks.persistence.result.previous_run_verified) {
+            throw 'User settings and template did not persist across launches'
+          }
         }
-        if ($toolExe.Name -eq "exiftool(-k).exe") {
-            Rename-Item -LiteralPath (Join-Path $resourceRoot "exiftool(-k).exe") -NewName "exiftool.exe"
-        }
-        if (-not (Test-Path -LiteralPath (Join-Path $resourceRoot "exiftool_files"))) {
-            throw "ExifTool runtime files missing"
-        }
+        $process = Start-Process -FilePath $executable -ArgumentList '--smoke-test' -WindowStyle Hidden -Wait -PassThru
+        if ($process.ExitCode -ne 0) { throw "Smoke test failed: $($process.ExitCode)" }
 
-        Write-Host "Setup complete."
-
-    - name: Determine Artifact Name
+    - name: Determine artifact name
       id: artifact_name
       shell: pwsh
       run: |
-        $TAG="${{ github.ref_name }}"
-        
-        if ($TAG -match '^v') {
-          $CLEAN_TAG = $TAG -replace '^v', ''
+        $tag = '${{ github.ref_name }}'
+        if ($tag -match '^v') {
+          $version = $tag -replace '^v', ''
         } else {
-          $CLEAN_TAG = "${{ github.sha }}".Substring(0, 7)
+          $version = '${{ github.sha }}'.Substring(0, 7)
         }
-        
-        $ARTIFACT_NAME="${{ env.PACKAGE_BASENAME }}-${CLEAN_TAG}-${{ env.PLATFORM }}"
-        echo "Generated Artifact Name: ${ARTIFACT_NAME}"
-        echo "artifact_name=${ARTIFACT_NAME}" >> $env:GITHUB_OUTPUT
+        $artifact = "${{ env.PACKAGE_BASENAME }}-${version}-${{ env.PLATFORM }}"
+        "artifact_name=${artifact}" >> $env:GITHUB_OUTPUT
 
-    - name: Upload Artifact
+    - name: Upload single-file artifact
       uses: actions/upload-artifact@v4
       with:
         name: ${{ steps.artifact_name.outputs.artifact_name }}
-        path: dist/ExifFrame
+        path: dist/single/ExifFrame.exe
+        if-no-files-found: error

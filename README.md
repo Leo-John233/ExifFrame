@@ -86,16 +86,19 @@ python main.py
 
 ### 验证与打包
 
+Windows x64 构建使用 Python 3.13 和 PyInstaller 6.20.0。请先准备包含程序与 `exiftool_files` 的 `exiftool` 目录；构建依赖的固定版本见 `build_support/requirements-windows.txt`。在已安装这些依赖的构建环境中执行：
+
 ```powershell
 python main.py --smoke-test
-python scripts/build_windows.py
+python -m pip download --only-binary=:all: --no-deps --dest build/wheels numpy==2.5.2
+python build_support/build_windows.py
 ```
 
-构建结果位于 `dist/ExifFrame/ExifFrame.exe`。发布时保留整个 `dist/ExifFrame` 文件夹，包括 `_internal`、`config`、`static`、`pyproject.toml` 和 `exiftool`。分目录发布避免每次启动解压依赖，GitHub Windows 发布流程会组装这些资源。
+结果为 `dist/single/ExifFrame.exe`，可单独分发，内含模板、字体、标识、示例图片和 ExifTool。首次运行会在 `%LOCALAPPDATA%\ExifFrame` 下创建用户配置；后续更改的配置与模板保存在该位置。如果 EXE 同目录已有旧版 `config`，首次运行会复制旧配置，旧配置中的相对输入和输出路径仍指向原程序目录，原文件不会改动。启动时单文件程序需要解压内置资源，启动时间可能比目录版长。
 
-构建脚本使用独立暂存目录，重复构建不会清空发布目录中的已有配置与照片。已有资源保留；需要更新自定义模板时，请通过应用内模板编辑器操作。
+脚本会校验 NumPy wheel 的版本和 SHA256，仅在 `build` 下的临时目录安装并使用它，不会改动当前 Python 环境。若要创建资源外置的目录版，可运行 `python build_support/build_windows.py --onedir`；输出目录会显示在命令结果中，发布时需保留其中所有文件。每次目录版构建都使用新的目录，不会覆盖旧版本的配置和照片。GitHub Windows 发布流程使用固定构建依赖并发布单文件 EXE。
 
-更新发布目录内的模板可运行 `python scripts/build_windows.py --refresh-templates`，旧版本会先备份至 `config/template-backups`。“品牌标识居中”显示居中标识及两侧完整 EXIF，“仅标识居中”保留简洁的单标识版式。
+“品牌标识居中”显示居中标识及两侧完整 EXIF，“仅标识居中”保留简洁的单标识版式。
 
 模板样图采用缩放解码，照片缩略图、标识、编译模板与字体均有有界缓存；文件修改后自动更新，不使用旧缓存替代新的照片内容。
 
