@@ -178,6 +178,15 @@ class TemplateEditor(QDialog):
         tools = QHBoxLayout()
         tools.setSpacing(8)
         insert_button = QToolButton()
+        insert_button.setObjectName('insertFieldButton')
+        insert_button.setStyleSheet("""
+            QToolButton#insertFieldButton { padding-right: 24px; }
+            QToolButton#insertFieldButton::menu-indicator {
+                subcontrol-origin: padding;
+                subcontrol-position: center right;
+                right: 4px;
+            }
+        """)
         bind(insert_button, '插入字段')
         insert_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         menu = QMenu(insert_button)
