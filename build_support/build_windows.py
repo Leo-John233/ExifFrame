@@ -79,7 +79,8 @@ def _ensure_numpy_wheel(cache: Path, temporary: Path, wheel_input=None, onedir=F
                 env.pop(name)
         env.update({'TMP': str(temp_dir), 'TEMP': str(temp_dir),
                     'PIP_CONFIG_FILE': os.devnull, 'PIP_NO_CACHE_DIR': '1',
-                    'PYTHONNOUSERSITE': '1', 'PYTHONDONTWRITEBYTECODE': '1', 'PYTHONUTF8': '1'})
+                    'PYTHONNOUSERSITE': '1', 'PYTHONDONTWRITEBYTECODE': '1', 'PYTHONUTF8': '1',
+                    'PYTHONIOENCODING': 'utf-8:backslashreplace'})
         env.pop('PYTHONHOME', None)
         env.pop('PYTHONPATH', None)
         print(f'正在下载 NumPy {NUMPY_VERSION} wheel', flush=True)
@@ -208,6 +209,7 @@ def _build_environment(numpy_target: Path, mode: str):
     env['PYTHONPATH'] = os.pathsep.join((str(numpy_target), str(ROOT / 'build_support')))
     env['PYTHONNOUSERSITE'] = '1'
     env['PYTHONUTF8'] = '1'
+    env['PYTHONIOENCODING'] = 'utf-8:backslashreplace'
     env['PYTHONDONTWRITEBYTECODE'] = '1'
     env['TMP'] = env['TEMP'] = str(temporary)
     env['PYINSTALLER_CONFIG_DIR'] = str(temporary / 'pyinstaller')
@@ -284,8 +286,20 @@ def build(onedir=False, numpy_wheel=None):
     return executable
 
 
+def _configure_output():
+    """兼容使用非 UTF-8 编码的终端和输出管道"""
+    for stream in (sys.stdout, sys.stderr):
+        configure = getattr(stream, 'reconfigure', None)
+        if callable(configure):
+            try:
+                configure(encoding='utf-8', errors='backslashreplace')
+            except (OSError, ValueError):
+                pass
+
+
 def main(argv=None):
     """显示简洁的准备错误并保留构建工具原始日志"""
+    _configure_output()
     parser = argparse.ArgumentParser(description='构建 Windows 单文件或目录版')
     parser.add_argument('--onedir', action='store_true', help='构建资源外置的目录版')
     parser.add_argument('--numpy-wheel', type=Path, help='离线构建时使用已下载的官方 NumPy wheel')

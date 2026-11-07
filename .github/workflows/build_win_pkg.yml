@@ -20,6 +20,8 @@ concurrency:
 
 env:
   EXIFTOOL_VERSION: '13.60'
+  PYTHONUTF8: '1'
+  PYTHONIOENCODING: 'utf-8'
 
 jobs:
   build:
@@ -205,23 +207,38 @@ jobs:
         }
         $releaseTags = @(gh api --paginate "repos/$repo/releases?per_page=100" --jq '.[].tag_name')
         if ($LASTEXITCODE -ne 0) { throw 'Unable to list releases' }
-        if ($releaseTags -ccontains $tag) {
-          $response = gh release view $tag --repo $repo --json assets,isDraft
-          if ($LASTEXITCODE -ne 0) { throw 'Unable to read existing release' }
-          $release = $response | ConvertFrom-Json
-          if (@($release.assets | Where-Object { $_.name -ceq 'ExifFrame.exe' }).Count -eq 0) {
-            gh release upload $tag build/ExifFrame.exe --repo $repo
-            if ($LASTEXITCODE -ne 0) { throw 'Unable to upload ExifFrame.exe' }
+        $notesFile = Join-Path $env:RUNNER_TEMP ("exifframe-notes-" + [guid]::NewGuid().ToString('N') + '.md')
+        $notes = @(
+          "ExifFrame $tag Windows x64 单文件版"
+          '下载 `ExifFrame.exe` 后可直接运行，程序已内置 ExifTool。'
+          '首次运行会在程序旁生成 `config` 文件夹。'
+        ) -join "`n"
+        try {
+          [IO.File]::WriteAllText($notesFile, $notes, [Text.UTF8Encoding]::new($false))
+          if ($releaseTags -ccontains $tag) {
+            $response = gh release view $tag --repo $repo --json assets,isDraft,body
+            if ($LASTEXITCODE -ne 0) { throw 'Unable to read existing release' }
+            $release = $response | ConvertFrom-Json
+            if (@($release.assets | Where-Object { $_.name -ceq 'ExifFrame.exe' }).Count -eq 0) {
+              gh release upload $tag build/ExifFrame.exe --repo $repo
+              if ($LASTEXITCODE -ne 0) { throw 'Unable to upload ExifFrame.exe' }
+            } else {
+              Write-Host 'Keeping the existing ExifFrame.exe release asset'
+            }
+            if ([string]::IsNullOrWhiteSpace($release.body)) {
+              gh release edit $tag --repo $repo --notes-file $notesFile
+              if ($LASTEXITCODE -ne 0) { throw 'Unable to update empty release notes' }
+            }
+            $draft = $release.isDraft
           } else {
-            Write-Host 'Keeping the existing ExifFrame.exe release asset'
+            gh release create $tag build/ExifFrame.exe --repo $repo --verify-tag --draft --title "ExifFrame $tag" --notes-file $notesFile
+            if ($LASTEXITCODE -ne 0) { throw 'Unable to create draft release' }
+            $draft = $true
           }
-          $draft = $release.isDraft
-        } else {
-          gh release create $tag build/ExifFrame.exe --repo $repo --verify-tag --draft --title $tag --notes 'ExifFrame for Windows'
-          if ($LASTEXITCODE -ne 0) { throw 'Unable to create draft release' }
-          $draft = $true
-        }
-        if ($draft) {
-          gh release edit $tag --repo $repo --draft=false
-          if ($LASTEXITCODE -ne 0) { throw 'Unable to publish release' }
+          if ($draft) {
+            gh release edit $tag --repo $repo --draft=false
+            if ($LASTEXITCODE -ne 0) { throw 'Unable to publish release' }
+          }
+        } finally {
+          Remove-Item -LiteralPath $notesFile -Force -ErrorAction SilentlyContinue
         }

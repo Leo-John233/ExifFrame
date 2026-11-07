@@ -92,7 +92,7 @@ python build_support/build_windows.py
 
 ### GitHub Release
 
-在 Actions 中手动运行 Windows 发布工作流并填写版本标签，例如 `v2.1.5`，发布新版本时建议选择默认分支，也可以推送 `v` 开头的标签触发。已有标签会构建对应版本，新标签在构建成功后创建；随后自动发布 Release，程序附件为 `ExifFrame.exe`
+在 Actions 中手动运行 Windows 发布工作流并填写版本标签，例如 `v2.1.5`，发布新版本时建议选择默认分支，也可以推送 `v` 开头的标签触发。已有标签会构建对应版本，新标签在构建成功后创建；随后自动发布 Release，附上 `ExifFrame.exe`，并生成包含版本、平台和运行方式的简短说明
 
 云端使用 Windows 2025 和 Python 3.13 x64，分别缓存 Python 依赖、NumPy 和 ExifTool。ExifTool 缓存缺失时，从[官方发布目录](https://sourceforge.net/projects/exiftool/files/)下载固定的 13.60 Windows 64 位包；这一步只在云端执行，本地打包仍使用已有文件
 
