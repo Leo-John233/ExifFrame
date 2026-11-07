@@ -121,4 +121,4 @@ ExifFrame 作者：[Leo-John233](https://github.com/Leo-John233)
 | [ExifEditor-GUI](https://github.com/Leo-John233/ExifEditor-GUI) | Leo-John233 | 照片信息编辑与迁移功能的参考，本项目使用独立的 Qt 实现 |
 | [ExifTool](https://exiftool.org/) | Phil Harvey | 照片元数据的读取、写入和迁移工具 |
 
-本项目采用 [Apache License 2.0](LICENSE)，相关项目与工具保留各自许可条款，ExifTool 许可见[官方网站](https://exiftool.org/#license)。开发资料见[功能对照与历史性能记录](docs/compatibility-and-performance.md)和[示例照片生成脚本](scripts/build_preview_sample.py)
+本项目采用 [Apache License 2.0](LICENSE)，相关项目与工具保留各自许可条款，ExifTool 许可见[官方网站](https://exiftool.org/#license)，开发资料见[功能对照与历史性能记录](docs/compatibility-and-performance.md)和[示例照片生成脚本](scripts/build_preview_sample.py)
