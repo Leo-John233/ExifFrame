@@ -94,16 +94,38 @@ jobs:
         }
         try {
           $archiveName = "exiftool-$($env:EXIFTOOL_VERSION)_64.zip"
-          $archive = Join-Path $work $archiveName
-          $unpacked = Join-Path $work 'unpacked'
-          $uri = "https://downloads.sourceforge.net/project/exiftool/$archiveName"
-          Invoke-WebRequest -Uri $uri -OutFile $archive -TimeoutSec 180
-          Expand-Archive -LiteralPath $archive -DestinationPath $unpacked
-          $source = Join-Path $unpacked "exiftool-$($env:EXIFTOOL_VERSION)_64"
-          if (-not ((Test-Path -LiteralPath (Join-Path $source 'exiftool(-k).exe') -PathType Leaf) -and
-                    (Test-Path -LiteralPath (Join-Path $source 'exiftool_files') -PathType Container))) {
-            throw 'Downloaded ExifTool is missing its executable or support directory'
+          $urls = @(
+            "https://sourceforge.net/projects/exiftool/files/$archiveName/download",
+            "https://master.dl.sourceforge.net/project/exiftool/${archiveName}?viasf=1"
+          )
+          $source = $null
+          $attempt = 0
+          foreach ($uri in $urls) {
+            $attempt++
+            $attemptDir = Join-Path $work "attempt-$attempt"
+            New-Item -ItemType Directory -Path $attemptDir | Out-Null
+            $archive = Join-Path $attemptDir $archiveName
+            $unpacked = Join-Path $attemptDir 'unpacked'
+            try {
+              Write-Host "Downloading ExifTool from $uri"
+              & curl.exe -fLsS --retry 2 --connect-timeout 20 --max-time 180 --output $archive $uri
+              if ($LASTEXITCODE -ne 0) { throw "curl failed with exit code $LASTEXITCODE" }
+              $size = (Get-Item -LiteralPath $archive).Length
+              Write-Host "Downloaded $size bytes"
+              [IO.Compression.ZipFile]::ExtractToDirectory($archive, $unpacked)
+              $candidate = Join-Path $unpacked "exiftool-$($env:EXIFTOOL_VERSION)_64"
+              if (-not ((Test-Path -LiteralPath (Join-Path $candidate 'exiftool(-k).exe') -PathType Leaf) -and
+                        (Test-Path -LiteralPath (Join-Path $candidate 'exiftool_files') -PathType Container))) {
+                throw 'Archive is missing the ExifTool executable or support directory'
+              }
+              $source = $candidate
+              break
+            } catch {
+              $size = if (Test-Path -LiteralPath $archive) { (Get-Item -LiteralPath $archive).Length } else { 0 }
+              Write-Warning "ExifTool download failed: $uri ($size bytes): $($_.Exception.Message)"
+            }
           }
+          if ($null -eq $source) { throw 'Unable to prepare ExifTool from the official download sources' }
           New-Item -ItemType Directory -Path exiftool -Force | Out-Null
           Get-ChildItem -LiteralPath $source -Force | Copy-Item -Destination exiftool -Recurse -Force
           if (Test-Path -LiteralPath 'exiftool/exiftool.exe' -PathType Leaf) {
