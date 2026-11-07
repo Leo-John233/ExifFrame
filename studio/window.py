@@ -21,6 +21,7 @@ from core.desktop_service import (
     SUPPORTED_SUFFIXES, list_presets, load_settings, read_template,
     save_settings, save_workspace_settings, write_template,
 )
+from .about import AboutDialog
 from .files import FileBrowser
 from .i18n import bind_static_texts, install_qt_translations, language, localize_error, set_language, tr, translator
 from .template_editor import TemplateEditor
@@ -205,6 +206,9 @@ class MainWindow(QMainWindow):
             group.addAction(action)
             self.language_menu.addAction(action)
             self.language_actions[code] = action
+        view_menu.addSeparator()
+        self.about_action = self._action("关于", self._show_about)
+        view_menu.addAction(self.about_action)
         self.toolbar = QToolBar("常用操作")
         self.toolbar.setMovable(False)
         self.toolbar.setIconSize(QSize(16, 16))
@@ -1016,6 +1020,11 @@ class MainWindow(QMainWindow):
         self._errors = errors
         self.error_button.setEnabled(True)
         self._set_status("{title}：{error}", title=title, error=errors[0])
+
+    def _show_about(self):
+        dialog = AboutDialog(self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.show()
 
     def _show_error_details(self):
         dialog = QDialog(self)
