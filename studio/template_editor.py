@@ -9,7 +9,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QSyntaxHighlighter, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMessageBox,
-    QPlainTextEdit, QPushButton, QSplitter, QStyle, QToolBar, QVBoxLayout, QMenu, QToolButton,
+    QPlainTextEdit, QPushButton, QSizePolicy, QSplitter, QStyle, QToolBar, QVBoxLayout, QMenu, QToolButton,
 )
 
 from core.desktop_service import validate_template, write_template
@@ -38,8 +38,9 @@ register_translations({
     '格式化 JSON': 'Format JSON', '相机': 'Camera', '镜头': 'Lens', '拍摄参数': 'Exposure',
     '拍摄日期': 'Capture date', '版权': 'Copyright', '摄影师': 'Photographer', '品牌标识': 'Brand logo',
     'JSON 和 Jinja 模板源码': 'JSON and Jinja template source',
-    '修改源码后可先检查格式，再应用到当前照片预览': 'Validate changes before previewing them on the current photo',
-    '格式检查不会替换 Jinja 变量，照片预览会验证实际处理结果': 'Validation preserves Jinja variables; preview checks the rendered result',
+    '修改后自动预览，点击保存模板保留修改': 'Automatic preview, save template to keep changes',
+    '检查格式不会修改 Jinja 变量 请通过预览确认最终效果':
+        'Validation preserves Jinja variables  Check the final result in the preview',
     '源码已修改，尚未检查格式': 'Source changed; validation pending',
     '未命名模板': 'Untitled template', '{name}{dirty} — 模板编辑器': '{name}{dirty} — Template editor',
     '行 {line}，列 {column}': 'Line {line}, column {column}',
@@ -57,8 +58,7 @@ register_translations({
     '包含 Jinja 条件或循环，保留原始排版': 'Jinja conditions or loops detected; original formatting preserved',
     '已格式化 JSON，Jinja 表达式保持不变': 'JSON formatted; Jinja expressions preserved',
     '无法安全格式化，源码保持不变：{error}': 'Cannot format safely; source unchanged: {error}',
-    '源码已修改，照片预览自动更新': 'Source changed; the photo preview updates automatically',
-    '有效源码会自动更新实际照片，保存后写入模板文件': 'Valid source updates the actual photo automatically; Save writes the template file',
+    '预览自动更新 记得保存模板': 'Preview updates automatically  Save template to keep changes',
 })
 
 
@@ -111,7 +111,7 @@ class TemplateEditor(QDialog):
         self._close_approved = False
         self._preview_photo_path = photo_path
         self._preview_settings = settings
-        self._status = ('修改源码后可先检查格式，再应用到当前照片预览', {})
+        self._status = ('修改后自动预览，点击保存模板保留修改', {})
         self.setObjectName("templateEditor")
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowTitleHint |
                             Qt.WindowType.WindowSystemMenuHint | Qt.WindowType.WindowMinMaxButtonsHint |
@@ -125,7 +125,7 @@ class TemplateEditor(QDialog):
         self.editor.document().setModified(initial_source != self._saved_source)
         self._update_title()
         self._update_position()
-        self._set_status('有效源码会自动更新实际照片，保存后写入模板文件')
+        self._set_status('修改后自动预览，点击保存模板保留修改')
         translator.language_changed.connect(self.retranslate_ui)
         self.retranslate_ui()
 
@@ -155,7 +155,10 @@ class TemplateEditor(QDialog):
         toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.save_action = self._action("保存模板", self.save, "Ctrl+S", QStyle.StandardPixmap.SP_DialogSaveButton)
         self.save_as_action = self._action("另存为", self.save_as, "Ctrl+Shift+S")
-        self.validate_action = self._action("检查格式", self.check_format, "F7", QStyle.StandardPixmap.SP_DialogApplyButton)
+        self.validate_action = self._action(
+            "检查格式", self.check_format, "F7", QStyle.StandardPixmap.SP_DialogApplyButton,
+            tooltip='检查格式不会修改 Jinja 变量 请通过预览确认最终效果',
+        )
         self.preview_action = self._action("应用到预览", self.apply_preview, "Ctrl+Return")
         for action in (self.save_action, self.save_as_action):
             toolbar.addAction(action)
@@ -225,29 +228,24 @@ class TemplateEditor(QDialog):
 
         status_row = QHBoxLayout()
         status_row.setSpacing(12)
-        self.status_label = QLabel("修改源码后可先检查格式，再应用到当前照片预览")
+        self.status_label = QLabel()
         self.status_label.setObjectName("templateEditorStatus")
+        self.status_label.setMinimumWidth(0)
+        self.status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.status_label.setWordWrap(True)
+        self.status_label.setTextFormat(Qt.TextFormat.PlainText)
         status_row.addWidget(self.status_label, 1)
         self.position_label = QLabel()
         self.position_label.setObjectName("templateEditorPosition")
         status_row.addWidget(self.position_label)
-        layout.addLayout(status_row)
-        bottom = QHBoxLayout()
-        bottom.setSpacing(12)
-        hint = QLabel()
-        bind(hint, '格式检查不会替换 Jinja 变量，照片预览会验证实际处理结果')
-        hint.setWordWrap(True)
-        bottom.addWidget(hint)
-        bottom.addStretch()
         self.close_button = QPushButton("关闭")
         bind(self.close_button, '关闭')
         self.close_button.clicked.connect(self.close)
         self.close_button.setAutoDefault(False)
-        bottom.addWidget(self.close_button)
-        layout.addLayout(bottom)
+        status_row.addWidget(self.close_button)
+        layout.addLayout(status_row)
 
-    def _action(self, title, callback, shortcut="", icon=None):
+    def _action(self, title, callback, shortcut="", icon=None, tooltip=None):
         action = QAction(title, self)
         bind(action, title)
         if icon is not None:
@@ -255,7 +253,7 @@ class TemplateEditor(QDialog):
         if shortcut:
             action.setShortcut(QKeySequence(shortcut))
             action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-            bind(action, title, 'setToolTip')
+            bind(action, tooltip or title, 'setToolTip')
         action.triggered.connect(callback)
         self.addAction(action)
         return action
@@ -295,7 +293,7 @@ class TemplateEditor(QDialog):
             self._set_status('格式检查失败：{error}', error=exc)
             return
         self.preview.set_source(self.source())
-        self._set_status('源码已修改，照片预览自动更新')
+        self._set_status('预览自动更新 记得保存模板')
 
     def _update_title(self):
         name = self.name_input.text().strip() or tr("未命名模板")
