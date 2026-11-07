@@ -34,10 +34,13 @@ def resource_path(path: str) -> Path:
 
 
 def user_data_root() -> Path:
-    """单文件的数据与临时解包目录和程序位置分离"""
+    """单文件默认将可编辑数据保存在程序目录"""
     override = os.environ.get('EXIFFRAME_DATA_DIR')
-    if override:
-        return Path(override).expanduser().resolve()
+    return Path(override).expanduser().resolve() if override else application_root()
+
+
+def _legacy_data_root() -> Path:
+    """定位旧单文件版使用的用户数据目录"""
     local = os.environ.get('LOCALAPPDATA')
     return (Path(local) if local else Path.home() / 'AppData' / 'Local') / 'ExifFrame'
 
@@ -144,34 +147,48 @@ def initialize_user_config(migrate_legacy: bool = True) -> None:
     """仅首次补齐默认配置，后续保留用户修改和删除"""
     if not is_onefile():
         return
-    data_root = user_data_root()
-    data_root.mkdir(parents=True, exist_ok=True)
-    with _seed_lock(data_root / '.resources.lock'):
-        target = config_path()
-        marker = data_root / _SEEDED_MARKER
+    target = config_path()
+    bundle = Path(sys._MEIPASS).resolve()
+    target_root = target.resolve()
+    if target_root.is_relative_to(bundle) or bundle.is_relative_to(target_root):
+        raise PermissionError(errno.EACCES, '无法写入临时解包目录', str(target))
+    target_existed = target.is_dir()
+    target.mkdir(parents=True, exist_ok=True)
+    with _seed_lock(target / '.resources.lock'):
+        # 已有锁文件也不能代替目录写入权限
+        with NamedTemporaryFile(dir=target, prefix='.write-check-', suffix='.tmp'):
+            pass
+        marker = target / _SEEDED_MARKER
+        # 兼容以前在数据根目录保存的初始化标记
+        if not marker.is_file() and target_existed and (target.parent / _SEEDED_MARKER).is_file():
+            marker.touch()
         if not marker.is_file():
             source = resource_path('config')
             required = (source / 'config.ini', *(source / name for name in _CONFIG_DIRS))
             if not required[0].is_file() or not all(path.is_dir() for path in required[1:]):
                 raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(source))
-            legacy = application_root() / 'config'
-            legacy_root, target_root = legacy.resolve(), target.resolve()
-            overlaps = legacy_root.is_relative_to(target_root) or target_root.is_relative_to(legacy_root)
-            if migrate_legacy and legacy.is_dir() and not overlaps:
-                for name in ('config.ini', 'desktop.json', 'ui.json'):
-                    if (legacy / name).is_file():
-                        transform = None
-                        if name == 'config.ini':
-                            transform = lambda data: _migrate_ini(data, legacy.parent)
-                        elif name == 'desktop.json':
-                            transform = lambda data: _migrate_desktop_json(data, legacy.parent)
-                        _copy_seed_file(legacy / name, target / name, transform)
-                for name in _CONFIG_DIRS:
-                    folder = legacy / name
-                    if folder.is_dir():
-                        for item in sorted(folder.rglob('*')):
-                            if item.is_file():
-                                _copy_seed_file(item, target / item.relative_to(legacy))
+            if migrate_legacy:
+                # 程序旁配置优先，其次迁移旧用户目录，已有目标文件始终保留
+                for legacy_base in (application_root(), _legacy_data_root()):
+                    legacy = legacy_base / 'config'
+                    legacy_root = legacy.resolve()
+                    overlaps = legacy_root.is_relative_to(target_root) or target_root.is_relative_to(legacy_root)
+                    if not legacy.is_dir() or overlaps:
+                        continue
+                    for name in ('config.ini', 'desktop.json', 'ui.json'):
+                        if (legacy / name).is_file():
+                            transform = None
+                            if name == 'config.ini':
+                                transform = lambda data: _migrate_ini(data, legacy_base)
+                            elif name == 'desktop.json':
+                                transform = lambda data: _migrate_desktop_json(data, legacy_base)
+                            _copy_seed_file(legacy / name, target / name, transform)
+                    for name in _CONFIG_DIRS:
+                        folder = legacy / name
+                        if folder.is_dir():
+                            for item in sorted(folder.rglob('*')):
+                                if item.is_file():
+                                    _copy_seed_file(item, target / item.relative_to(legacy))
             _copy_seed_file(required[0], target / 'config.ini')
             for folder in required[1:]:
                 for item in sorted(folder.rglob('*')):

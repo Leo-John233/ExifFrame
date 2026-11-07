@@ -9,7 +9,7 @@ Run in project root.
 - Native startup/shutdown smoke check: `& 'D:/miniconda3/envs/Python3.13/python.exe' main.py --smoke-test`.
 - Default URL is configured in config/config.ini: `http://localhost:15050`; web_server.py opens a browser when debug is false.
 - Dependency installation, when needed for a development task: `& 'D:/miniconda3/envs/Python3.13/python.exe' -m pip install -r requirements.txt`. Installation changes this external environment; onboarding only inspected it.
-- EXIF-backed processing also requires `exiftool/exiftool.exe` and its distribution support files.
+- Full photo metadata editing requires `exiftool/exiftool.exe` (or `exiftool(-k).exe`) and its adjacent exiftool_files. Source GUI startup warns when either is missing, then continues with watermark fallback; smoke/verify/frozen launches skip the source-only warning.
 - Machine-specific Serena guidance is in `.serena/project.local.yml`, which is excluded by `.serena/.gitignore`.
 
 ## uv route (optional, not the selected local environment)
@@ -18,11 +18,12 @@ Run in project root.
 - Keep in mind the pip CI dependency path described in `mem:tech_stack`.
 
 ## Windows packaging
-- `python build_support/build_windows.py` builds `build/ExifFrame.exe`; templates, fonts, logos, static assets, project metadata and full ExifTool are embedded. Each build downloads the pinned NumPy wheel from PyPI, verifies SHA256, installs it inside an isolated temporary directory, then cleans only its own temporary files without changing the Python environment.
-- For offline builds, pass `--numpy-wheel` with the full path to a verified official NumPy wheel; this user-provided input is not deleted.
+- `python build_support/build_windows.py` builds `build/ExifFrame.exe`; templates, fonts, logos, static assets, project metadata and full ExifTool are embedded. Only the pinned NumPy wheel is downloaded into build/download and reused when present, without repeated checksum scans. ExifTool is read directly from the project's exiftool directory; missing executable/support directory stops the build with instructions to complete it. No ExifTool download or extra cache copy is performed.
+- Builds unpack the NumPy wheel directly and run PyInstaller analysis outside the workspace in a unique system temporary directory, then clean dependencies, analysis and staging after success or failure. This avoids pip installation and VS Code watching/analyzing generated Python trees; .vscode/settings.json also excludes build/dist from watching and Python analysis. Cross-drive publication copies into a short-lived sibling staging path before replacing the final cache/output. Download resources, previous output and user configuration are preserved. Child process trees use at most two logical CPUs, below-normal priority, numerical-library threads=1 and a job-wide memory allowance capped at 4 GiB and half available physical/commit memory. Low available memory stops the build; external commands have stage-specific timeouts. The pinned PyInstaller 6.20 build uses CArchive compression level 6 (instead of 9), only inside the builder process, for faster single-file packaging; PYZ stays at its default 6. ExifTool's complete independent runtime is added to the onefile DATA TOC after Analysis, avoiding redundant PE dependency analysis. Do not add file hashes, origin audits or repeated read/write/import checks to normal builds; preserve essential missing-input and safe-publication checks.
+- For offline builds, populate `build/download` or pass `--numpy-wheel` with the full path to the pinned official NumPy wheel; this user-provided input is not deleted.
 - `python build_support/build_windows.py --onedir` creates a fresh directory under `build/onedir`; distribute the entire printed directory. New builds do not overwrite prior user configs or photos.
-- Prepare `exiftool` with an executable and adjacent `exiftool_files` before building; CI downloads ExifTool and uses pinned `build_support/requirements-windows.txt`.
-- The single-file app stores user configuration under `%LOCALAPPDATA%/ExifFrame`; preserve it across updates.
+- Prepare the root exiftool directory before running the build. CI also needs that directory supplied beforehand; it is intentionally Git-ignored and never fetched automatically. CI uses pinned build_support/requirements-windows.txt and caches the NumPy download.
+- The single-file app stores config beside ExifFrame.exe; preserve that folder across updates. `EXIFFRAME_DATA_DIR` remains an explicit environment override.
 
 ## Windows file inspection
 - `Get-ChildItem -Force` includes hidden files; `Get-Content -LiteralPath <path>` handles spaces/non-ASCII names.

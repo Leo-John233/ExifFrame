@@ -30,6 +30,36 @@ def _startup_text(chinese, english):
         return chinese
 
 
+def _warn_missing_exiftool(directory: Path, parent, warning, *, smoke_test: bool = False) -> None:
+    """源码运行时提示缺失的 ExifTool 文件"""
+    if smoke_test or getattr(sys, 'frozen', False):
+        return
+    missing_zh, missing_en = [], []
+    if not directory.is_dir():
+        missing_zh.append('exiftool 文件夹')
+        missing_en.append('exiftool folder')
+    if not any((directory / name).is_file() for name in ('exiftool.exe', 'exiftool(-k).exe')):
+        missing_zh.append('exiftool.exe 或 exiftool(-k).exe')
+        missing_en.append('exiftool.exe or exiftool(-k).exe')
+    if not (directory / 'exiftool_files').is_dir():
+        missing_zh.append('exiftool_files 文件夹')
+        missing_en.append('exiftool_files folder')
+    if not missing_zh:
+        return
+    title = _startup_text('ExifTool 文件不完整', 'ExifTool files are incomplete')
+    message = _startup_text(
+        f'请补全 ExifTool 目录：\n{directory}\n\n应包含：\n'
+        '  exiftool.exe 或 exiftool(-k).exe\n  exiftool_files/\n\n'
+        f'缺少：{"、".join(missing_zh)}\n\n'
+        '水印预览和导出仍可使用，部分 EXIF 信息及照片信息编辑可能不可用',
+        f'Complete the ExifTool folder:\n{directory}\n\nRequired contents:\n'
+        '  exiftool.exe or exiftool(-k).exe\n  exiftool_files/\n\n'
+        f'Missing: {", ".join(missing_en)}\n\n'
+        'Watermark preview and export remain available, but some EXIF information and photo metadata editing may be unavailable',
+    )
+    warning(parent, title, message)
+
+
 def main() -> int:
     """统一资源目录后启动桌面应用"""
     report_path = None
@@ -40,7 +70,7 @@ def main() -> int:
         report_path = Path(sys.argv[index + 1]).expanduser().resolve()
         # 验证结果与临时配置均限制在报告所在目录
         os.environ['EXIFFRAME_DATA_DIR'] = str(report_path.parent / f'.{report_path.stem}-data')
-    from core.runtime_paths import application_root, initialize_user_config, is_onefile, resource_path, user_data_root
+    from core.runtime_paths import application_root, config_path, initialize_user_config, is_onefile, resource_path, user_data_root
     if sys.platform != 'win32':
         raise SystemExit(_startup_text('ExifFrame 桌面版仅支持 Windows', 'ExifFrame desktop is available on Windows only'))
     root = user_data_root() if is_onefile() else application_root()
@@ -72,7 +102,14 @@ def main() -> int:
         if report_path is not None:
             from build_support.package_verify import verify_package
             return verify_package(report_path)
-        initialize_user_config()
+        try:
+            initialize_user_config()
+        except PermissionError as error:
+            message = _startup_text(
+                f'无法访问配置目录 {config_path()}，请检查权限或将程序移至可写目录',
+                f'Cannot access the configuration folder {config_path()}. Check permissions or move the program to a writable folder',
+            )
+            raise PermissionError(f'{message}\n{error}') from error
         from studio.i18n import install_qt_translations, localize_error, tr
         from studio.theme import apply_theme
         from studio.window import MainWindow
@@ -81,6 +118,7 @@ def main() -> int:
         apply_theme(application)
         window = MainWindow()
         window.show()
+        _warn_missing_exiftool(application_root() / 'exiftool', window, QMessageBox.warning, smoke_test=smoke_test)
         if smoke_test:
             QTimer.singleShot(1200, window.close)
         result = application.exec()

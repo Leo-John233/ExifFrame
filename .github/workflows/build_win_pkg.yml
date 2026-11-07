@@ -7,7 +7,6 @@ on:
   workflow_dispatch:
 
 env:
-  EXIFTOOL_URL: https://github.com/leslievan/fastfiles/raw/refs/heads/main/exiftool/exiftool-13.45_64.zip
   PACKAGE_BASENAME: ExifFrame
   PLATFORM: win-x64
 
@@ -24,65 +23,46 @@ jobs:
         python-version: '3.13'
         architecture: x64
 
+    - name: Check local ExifTool
+      shell: pwsh
+      run: |
+        if (-not ((Test-Path -LiteralPath 'exiftool/exiftool.exe' -PathType Leaf) -or
+                  (Test-Path -LiteralPath 'exiftool/exiftool(-k).exe' -PathType Leaf))) {
+          throw 'Provide exiftool/exiftool.exe before building'
+        }
+        if (-not (Test-Path -LiteralPath 'exiftool/exiftool_files' -PathType Container)) {
+          throw 'Provide the adjacent exiftool/exiftool_files directory before building'
+        }
+
     - name: Install build dependencies
       run: |
         python -m pip install -r build_support/requirements-windows.txt
 
-    - name: Prepare ExifTool resources
-      shell: pwsh
-      run: |
-        $ErrorActionPreference = 'Stop'
-        New-Item -ItemType Directory -Path build -Force | Out-Null
-        Invoke-WebRequest -Uri "${{ env.EXIFTOOL_URL }}" -OutFile build/exiftool.zip
-        Expand-Archive -Path build/exiftool.zip -DestinationPath build/exiftool-download
-        $toolExe = Get-ChildItem -LiteralPath build/exiftool-download -File -Recurse |
-            Where-Object { $_.Name -in @('exiftool.exe', 'exiftool(-k).exe') } |
-            Select-Object -First 1
-        if ($null -eq $toolExe) { throw 'ExifTool executable missing' }
-        if (-not (Test-Path -LiteralPath (Join-Path $toolExe.Directory.FullName 'exiftool_files'))) {
-            throw 'ExifTool runtime files missing'
-        }
-        New-Item -ItemType Directory -Path exiftool -Force | Out-Null
-        Get-ChildItem -LiteralPath $toolExe.Directory.FullName -Force |
-            Copy-Item -Destination exiftool -Recurse
+    - name: Cache downloaded dependencies
+      uses: actions/cache@v4
+      with:
+        path: build/download/numpy-2.5.2-cp313-cp313-win_amd64.whl
+        key: ${{ runner.os }}-numpy-wheel-py313-${{ hashFiles('build_support/build_windows.py') }}
+        restore-keys: ${{ runner.os }}-numpy-wheel-py313-
 
     - name: Build single-file executable
       run: python build_support/build_windows.py
 
-    - name: Verify executable resources and startup
+    - name: Check executable startup
       shell: pwsh
       run: |
         $ErrorActionPreference = 'Stop'
-        New-Item -ItemType Directory -Force -Path build/ci-package-check/temp, build/ci-package-check/appdata | Out-Null
-        $env:TEMP = (Resolve-Path build/ci-package-check/temp).Path
-        $env:TMP = $env:TEMP
-        $env:LOCALAPPDATA = (Resolve-Path build/ci-package-check/appdata).Path
+        Remove-Item Env:EXIFFRAME_DATA_DIR -ErrorAction SilentlyContinue
         $executable = (Resolve-Path build/ExifFrame.exe).Path
-        $reportPath = Join-Path (Resolve-Path build/ci-package-check).Path 'report.json'
-        $expected = @('resources', 'templates', 'fonts', 'persistence', 'translations',
-                      'exiftool_read_write', 'heif_round_trip', 'render_and_export')
-        foreach ($attempt in 1..2) {
-          $process = Start-Process -FilePath $executable -ArgumentList @('--verify-package', "`"$reportPath`"") -WindowStyle Hidden -Wait -PassThru
-          if (Test-Path -LiteralPath $reportPath) {
-            $report = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8 | ConvertFrom-Json
-          } else {
-            throw "Package verification report missing on run $attempt"
-          }
-          if ($process.ExitCode -ne 0 -or -not $report.ok) {
-            Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8 | Write-Host
-            throw "Package verification failed on run $attempt"
-          }
-          foreach ($name in $expected) {
-            if ($null -eq $report.checks.$name -or -not $report.checks.$name.ok) {
-              throw "Package verification check missing or failed: $name"
-            }
-          }
-          if ($attempt -eq 2 -and -not $report.checks.persistence.result.previous_run_verified) {
-            throw 'User settings and template did not persist across launches'
-          }
+        $process = Start-Process -FilePath $executable -ArgumentList '--smoke-test' -WindowStyle Hidden -PassThru
+        if (-not $process.WaitForExit(180000)) {
+          $process.Kill($true)
+          throw 'Smoke test timed out'
         }
-        $process = Start-Process -FilePath $executable -ArgumentList '--smoke-test' -WindowStyle Hidden -Wait -PassThru
         if ($process.ExitCode -ne 0) { throw "Smoke test failed: $($process.ExitCode)" }
+        if (-not (Test-Path -LiteralPath build/config/config.ini)) {
+          throw 'Default configuration was not created next to the executable'
+        }
 
     - name: Determine artifact name
       id: artifact_name

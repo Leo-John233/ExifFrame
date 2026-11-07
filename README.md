@@ -40,7 +40,9 @@ exiftool/
 
 程序也支持官网下载包中的 `exiftool(-k).exe`，可以直接使用原文件名
 
-没有 ExifTool 时，程序会尝试读取照片自带的 EXIF 信息，保存修改副本和迁移照片信息则需要完整的 ExifTool 文件
+源码启动时会检查 ExifTool，缺少程序或 `exiftool_files` 时提示补全目录；仍可继续编辑水印并尝试读取照片自带的 EXIF 信息
+
+照片信息编辑、保存修改副本和迁移照片信息需要完整的 ExifTool 文件；单文件 EXE 已包含这些资源
 
 ## 使用方式
 
@@ -119,11 +121,13 @@ exiftool/
 | `config/desktop.json` | 桌面样式设置 |
 | `config/ui.json` | 语言偏好 |
 
-单文件版首次运行后，会在 `%LOCALAPPDATA%\ExifFrame` 中保存配置和自建模板，更新 EXE 后仍可继续使用
+单文件版首次运行后，会在 `ExifFrame.exe` 同一目录下创建 `config`，保存配置和自建模板；更新 EXE 时保留这个文件夹即可继续使用
+
+已有的程序目录配置优先保留，旧版 `%LOCALAPPDATA%\ExifFrame` 中的配置只在首次迁移时读取，不会被删除；程序目录需要有写入权限
 
 ## 打包
 
-Windows x64 打包使用 Python 3.13，先准备好 ExifTool，再在项目目录执行
+Windows x64 打包使用 Python 3.13，先补全项目的 `exiftool` 目录，再在项目目录执行
 
 ```powershell
 python -m pip install -r build_support/requirements-windows.txt
@@ -132,9 +136,21 @@ python build_support/build_windows.py
 
 生成的单文件位于 `build/ExifFrame.exe`，分发时只需要这个 EXE
 
-脚本会自动准备所需的 NumPy 依赖，并在构建结束后清理临时文件
+脚本直接使用项目 `exiftool` 目录中的程序与支持文件，将它们包含在发布包中；资源不完整时会提示补全目录
+
+所需的 NumPy 包保存在 `build/download`，已存在时直接复用，并解压到本次构建临时目录，省去重复安装；打包只保留必要的文件存在检查
+
+构建结束后会清理临时依赖、分析文件和暂存产物，保留下载资源、生成的程序及已有用户配置；需要重新下载某项资源时，删除对应缓存即可
+
+临时依赖和分析文件放在项目外的系统临时目录，项目也已排除 VS Code 对 `build`、`dist` 的文件监控和 Python 分析，减少构建时的后台扫描
+
+构建子进程以低优先级运行，最多使用两个逻辑核心，内存额度不超过 4 GiB，并随当前可用内存降低；内存不足时停止构建，避免打包持续拖慢整机
+
+单文件版采用较快的压缩设置，生成的文件体积可能略有增加
 
 使用已有依赖文件时，可通过 `--numpy-wheel` 指定路径，目录版可通过 `--onedir` 构建
+
+自动构建环境也需要预先提供完整的 `exiftool` 目录；这个本地资源目录不随 Git 提交
 
 ## 模板示例
 

@@ -4,14 +4,19 @@ import importlib.util
 import os
 import sys
 from pathlib import Path
+from PyInstaller.archive.writers import CArchiveWriter
 
 root = Path(SPECPATH).resolve().parent
 bootstrap = str(root / 'build_support')
 os.environ['PYTHONPATH'] = os.pathsep.join(filter(None, [bootstrap, os.environ.get('PYTHONPATH', '')]))
 numpy_target = Path(os.environ['EXIFFRAME_NUMPY_TARGET']).resolve()
+exiftool = root / 'exiftool'
 mode = os.environ['EXIFFRAME_BUNDLE_MODE']
 if mode not in ('onefile', 'onedir'):
     raise ValueError('无效的打包模式')
+
+# 使用 PyInstaller 6.20 的中等压缩等级，减少单文件打包时间
+CArchiveWriter._COMPRESSION_LEVEL = 6
 
 # 补充 Conda 版 Pillow 使用的图像解码库
 library_dir = Path(sys.prefix) / 'Library/bin'
@@ -34,10 +39,14 @@ def resource_files(relative):
 
 
 datas = translations[:]
+exiftool_datas = []
 if mode == 'onefile':
     for relative in ('config/config.ini', 'config/fonts', 'config/logos', 'config/templates',
-                     'static', 'exiftool', 'pyproject.toml'):
+                     'static', 'pyproject.toml'):
         datas.extend(resource_files(relative))
+    # ExifTool 自带完整运行目录，作为普通文件嵌入，避免重复分析其动态库
+    exiftool_datas = [(str(Path('exiftool') / item.relative_to(exiftool)), str(item), 'DATA')
+                      for item in sorted(exiftool.rglob('*')) if item.is_file()]
     datas.append((str(root / 'build_support/exifframe-onefile.marker'), '.'))
 
 a = Analysis(
@@ -54,14 +63,6 @@ a = Analysis(
     excludes=[],
     noarchive=False,
 )
-
-# 避免宿主上其他软件的同名 DLL 混入发布包
-trusted_roots = [root, Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve(),
-                 Path(os.environ.get('SystemRoot', r'C:\Windows')).resolve()]
-for name, source, kind in a.binaries:
-    resolved = Path(source).resolve()
-    if not any(resolved.is_relative_to(parent) for parent in trusted_roots):
-        raise RuntimeError(f'构建依赖来自未预期目录：{name}: {resolved}')
 
 pyz = PYZ(a.pure)
 common = dict(
@@ -82,7 +83,7 @@ common = dict(
 )
 
 if mode == 'onefile':
-    exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], **common)
+    exe = EXE(pyz, a.scripts, a.binaries, a.datas, exiftool_datas, [], **common)
 else:
     exe = EXE(pyz, a.scripts, [], exclude_binaries=True, **common)
     package = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False,

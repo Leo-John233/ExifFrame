@@ -1,0 +1,10 @@
+{
+    "files.watcherExclude": {
+        "**/build/**": true,
+        "**/dist/**": true
+    },
+    "python.analysis.exclude": [
+        "**/build/**",
+        "**/dist/**"
+    ]
+}
