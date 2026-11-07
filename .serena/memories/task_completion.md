@@ -1,6 +1,7 @@
 # Completion and validation
 - Use the existing user environment D:/miniconda3/envs/Python3.13; never rely on WindowsApps python. Run commands from project root unless main.py handles the directory itself.
 - Native startup/clean shutdown: `& 'D:/miniconda3/envs/Python3.13/python.exe' main.py --smoke-test`. This runs Qt offscreen, opens/closes the window and must exit 0.
+- For frozen startup failures, set EXIFFRAME_STARTUP_LOG to an explicit writable file before --smoke-test; the executable records phases and UTF-8 tracebacks even when console streams are None. Preserve the workflow's failure-log output. Packaging success and a Conda-built startup are insufficient evidence for official CPython/PyPI CI: reproduce startup in a temporary matching interpreter/dependency environment when distribution-specific imports fail.
 - Syntax: `& 'D:/miniconda3/envs/Python3.13/python.exe' -m compileall -q main.py web_server.py core processor studio build_support`.
 - Qt tests should wait using QEventLoop/QTimer so Python workers can run; repeated QTest.qWait can starve Pillow text rendering and cause misleading timeouts.
 - test/ and tests/ are intentionally ignored by user request. Local tests, when present: `& 'D:/miniconda3/envs/Python3.13/python.exe' -m unittest discover -s tests -v`. Do not add them back to Git or imply they are distributed with the repository.

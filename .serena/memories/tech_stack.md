@@ -1,7 +1,7 @@
 # Toolchain and runtime dependencies
 - Windows is the only supported operating system. Python >=3.13 in `pyproject.toml`; `.python-version` selects 3.13, matching Windows packaging CI.
 - Three dependency routes coexist: project dependencies + `uv.lock` for uv, `requirements.txt` for pip development, and pinned `build_support/requirements-windows.txt` for Windows CI. Do not assume lockfile edits affect the release workflow.
-- Backend: Flask/Jinja2; image work: Pillow, pillow-heif (registered on processor package import), NumPy; logging: Loguru; project TOML loading: tomli.
+- Backend: Flask/Jinja2; image work: Pillow, pillow-heif (registered on processor package import), NumPy; logging: Loguru; project TOML loading uses standard-library tomllib (Python >=3.13). Avoid reintroducing a runtime tomli import: its compiled PyPI wheel can require a hash-named mypyc module omitted from a frozen app even when a different local distribution works.
 - `pystray` is declared in project dependencies but absent from requirements.txt; assess which installation path a dependency change must support.
 - Legacy browser frontend is one Jinja HTML template with Alpine.js, Tailwind CDN, Ace JSON editor and Toastify loaded from CDNs. No Node package manifest or frontend build pipeline; a fully offline backend does not imply offline UI asset availability.
 - EXIF lookup checks the source root or frozen executable directory and, in single-file mode, the embedded resource directory. Both exiftool/exiftool.exe and exiftool/exiftool(-k).exe require adjacent exiftool_files; no PATH lookup. UTF-8 stdin argument streams avoid Windows filename encoding loss; JSON -l aliases preserve original template keys. Pillow fallback applies only when extraction is unavailable.
