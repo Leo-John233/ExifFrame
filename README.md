@@ -118,7 +118,19 @@ python build_support/build_windows.py
 
 需要使用本地 NumPy 包时，可通过 `--numpy-wheel` 指定文件。添加 `--onedir` 可以生成目录版，分发目录版时需要保留整个输出文件夹
 
-`exiftool` 是本地资源目录，不随 Git 提交，自动构建环境也需要预先提供这些文件
+`exiftool` 是本地资源目录，不随 Git 提交
+
+## GitHub 自动打包
+
+在仓库的 Actions 页面选择 `Build ExifFrame for Windows`，可以手动运行工作流，也可以推送以 `v` 开头的标签触发构建，例如 `v2.1.5`
+
+云端使用 Windows 2025 和 Python 3.13 x64，调用与本地相同的构建脚本。Python 依赖、NumPy 下载包和 ExifTool 分别缓存，缓存可用时直接复用
+
+ExifTool 缓存缺失时，工作流从[官方 SourceForge 发布目录](https://sourceforge.net/projects/exiftool/files/)下载固定的 13.60 Windows 64 位包，补全云端的 `exiftool` 目录。这一步只在云端执行，本地打包仍直接使用已有文件
+
+首次建议在默认分支上手动运行一次，方便后续标签构建复用缓存。GitHub 的缓存有分支和标签作用域，具体规则见[官方说明](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#restrictions-for-accessing-a-cache)
+
+构建完成后，在该次运行的 Artifacts 中下载产物，包内只有 `ExifFrame.exe`。标签构建按版本命名，手动构建使用提交编号区分
 
 ## 模板示例
 

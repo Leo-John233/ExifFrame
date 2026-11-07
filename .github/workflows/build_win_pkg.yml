@@ -1,4 +1,4 @@
-name: Build Windows Release Package
+name: Build ExifFrame for Windows
 
 on:
   push:
@@ -6,44 +6,98 @@ on:
       - 'v*'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   PACKAGE_BASENAME: ExifFrame
   PLATFORM: win-x64
+  EXIFTOOL_VERSION: '13.60'
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: windows-2025
+    timeout-minutes: 50
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Cache ExifTool
+      uses: actions/cache@v6.1.0
+      with:
+        path: exiftool
+        key: ${{ runner.os }}-${{ runner.arch }}-exiftool-${{ env.EXIFTOOL_VERSION }}
+
+    - name: Prepare ExifTool
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $exe = (Test-Path -LiteralPath 'exiftool/exiftool.exe' -PathType Leaf) -or
+               (Test-Path -LiteralPath 'exiftool/exiftool(-k).exe' -PathType Leaf)
+        $support = Test-Path -LiteralPath 'exiftool/exiftool_files' -PathType Container
+        if ($exe -and $support) {
+          Write-Host 'Using cached ExifTool'
+          exit 0
+        }
+        $runnerTemp = (Resolve-Path -LiteralPath $env:RUNNER_TEMP).Path
+        $work = [IO.Path]::GetFullPath((Join-Path $runnerTemp ("exifframe-exiftool-" + [guid]::NewGuid().ToString('N'))))
+        New-Item -ItemType Directory -Path $work | Out-Null
+        $work = (Resolve-Path -LiteralPath $work).Path
+        if ([IO.Path]::GetDirectoryName($work).TrimEnd('\', '/') -ne $runnerTemp.TrimEnd('\', '/')) {
+          throw 'Invalid ExifTool temporary directory'
+        }
+        try {
+          $archiveName = "exiftool-$($env:EXIFTOOL_VERSION)_64.zip"
+          $archive = Join-Path $work $archiveName
+          $unpacked = Join-Path $work 'unpacked'
+          $uri = "https://downloads.sourceforge.net/project/exiftool/$archiveName"
+          Invoke-WebRequest -Uri $uri -OutFile $archive -TimeoutSec 180
+          Expand-Archive -LiteralPath $archive -DestinationPath $unpacked
+          $source = Join-Path $unpacked "exiftool-$($env:EXIFTOOL_VERSION)_64"
+          if (-not ((Test-Path -LiteralPath (Join-Path $source 'exiftool(-k).exe') -PathType Leaf) -and
+                    (Test-Path -LiteralPath (Join-Path $source 'exiftool_files') -PathType Container))) {
+            throw 'Downloaded ExifTool is missing its executable or support directory'
+          }
+          New-Item -ItemType Directory -Path exiftool -Force | Out-Null
+          Get-ChildItem -LiteralPath $source -Force | Copy-Item -Destination exiftool -Recurse -Force
+          if (Test-Path -LiteralPath 'exiftool/exiftool.exe' -PathType Leaf) {
+            Copy-Item -LiteralPath (Join-Path $source 'exiftool(-k).exe') -Destination 'exiftool/exiftool.exe' -Force
+          }
+        } finally {
+          Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+        }
 
     - name: Set up Python
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v7.1.0
       with:
         python-version: '3.13'
         architecture: x64
-
-    - name: Check local ExifTool
-      shell: pwsh
-      run: |
-        if (-not ((Test-Path -LiteralPath 'exiftool/exiftool.exe' -PathType Leaf) -or
-                  (Test-Path -LiteralPath 'exiftool/exiftool(-k).exe' -PathType Leaf))) {
-          throw 'Provide exiftool/exiftool.exe before building'
-        }
-        if (-not (Test-Path -LiteralPath 'exiftool/exiftool_files' -PathType Container)) {
-          throw 'Provide the adjacent exiftool/exiftool_files directory before building'
-        }
+        cache: pip
+        cache-dependency-path: build_support/requirements-windows.txt
 
     - name: Install build dependencies
       run: |
         python -m pip install -r build_support/requirements-windows.txt
 
-    - name: Cache downloaded dependencies
-      uses: actions/cache@v4
+    - name: Read NumPy wheel name
+      id: build_config
+      shell: pwsh
+      run: |
+        $wheel = python -c "from build_support.build_windows import NUMPY_WHEEL; print(NUMPY_WHEEL)"
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        "numpy_wheel=$wheel" >> $env:GITHUB_OUTPUT
+
+    - name: Cache NumPy wheel
+      uses: actions/cache@v6.1.0
       with:
-        path: build/download/numpy-2.5.2-cp313-cp313-win_amd64.whl
-        key: ${{ runner.os }}-numpy-wheel-py313-${{ hashFiles('build_support/build_windows.py') }}
-        restore-keys: ${{ runner.os }}-numpy-wheel-py313-
+        path: build/download/${{ steps.build_config.outputs.numpy_wheel }}
+        key: ${{ runner.os }}-numpy-${{ steps.build_config.outputs.numpy_wheel }}
 
     - name: Build single-file executable
       run: python build_support/build_windows.py
@@ -68,18 +122,19 @@ jobs:
       id: artifact_name
       shell: pwsh
       run: |
-        $tag = '${{ github.ref_name }}'
-        if ($tag -match '^v') {
-          $version = $tag -replace '^v', ''
+        if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -like 'v*') {
+          $version = $env:GITHUB_REF_NAME -replace '^v', ''
         } else {
-          $version = '${{ github.sha }}'.Substring(0, 7)
+          $version = $env:GITHUB_SHA.Substring(0, 7)
         }
-        $artifact = "${{ env.PACKAGE_BASENAME }}-${version}-${{ env.PLATFORM }}"
+        $version = $version -replace '[^A-Za-z0-9._-]', '-'
+        $artifact = "$env:PACKAGE_BASENAME-$version-$env:PLATFORM"
         "artifact_name=${artifact}" >> $env:GITHUB_OUTPUT
 
     - name: Upload single-file artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7.0.2
       with:
         name: ${{ steps.artifact_name.outputs.artifact_name }}
         path: build/ExifFrame.exe
         if-no-files-found: error
+        compression-level: 0
