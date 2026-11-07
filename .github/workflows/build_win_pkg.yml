@@ -171,13 +171,27 @@ jobs:
       run: |
         $ErrorActionPreference = 'Stop'
         Remove-Item Env:EXIFFRAME_DATA_DIR -ErrorAction SilentlyContinue
+        $env:EXIFFRAME_STARTUP_LOG = Join-Path $env:RUNNER_TEMP ("exifframe-startup-" + [guid]::NewGuid().ToString('N') + '.log')
+        function Show-StartupLog {
+          if (Test-Path -LiteralPath $env:EXIFFRAME_STARTUP_LOG -PathType Leaf) {
+            Write-Host 'Startup log:'
+            Get-Content -LiteralPath $env:EXIFFRAME_STARTUP_LOG -Raw -Encoding UTF8 | Write-Host
+          } else {
+            Write-Host 'No startup log was produced'
+          }
+        }
         $executable = (Resolve-Path build/ExifFrame.exe).Path
         $process = Start-Process -FilePath $executable -ArgumentList '--smoke-test' -WindowStyle Hidden -PassThru
         if (-not $process.WaitForExit(180000)) {
-          $process.Kill($true)
+          try { $process.Kill($true) } catch { Write-Warning $_.Exception.Message }
+          $process.WaitForExit(5000) | Out-Null
+          Show-StartupLog
           throw 'Smoke test timed out'
         }
-        if ($process.ExitCode -ne 0) { throw "Smoke test failed: $($process.ExitCode)" }
+        if ($process.ExitCode -ne 0) {
+          Show-StartupLog
+          throw "Smoke test failed: $($process.ExitCode)"
+        }
         if (-not (Test-Path -LiteralPath build/config/config.ini)) {
           throw 'Default configuration was not created next to the executable'
         }
