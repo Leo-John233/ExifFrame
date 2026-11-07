@@ -5,11 +5,12 @@ from __future__ import annotations
 import re
 import json
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QRect, Qt, Signal
 from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QSyntaxHighlighter, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMessageBox,
-    QPlainTextEdit, QPushButton, QSizePolicy, QSplitter, QStyle, QToolBar, QVBoxLayout, QMenu, QToolButton,
+    QPlainTextEdit, QPushButton, QSizePolicy, QSplitter, QStyle, QStyleOption, QStylePainter,
+    QToolBar, QVBoxLayout, QMenu, QToolButton,
 )
 
 from core.desktop_service import validate_template, write_template
@@ -91,6 +92,27 @@ class TemplateHighlighter(QSyntaxHighlighter):
                 start = len(text[:match.start()].encode("utf-16-le")) // 2
                 length = len(match.group().encode("utf-16-le")) // 2
                 self.setFormat(start, length, style)
+
+
+class _InsertFieldButton(QToolButton):
+    """按菜单状态绘制标准方向箭头"""
+
+    def __init__(self):
+        super().__init__()
+        self._menu_open = False
+
+    def set_menu_open(self, opened: bool):
+        self._menu_open = opened
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        option = QStyleOption()
+        option.initFrom(self)
+        option.rect = QRect(self.width() - 16, (self.height() - 10) // 2, 10, 10)
+        painter = QStylePainter(self)
+        arrow = QStyle.PrimitiveElement.PE_IndicatorArrowDown if self._menu_open else QStyle.PrimitiveElement.PE_IndicatorArrowRight
+        painter.drawPrimitive(arrow, option)
 
 
 class TemplateEditor(QDialog):
@@ -177,19 +199,20 @@ class TemplateEditor(QDialog):
         layout.addWidget(toolbar)
         tools = QHBoxLayout()
         tools.setSpacing(8)
-        insert_button = QToolButton()
+        insert_button = _InsertFieldButton()
         insert_button.setObjectName('insertFieldButton')
         insert_button.setStyleSheet("""
             QToolButton#insertFieldButton { padding-right: 24px; }
             QToolButton#insertFieldButton::menu-indicator {
-                subcontrol-origin: padding;
-                subcontrol-position: center right;
-                right: 4px;
+                width: 0px;
+                height: 0px;
             }
         """)
         bind(insert_button, '插入字段')
         insert_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         menu = QMenu(insert_button)
+        menu.aboutToShow.connect(lambda: insert_button.set_menu_open(True))
+        menu.aboutToHide.connect(lambda: insert_button.set_menu_open(False))
         for label, expression in PLACEHOLDERS:
             action = menu.addAction('')
             bind(action, label)
