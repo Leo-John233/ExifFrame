@@ -5,6 +5,7 @@ import re
 from functools import lru_cache
 
 from jinja2 import Environment
+from jinja2.sandbox import SandboxedEnvironment
 
 from core.jinja2renders import auto_logo, vh, vw
 from core.footer import _LEGACY_ALTITUDE, _legacy_altitude_unit, footer_row, footer_segments
@@ -163,7 +164,7 @@ def _prepare_footer_calls(source):
 @lru_cache(maxsize=32)
 def compiled_template(source: str, logo=auto_logo):
     """不可变编译结果可由后台任务共享，照片变量仍逐次传入"""
-    environment = Environment(autoescape=False)
+    environment = SandboxedEnvironment(autoescape=False)
     environment.filters['json_string'] = _json_string
     environment.globals.update(vh=vh, vw=vw, auto_logo=logo, footer_row=footer_row,
                                footer_segments=footer_segments, geo_location=format_location,

@@ -80,9 +80,11 @@ def _publish_asset(target, data):
             temporary.unlink(missing_ok=True)
 
 
-def copy_asset(path) -> str:
+def copy_asset(path, *, png_only=False) -> str:
     """把用户选择的图片放进便携目录并返回相对路径"""
     data, extension = _read_asset(path)
+    if png_only and extension != 'png':
+        raise ValueError('相框贴图须为 PNG 图片')
     name = f'{hashlib.sha256(data).hexdigest()}.{extension}'
     _publish_asset(config_path('style_assets') / name, data)
     return f'config/style_assets/{name}'

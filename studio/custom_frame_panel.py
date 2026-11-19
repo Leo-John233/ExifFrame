@@ -150,7 +150,6 @@ class CustomFramePanel(QWidget):
         self.message = QLabel()
         self.message.setWordWrap(True)
         self.message.setObjectName('secondaryText')
-        bind(self.message, '调整后生成当前照片的画框草稿')
         outer.addWidget(self.message)
         units = QLabel()
         units.setWordWrap(True)
@@ -274,8 +273,8 @@ class CustomFramePanel(QWidget):
         self._number(ratio_form, '垂直偏移', 'geometry.offset_y', -1, 1, 0, step=1)
         form.addRow(self.ratio_group)
         self._check(form, '锁定四边比例', 'geometry.locked')
-        for label, key, default in (('上边距', 'top', .05), ('下边距', 'bottom', .17),
-                                    ('左边距', 'left', .05), ('右边距', 'right', .05)):
+        for label, key, default in (('上边距', 'top', 0), ('下边距', 'bottom', 0),
+                                    ('左边距', 'left', 0), ('右边距', 'right', 0)):
             self._number(form, label, 'geometry.' + key, 0, 8, default)
         outer.addWidget(section)
 
@@ -495,7 +494,7 @@ class CustomFramePanel(QWidget):
             return
         try:
             from core.style_pack import copy_asset
-            value = copy_asset(Path(filename))
+            value = copy_asset(Path(filename), png_only=png_only)
         except (OSError, ValueError) as error:
             QMessageBox.warning(self, tr('图片导入失败'), localize_error(error))
             return
@@ -520,7 +519,10 @@ class CustomFramePanel(QWidget):
             self._frame.pop('_legacy_geometry', None)
         if decoration is not None and path != 'enabled':
             target.pop('legacy_style', None)
-            target.pop('legacy_palette', None)
+            if path != 'count':
+                target.pop('legacy_palette', None)
+            if path == 'color':
+                target.pop('outer_color', None)
         if decoration is None and path.startswith('geometry.') and path.split('.')[-1] in {'top', 'bottom', 'left', 'right'}:
             self._link_edges(path, value, old)
         self._publish()
@@ -611,8 +613,13 @@ class CustomFramePanel(QWidget):
         self._document, self._index = _node(source)
         node = self._document[self._index] if self._document is not None and self._index is not None else {}
         custom = isinstance(node.get('custom_frame'), dict)
-        from processor.custom_frame import legacy_custom_frame
-        legacy = {} if custom else legacy_custom_frame(node)
+        from processor.custom_frame import default_custom_frame, legacy_custom_frame
+        try:
+            legacy = {} if custom else legacy_custom_frame(node)
+        except (ValueError, TypeError):
+            # 含 Jinja 的间距或颜色只有在读取照片后才能确定，保留旧管线作为内层
+            legacy = default_custom_frame()
+            legacy['legacy_composite'] = True
         custom_values = node.get('custom_frame') if isinstance(node.get('custom_frame'), dict) else {}
         self._frame = _merge(_FRAME_DEFAULTS, _merge(legacy, custom_values))
         if not isinstance(self._frame.get('decorations'), list):
@@ -632,8 +639,8 @@ class CustomFramePanel(QWidget):
             self.custom_changed.emit(custom)
 
     def _update_message(self):
-        self.message.setText(tr('调整后生成当前照片的画框草稿' if self._document is not None
-                                else '当前模板无法在此编辑画框，请使用高级源码'))
+        self.message.setText(tr('当前模板无法在此编辑画框，请使用高级源码'))
+        self.message.setVisible(self._document is None)
 
     def _update_revert(self):
         base_doc, base_index = _node(self._baseline)

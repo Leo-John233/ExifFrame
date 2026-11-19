@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 
 from jinja2 import Environment, nodes, pass_context
+from jinja2.sandbox import SandboxedEnvironment
 from core.brand_glyphs import POLICIES, validate_policy
 from core.character_styles import validate_character_styles
 from core.geography import format_altitude, format_location
@@ -555,7 +556,7 @@ def footer_row(context, metadata, items, separator=' ', missing='hide'):
 
 @lru_cache(maxsize=1)
 def _preview_environment():
-    environment = Environment(autoescape=False)
+    environment = SandboxedEnvironment(autoescape=False)
     environment.globals.update(footer_row=footer_row, footer_segments=footer_segments,
                                geo_location=format_location, geo_altitude=format_altitude, watermark_date=watermark_date)
     return environment

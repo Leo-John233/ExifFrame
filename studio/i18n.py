@@ -184,8 +184,7 @@ def localize_error(error) -> str:
         return tr('所选样式引用的素材不存在：{path}', path=text.removeprefix('所选样式引用的素材不存在：'))
     if text.startswith('未知画框样式：'):
         return tr('未知画框样式：{style}', style=text.removeprefix('未知画框样式：'))
-    match = re.fullmatch(r'(frame_margin|frame_bottom|frame_radius|frame_shadow|frame_blur|'
-                         r'frame_brightness|frame_vignette|bottom_margin) 参数超出范围', text)
+    match = re.fullmatch(r'([a-z][a-z0-9_]*) 参数超出范围', text)
     if match:
         return tr('画框参数超出范围：{name}', name=match.group(1))
     # 文件名属于用户内容，只拆分处理器附加的错误说明
@@ -695,3 +694,33 @@ register_translations({
     '图片导入失败': 'Unable to import image', '全部模板': 'All templates',
     '读取模板样式失败': 'Unable to read template style',
 })
+
+_CUSTOM_FRAME_ERRORS = {
+    '齿孔位置无效': 'Invalid sprocket placement',
+    '色块形状无效': 'Invalid swatch shape',
+    '色卡位置无效': 'Invalid palette position',
+    '自定义画框格式无效': 'Invalid custom frame',
+    '画框几何格式无效': 'Invalid frame geometry',
+    '目标画幅比例无效': 'Invalid canvas aspect ratio',
+    '画布模式无效': 'Invalid canvas mode',
+    '画框底部留白无效': 'Invalid bottom margin',
+    '目标画幅过大，请选择更接近照片的比例': 'Insufficient memory for this canvas. Choose a ratio closer to the photo.',
+    '画框材质格式无效': 'Invalid frame material',
+    '背景材质类型无效': 'Invalid background material',
+    '背景图片不存在或不可读取': 'The background image is missing or unreadable',
+    '背景图片在读取期间发生变化，请重试': 'The background image changed while loading. Try again.',
+    '背景图片适配方式无效': 'Invalid background image fit',
+    '渐变类型无效': 'Invalid gradient type',
+    '纹理类型无效': 'Invalid texture type',
+    '装饰图层格式无效': 'Invalid decoration stack',
+    '装饰尺寸必须是非负数': 'Decoration dimensions must be nonnegative',
+    '色卡颜色数应为 3 到 8': 'Choose between 3 and 8 palette colors',
+    '九宫格切边须在 0 到 50 之间': 'Nine-slice margins must be between 0 and 50 percent',
+    '相框贴图须为 PNG 图片': 'Choose a PNG frame image',
+    '相框贴图适配方式无效': 'Invalid PNG frame fit',
+    '相框贴图在读取期间发生变化，请重试': 'The PNG frame changed while loading. Try again.',
+    '相框贴图透明度须在 0 到 100 之间': 'PNG frame opacity must be between 0 and 100 percent',
+    '未知装饰图层': 'Unknown decoration type',
+}
+register_translations(_CUSTOM_FRAME_ERRORS)
+_ERROR_SOURCES.update(_CUSTOM_FRAME_ERRORS)
