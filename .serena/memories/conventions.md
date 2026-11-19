@@ -1,7 +1,7 @@
 # Source and template conventions
-- Latest UI reference is strictly neutral gray-black (#1E1F21/#252629); no blue borders, primary fills, focus or selection, including native titlebars. Function/system icons retain their original colors throughout toolbar, menus, folders and dialogs; never tint all standard icons gray. Error color may remain semantic muted red. Keep actual-result viewing central to editing, not an obscured main window.
-- Keep advanced source editing available in the template area, template menu and composer (Ctrl+E); the visual composer is the routine entry (Ctrl+Shift+E). Preserve source/drafts on transitions, per user preference.
-- Desktop UI text goes through studio.i18n with Chinese+English registration, including dynamic progress/errors and dialogs. User text, file names and brands retain their original values. Color buttons remain compact side-by-side with inset swatches, per user correction.
+- Use neutral surfaces in both themes. Dark canvas/panel/controls are #181818/#232323/#2C2C2C. Keep ordinary system and file icons recognizable and make custom navigation icons readable in both themes.
+- The four inspector pages are the primary editing surface. Ctrl+E opens the embedded advanced source editor, Ctrl+Shift+E opens Text & Logo, and Ctrl+I opens EXIF. Preserve drafts across these transitions.
+- Desktop UI text uses studio.i18n in Chinese and English. Preserve user content, camera brands and file names. Use compact color property rows with a checker-backed swatch, effective value and reset action.
 - New code uses concise Chinese comments/docstrings without terminal full stops, per user preference.
 - Complete and verify each module before making its own local Git commit. Keep test/ and tests/ local and ignored, including previously tracked tests.
 - Python uses four-space indentation, snake_case functions/variables, PascalCase classes, uppercase constants. Existing code mixes built-in and typing collection annotations and quote styles; follow nearby code rather than imposing repository-wide formatting.
