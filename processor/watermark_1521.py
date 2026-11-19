@@ -1,9 +1,11 @@
 """沿用 build1521 的整条底栏比例和缩放方式"""
 
 import json
+from pathlib import Path
 
 from PIL import Image, ImageOps
 
+from core.image_cache import cached_preview_image, cache_preview_image
 from processor.text_layers import _font_at_size, _segment_image, render_text_row as _row_image, watermark_scale
 from processor.types import Alignment
 
@@ -30,15 +32,34 @@ def _column(top, bottom, background, align_right=False):
     return result
 
 
-def _normalize(image):
-    width = max(1, round(image.width * _NORMAL_HEIGHT / image.height))
-    return image.resize((width, _NORMAL_HEIGHT), Image.Resampling.LANCZOS)
+def _normalize(image, height=_NORMAL_HEIGHT, sampling=Image.Resampling.LANCZOS):
+    width = max(1, round(image.width * height / image.height))
+    return image.resize((width, height), sampling)
 
 
 def _read_logo(path, padding):
+    path = Path(path).resolve()
+    info = path.stat()
+    key = ('1521_logo', str(path), info.st_mtime_ns, info.st_size, padding)
+    cached = cached_preview_image(key)
+    if cached is not None:
+        return cached
     with Image.open(path) as opened:
         image = opened.convert('RGBA')
-    return _normalize(_padding(image, int(padding * image.height)))
+    logo = _normalize(_padding(image, int(padding * image.height)))
+    cache_preview_image(key, logo)
+    return logo
+
+
+def _draft_column(top, bottom, margin, ratio, height, align_right):
+    """直接在草图尺寸摆放两行文字，不分配高分辨率虚拟底栏"""
+    width = max(1, round(max(top.width, bottom.width, 10) * ratio))
+    result = Image.new('RGBA', (width, height))
+    for row, y in ((top, margin), (bottom, margin + top.height + 100)):
+        size = max(1, round(row.width * ratio)), max(1, round(row.height * ratio))
+        stamp = row.resize(size, Image.Resampling.BILINEAR)
+        result.paste(stamp, (width - stamp.width if align_right else 0, round(y * ratio)))
+    return result
 
 
 def uses_default_layout(ctx):
@@ -71,19 +92,28 @@ def render_watermark(ctx, image, scale):
     padding = .44 if landscape else .62
     base_width = int(_NORMAL_HEIGHT / ratio)
     virtual_width = max(1, int(base_width / scale))
+    footer_height = max(1, round(_NORMAL_HEIGHT * image.width / virtual_width))
+    draft = ctx.get('_interactive_preview', False)
+    height = footer_height if draft else _NORMAL_HEIGHT
+    sampling = Image.Resampling.BILINEAR if draft else Image.Resampling.LANCZOS
+    gap = round(200 * height / _NORMAL_HEIGHT)
     background = ctx.get('color', 'white')
-    watermark = Image.new('RGBA', (virtual_width, _NORMAL_HEIGHT), background)
+    watermark = Image.new('RGBA', (image.width if draft else virtual_width, height), background)
     left_top, left_bottom, right_top, right_bottom = (
         _row_image(ctx.get(key)) for key in ('left_top', 'left_bottom', 'right_top', 'right_bottom'))
     right_alignment = ctx.getenum('right_alignment', Alignment.RIGHT, Alignment)
-    left = _column(left_top, left_bottom, background)
-    right = _column(right_top, right_bottom, background, align_right=right_alignment == Alignment.RIGHT)
-    max_height = max(left.height, right.height)
-    margin = int(max_height * padding)
-    left = _padding(left, margin)
-    right = _padding(right, margin, 't')
-    right = _padding(right, left.height - right.height, 'b')
-    left, right = _normalize(left), _normalize(right)
+    left_height = left_top.height + 100 + left_bottom.height
+    right_height = right_top.height + 100 + right_bottom.height
+    margin = int(max(left_height, right_height) * padding)
+    if draft:
+        ratio = height / (left_height + margin * 2)
+        left = _draft_column(left_top, left_bottom, margin, ratio, height, False)
+        right = _draft_column(right_top, right_bottom, margin, ratio, height, right_alignment == Alignment.RIGHT)
+    else:
+        left = _padding(_column(left_top, left_bottom, background), margin)
+        right = _padding(_column(right_top, right_bottom, background, right_alignment == Alignment.RIGHT), margin, 't')
+        right = _padding(right, left.height - right.height, 'b')
+        left, right = _normalize(left), _normalize(right)
 
     left_logo = ctx.get('left_logo')
     right_logo = ctx.get('right_logo')
@@ -93,40 +123,43 @@ def render_watermark(ctx, image, scale):
         max_width = watermark.width
         if ctx.get('fit_center_columns', False):
             max_width = max(1, round(watermark.width * .18))
-        center = ImageOps.contain(center, (max_width, _NORMAL_HEIGHT), Image.Resampling.LANCZOS)
+        center = ImageOps.contain(center, (max_width, height), sampling)
         center_x = (watermark.width - center.width) // 2
-        watermark.paste(center, (center_x, (_NORMAL_HEIGHT - center.height) // 2))
-    x = 0 if left_logo else 200
+        watermark.paste(center, (center_x, (height - center.height) // 2))
+    x = 0 if left_logo else gap
     if left_logo:
-        x += 20 + 200
+        x += round(.02 * height) + gap
         logo = _read_logo(left_logo, padding)
+        if draft:
+            logo = _normalize(logo, height, sampling)
         watermark.paste(logo, (x, 0))
-        x += logo.width + 200
+        x += logo.width + gap
     if center and ctx.get('fit_center_columns', False):
-        available = max(1, center_x - x - 200)
+        available = max(1, center_x - x - gap)
         if left.width > available:
-            left = ImageOps.contain(left, (available, _NORMAL_HEIGHT), Image.Resampling.LANCZOS)
-    watermark.paste(left, (x, (_NORMAL_HEIGHT - left.height) // 2))
+            left = ImageOps.contain(left, (available, height), sampling)
+    watermark.paste(left, (x, (height - left.height) // 2))
 
     x = watermark.width
-    right_end = x - 200
+    right_end = x - gap
     line = logo = None
     if right_logo:
         line = _padding(Image.new('RGBA', (20, _NORMAL_HEIGHT), ctx.get('delimiter_color', 'black')),
                         int(padding * _NORMAL_HEIGHT * .8))
-        line, logo = _normalize(line), _read_logo(right_logo, padding)
+        line, logo = _normalize(line, height, sampling), _read_logo(right_logo, padding)
+        if draft:
+            logo = _normalize(logo, height, sampling)
     if center and ctx.get('fit_center_columns', False):
-        occupied = (line.width + logo.width + 400) if right_logo else 0
-        available = max(1, right_end - occupied - center_x - center.width - 200)
+        occupied = (line.width + logo.width + 2 * gap) if right_logo else 0
+        available = max(1, right_end - occupied - center_x - center.width - gap)
         if right.width > available:
-            right = ImageOps.contain(right, (available, _NORMAL_HEIGHT), Image.Resampling.LANCZOS)
+            right = ImageOps.contain(right, (available, height), sampling)
     parts = [right] + ([line, logo] if right_logo else [])
     for part in parts:
-        x -= part.width + 200
-        watermark.paste(part, (x, (_NORMAL_HEIGHT - part.height) // 2))
+        x -= part.width + gap
+        watermark.paste(part, (x, (height - part.height) // 2))
 
-    footer_height = max(1, round(_NORMAL_HEIGHT * image.width / watermark.width))
-    footer = watermark.resize((image.width, footer_height), Image.Resampling.LANCZOS)
+    footer = watermark if draft else watermark.resize((image.width, footer_height), sampling)
     left_margin = ctx.getint('left_margin', 0)
     top_margin = ctx.getint('top_margin', 0)
     canvas = legacy_base(image, ctx, footer_height, ctx.get('_frame_image_id'))

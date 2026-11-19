@@ -214,10 +214,10 @@ def _divider(canvas, box, color):
     canvas.alpha_composite(strip, (x, y))
 
 
-def _stamp(canvas, stamp, box, opacity, shadow):
+def _stamp(canvas, stamp, box, opacity, shadow, sampling):
     x, y = box[:2]
     if stamp.size != _size(box):
-        stamp = stamp.resize(_size(box), Image.Resampling.LANCZOS)
+        stamp = stamp.resize(_size(box), sampling)
     if opacity < 1:
         stamp = stamp.copy()
         stamp.putalpha(stamp.getchannel('A').point(lambda a: round(a * opacity)))
@@ -236,6 +236,7 @@ def draw_overlay(canvas, source, ctx, layout, image_id):
     inset = layout['inset_overlay']
     opacity = min(1, max(0, float(ctx.get('overlay_opacity', .92 if inset else 1))))
     shadow = layout['unit'] * .0018 if inset else 0
+    sampling = Image.Resampling.BILINEAR if ctx.get('_interactive_preview') else Image.Resampling.LANCZOS
     for layer in plan_overlay(ctx, layout):
         if layer.kind == 'divider':
             _divider(canvas, layer.box, ctx.get('delimiter_color'))
@@ -256,13 +257,13 @@ def draw_overlay(canvas, source, ctx, layout, image_id):
             stamp = layer.bitmap
             if ctx.get('adaptive_logo_invert'):
                 stamp = adaptive_logo(stamp, _luma(canvas, box))
-            _stamp(canvas, stamp, box, opacity, shadow)
+            _stamp(canvas, stamp, box, opacity, shadow, sampling)
         else:
             stamp = layer.bitmap
             if layer.text_node is not None and _luma(canvas, box) < 128:
                 stamp, _ = _text_bitmap(layer.text_node, '#FAFAF8')
             if stamp is not None:
-                _stamp(canvas, stamp, box, opacity, shadow)
+                _stamp(canvas, stamp, box, opacity, shadow, sampling)
     return canvas
 
 

@@ -8,6 +8,7 @@ import numpy as np
 from PIL import Image, ImageChops, ImageColor, ImageDraw, ImageEnhance, ImageFilter, ImageOps
 
 from core.image_cache import cache_preview_image, cached_preview_image, valid_file_image_id
+from processor.filters import blur_sample_factor, fast_gaussian_blur
 
 
 _DEFAULTS = {
@@ -95,8 +96,11 @@ def frame_geometry(source_size, ctx):
 def _blurred_background(source, size, unit, parameters):
     # 在受限尺寸生成模糊底板，再放大以控制高清内存和耗时
     scale = min(1.0, 1600 / max(size))
+    factor = blur_sample_factor(unit * parameters['blur'] * scale)
+    scale /= factor
     small_size = (max(1, round(size[0] * scale)), max(1, round(size[1] * scale)))
-    background = ImageOps.fit(source, small_size, method=Image.Resampling.LANCZOS)
+    sampling = Image.Resampling.BILINEAR if factor > 1 else Image.Resampling.LANCZOS
+    background = ImageOps.fit(source, small_size, method=sampling)
     if 'A' in background.getbands():
         base = Image.new('RGBA', small_size, 'white')
         base.alpha_composite(background.convert('RGBA'))
@@ -116,7 +120,7 @@ def _blurred_background(source, size, unit, parameters):
         factor = 1 - parameters['vignette'] * distance
         background = Image.fromarray(np.clip(pixels * factor[:, :, None], 0, 255).astype('uint8'), 'RGB')
     if small_size != size:
-        background = background.resize(size, Image.Resampling.LANCZOS)
+        background = background.resize(size, sampling)
     return background.convert('RGBA')
 
 
@@ -129,7 +133,7 @@ def _photo_with_shadow(canvas, source, box, unit, radius_ratio, shadow_ratio):
         draw = ImageDraw.Draw(mask)
         draw.rounded_rectangle((left, top + max(1, shadow // 3), right - 1, bottom - 1 + max(1, shadow // 3)),
                                radius=radius, fill=100)
-        mask = mask.filter(ImageFilter.GaussianBlur(shadow))
+        mask = fast_gaussian_blur(mask, shadow)
         layer = Image.new('RGBA', canvas.size, (0, 0, 0, 0))
         layer.putalpha(mask)
         canvas.alpha_composite(layer)
@@ -148,7 +152,7 @@ def _gallery(canvas, box, unit):
     shadow_width = max(1, round(unit * .008))
     mask = Image.new('L', canvas.size, 0)
     ImageDraw.Draw(mask).rectangle((left, top, right - 1, bottom - 1), fill=58)
-    mask = mask.filter(ImageFilter.GaussianBlur(shadow_width))
+    mask = fast_gaussian_blur(mask, shadow_width)
     shadow = Image.new('RGBA', canvas.size, (0, 0, 0, 0))
     shadow.putalpha(mask)
     canvas.alpha_composite(shadow)

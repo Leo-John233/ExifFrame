@@ -17,6 +17,20 @@ class FilterProcessor(ImageProcessor, ABC):
         return "filter"
 
 
+def blur_sample_factor(radius):
+    """大半径时在每轴四分之一尺寸计算背景"""
+    return 4 if radius >= 8 else 1
+
+
+def fast_gaussian_blur(image, radius):
+    factor = blur_sample_factor(radius)
+    if factor == 1:
+        return image.filter(ImageFilter.GaussianBlur(radius))
+    sample = image.reduce(factor)
+    softened = sample.filter(ImageFilter.GaussianBlur(radius / factor))
+    return softened.resize(image.size, Image.Resampling.BILINEAR)
+
+
 class BlurFilter(FilterProcessor):
     @staticmethod
     def preview_cache_params(ctx):
@@ -30,7 +44,7 @@ class BlurFilter(FilterProcessor):
         for img in ctx.get_buffer():
             if img.mode != "RGB":
                 img = img.convert("RGB")
-            ret_img = img.filter(ImageFilter.GaussianBlur(radius=radius))
+            ret_img = fast_gaussian_blur(img, radius)
             buffer.append(ret_img)
         ctx.update_buffer(buffer).save_buffer(self.name()).success()
 
@@ -42,7 +56,7 @@ class ResizeFilter(FilterProcessor):
     @staticmethod
     def preview_cache_params(ctx):
         """区分影响缩放结果的尺寸和比例"""
-        return ctx.get('width'), ctx.get('height'), ctx.get('scale')
+        return ctx.get('width'), ctx.get('height'), ctx.get('scale'), bool(ctx.get('_interactive_preview'))
 
     def process(self, ctx: PipelineContext):
         width, height = ctx.get("width"), ctx.get("height")
@@ -64,7 +78,8 @@ class ResizeFilter(FilterProcessor):
                     return
                 target_size = (int(img.width * scale_f), int(img.height * scale_f))
 
-            ret_img = img.resize(target_size, resample=Image.Resampling.LANCZOS)
+            sampling = Image.Resampling.BILINEAR if ctx.get('_interactive_preview') else Image.Resampling.LANCZOS
+            ret_img = img.resize(target_size, resample=sampling)
             buffer.append(ret_img)
         ctx.update_buffer(buffer).save_buffer(self.name()).success()
 
@@ -487,7 +502,7 @@ class ShadowFilter(FilterProcessor):
             shadow_layer.putalpha(original_img.getchannel('A'))
             background.paste(shadow_layer, (padding, padding))
             # 2. 高斯模糊
-            shadow_blurred = background.filter(ImageFilter.GaussianBlur(shadow_radius))
+            shadow_blurred = fast_gaussian_blur(background, shadow_radius)
             # 3. 关键：应用透明度衰减曲线，消除边缘残留
             shadow_blurred = self._apply_alpha_falloff(shadow_blurred, falloff)
             # 4. 合成原图
@@ -527,7 +542,7 @@ class ShadowFilter(FilterProcessor):
             # 将剪影贴入底图中心
             background.paste(shadow_layer, (padding, padding))
             # --- 优化点 3: 高斯模糊 ---
-            shadow_in_process = background.filter(ImageFilter.GaussianBlur(shadow_radius))
+            shadow_in_process = fast_gaussian_blur(background, shadow_radius)
             # --- 优化点 4: Alpha 通道非线性衰减 (缓动关键) ---
             # 这一步是为了解决“灰色残留”并让阴影更有层次感。
             # 我们提取阴影的 Alpha 通道，对其进行 指数运算。
