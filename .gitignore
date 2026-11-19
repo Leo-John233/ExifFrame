@@ -11,6 +11,7 @@ logs
 tmp
 config/desktop.json
 config/ui.json
+config/theme.json
 config/desktop.json.tmp
 config/*.tmp
 /test/

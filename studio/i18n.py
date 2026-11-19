@@ -55,6 +55,12 @@ register_translations({
     '品牌符号策略无效': 'Invalid brand symbol policy',
 })
 
+register_translations({
+    '沿用模板 · {color}': 'Template · {color}',
+    '重置为模板默认': 'Reset to template default',
+    '重置此分组': 'Reset this section',
+})
+
 
 def language() -> str:
     return _language

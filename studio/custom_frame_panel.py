@@ -7,15 +7,13 @@ import json
 import math
 from pathlib import Path
 
-from PySide6.QtCore import QSignalBlocker, Qt, Signal
-from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
+from PySide6.QtCore import QSignalBlocker, Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QColorDialog, QComboBox, QFileDialog, QFormLayout, QHBoxLayout,
-    QLabel, QLineEdit, QListWidget, QMessageBox, QPushButton, QSizePolicy,
-    QToolButton, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QFileDialog, QFormLayout, QHBoxLayout,
+    QLabel, QLineEdit, QListWidget, QMessageBox, QPushButton, QVBoxLayout, QWidget,
 )
 
-from .controls import CameraRawSlider
+from .controls import CameraRawSlider, CollapsibleSection, ColorProperty
 from .i18n import bind, localize_error, tr, translator
 
 
@@ -97,31 +95,25 @@ def _node(source):
     return document, None
 
 
-class _Section(QWidget):
-    """窄侧栏内的小型折叠组"""
-
-    def __init__(self, title, expanded=False):
-        super().__init__()
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-        self.toggle = QToolButton()
-        self.toggle.setObjectName('inspectorSection')
-        self.toggle.setCheckable(True)
-        self.toggle.setChecked(expanded)
-        self.toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.toggle.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
-        self.toggle.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        bind(self.toggle, title)
-        self.body = QWidget()
-        self.body.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.body.setVisible(expanded)
-        self.toggle.toggled.connect(self.body.setVisible)
-        self.toggle.toggled.connect(lambda opened: self.toggle.setArrowType(
-            Qt.ArrowType.DownArrow if opened else Qt.ArrowType.RightArrow))
-        layout.addWidget(self.toggle)
-        layout.addWidget(self.body)
+def _frame_values(node):
+    """解析当前或模板基准的同一套有效画框参数"""
+    from processor.custom_frame import default_custom_frame, legacy_custom_frame
+    custom = isinstance(node.get('custom_frame'), dict)
+    try:
+        legacy = {} if custom else legacy_custom_frame(node)
+    except (ValueError, TypeError):
+        # 含 Jinja 的旧参数在读取照片前无法确定
+        legacy = default_custom_frame()
+        legacy['legacy_composite'] = True
+    custom_values = node.get('custom_frame') if custom else {}
+    frame = _merge(_FRAME_DEFAULTS, _merge(legacy, custom_values))
+    if not isinstance(frame.get('decorations'), list):
+        frame['decorations'] = []
+    if (frame['background'].get('type') == 'blurred_photo'
+            and 'brightness' not in (legacy.get('background') or {})
+            and 'brightness' not in (custom_values.get('background') or {})):
+        frame['background']['brightness'] = .72
+    return frame
 
 
 class CustomFramePanel(QWidget):
@@ -139,6 +131,7 @@ class CustomFramePanel(QWidget):
         self._document = None
         self._index = None
         self._frame = deepcopy(_FRAME_DEFAULTS)
+        self._baseline_frame = deepcopy(_FRAME_DEFAULTS)
         self._syncing = False
         self._custom = False
         self._ratios = None
@@ -147,6 +140,7 @@ class CustomFramePanel(QWidget):
         self._decor_controls = {}
         self._combos = []
         self._deco_pages = {}
+        self._sections = {}
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -198,10 +192,60 @@ class CustomFramePanel(QWidget):
         else:
             self._decor_controls.setdefault(decoration, {})[path] = entry
 
+    def _section(self, title, group, *, expanded=False):
+        section = CollapsibleSection(title, expanded=expanded)
+        section.reset_requested.connect(lambda: self._reset_section(group))
+        self._sections[group] = section
+        return section
+
+    def _baseline_color(self, path, default, decoration):
+        if decoration is None:
+            return _get(self._baseline_frame, path, default)
+        item = self._decoration()
+        if not item:
+            return default
+        kind = item.get('type')
+        base_items = self._baseline_frame.get('decorations', [])
+        row = self.decor_list.currentRow()
+        baseline = base_items[row] if 0 <= row < len(base_items) else None
+        if not isinstance(baseline, dict) or baseline.get('type') != kind:
+            matches = [value for value in base_items if isinstance(value, dict) and value.get('type') == kind]
+            baseline = matches[0] if len(matches) == 1 else {}
+        return _get(baseline, path, _get(_DECOR_DEFAULTS.get(kind, {}), path, default))
+
+    def _reset_color(self, path, default, decoration):
+        self._change(path, self._baseline_color(path, default, decoration), decoration=decoration)
+
+    def _reset_section(self, group):
+        if self._document is None or group not in self._sections:
+            return
+        baseline = deepcopy(self._baseline_frame.get(group))
+        extras = {'geometry': ('_legacy_geometry',), 'decorations': ('legacy_palette_migrated',)}.get(group, ())
+        if (self._frame.get(group) == baseline
+                and all(self._frame.get(key) == self._baseline_frame.get(key) for key in extras)):
+            return
+        self._frame[group] = baseline
+        for key in extras:
+            if key in self._baseline_frame:
+                self._frame[key] = deepcopy(self._baseline_frame[key])
+            else:
+                self._frame.pop(key, None)
+        self._publish()
+        self._sync()
+        self._refresh_decorations()
+
+    def _update_group_resets(self):
+        for group, section in self._sections.items():
+            extras = {'geometry': ('_legacy_geometry',), 'decorations': ('legacy_palette_migrated',)}.get(group, ())
+            changed = (self._frame.get(group) != self._baseline_frame.get(group)
+                       or any(self._frame.get(key) != self._baseline_frame.get(key) for key in extras))
+            section.reset_button.setEnabled(self._document is not None and changed)
+
     def _number(self, form, label, path, low, high, default, *, scale=100, step=0.1, decoration=None):
+        suffix = '°' if path == 'background.angle' else '%' if scale == 100 else ''
         slider = CameraRawSlider(low * scale, high * scale, default * scale,
                                  step=step, decimals=1 if step < 1 else 0,
-                                 suffix='')
+                                 suffix=suffix)
         slider.setObjectName('customFrame_' + (decoration + '_' if decoration else '') + path.replace('.', '_'))
         bind(slider, label)
         self._record(path, slider, decoration=decoration, default=default, scale=scale)
@@ -238,12 +282,13 @@ class CustomFramePanel(QWidget):
         return check
 
     def _color(self, form, label, path, default, *, decoration=None):
-        button = QPushButton()
-        button.setObjectName('customFrame_' + (decoration + '_' if decoration else '') + path.replace('.', '_'))
-        self._record(path, button, decoration=decoration, default=default)
-        button.clicked.connect(lambda: self._choose_color(path, default, decoration))
-        form.addRow(self._label(label), button)
-        return button
+        color = ColorProperty(label)
+        color.setObjectName('customFrame_' + (decoration + '_' if decoration else '') + path.replace('.', '_'))
+        self._record(path, color, decoration=decoration, default=default)
+        color.color_changed.connect(lambda value: self._change(path, value, decoration=decoration))
+        color.reset_requested.connect(lambda: self._reset_color(path, default, decoration))
+        form.addRow(color)
+        return color
 
     def _asset(self, form, label, path, *, decoration=None, png_only=False):
         field = QLineEdit()
@@ -263,7 +308,7 @@ class CustomFramePanel(QWidget):
         return field
 
     def _build_geometry(self, outer):
-        section = _Section('画幅与边距', expanded=True)
+        section = self._section('画幅与边距', 'geometry', expanded=True)
         form = self._form(section)
         self.canvas_mode = self._combo(form, '画幅模式', 'geometry.canvas_mode',
                                        [('扩展边距', 'expand'), ('固定比例', 'aspect_ratio')], 'expand')
@@ -283,7 +328,7 @@ class CustomFramePanel(QWidget):
         outer.addWidget(section)
 
     def _build_background(self, outer):
-        section = _Section('画框背景与材质')
+        section = self._section('画框背景与材质', 'background')
         form = self._form(section)
         self.background_type = self._combo(form, '背景类型', 'background.type',
             [('纯色', 'solid'), ('渐变色', 'gradient'), ('自动主色', 'auto_dominant'),
@@ -330,7 +375,7 @@ class CustomFramePanel(QWidget):
         outer.addWidget(section)
 
     def _build_photo(self, outer):
-        section = _Section('照片外观')
+        section = self._section('照片外观', 'photo_surface')
         form = self._form(section)
         self._number(form, '照片圆角', 'photo_surface.radius', 0, 1, 0)
         self._number(form, '照片描边宽度', 'photo_surface.stroke.width', 0, 1, 0)
@@ -345,7 +390,7 @@ class CustomFramePanel(QWidget):
         outer.addWidget(section)
 
     def _build_decorations(self, outer):
-        section = _Section('画框装饰')
+        section = self._section('画框装饰', 'decorations')
         layout = QVBoxLayout(section.body)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(5)
@@ -483,14 +528,6 @@ class CustomFramePanel(QWidget):
             self._active_text = None
             self.interaction_finished.emit('customFrame_edge_text')
 
-    def _choose_color(self, path, default, decoration):
-        target = self._decoration() if decoration is not None else self._frame
-        if target is None:
-            return
-        chosen = QColorDialog.getColor(QColor(str(_get(target, path, default))), self, tr('选择颜色'))
-        if chosen.isValid():
-            self._change(path, chosen.name().upper(), decoration=decoration)
-
     def _choose_asset(self, path, decoration, png_only):
         filters = tr('PNG 图片 (*.png)') if png_only else tr('背景图片 (*.png *.jpg *.jpeg)')
         filename, _ = QFileDialog.getOpenFileName(self, tr('选择图片'), '', filters)
@@ -591,6 +628,7 @@ class CustomFramePanel(QWidget):
             self._custom = True
             self.custom_changed.emit(True)
         self._update_revert()
+        self._update_group_resets()
         self.source_changed.emit(self._source)
 
     def _revert(self):
@@ -617,21 +655,10 @@ class CustomFramePanel(QWidget):
         self._document, self._index = _node(source)
         node = self._document[self._index] if self._document is not None and self._index is not None else {}
         custom = isinstance(node.get('custom_frame'), dict)
-        from processor.custom_frame import default_custom_frame, legacy_custom_frame
-        try:
-            legacy = {} if custom else legacy_custom_frame(node)
-        except (ValueError, TypeError):
-            # 含 Jinja 的间距或颜色只有在读取照片后才能确定，保留旧管线作为内层
-            legacy = default_custom_frame()
-            legacy['legacy_composite'] = True
-        custom_values = node.get('custom_frame') if isinstance(node.get('custom_frame'), dict) else {}
-        self._frame = _merge(_FRAME_DEFAULTS, _merge(legacy, custom_values))
-        if not isinstance(self._frame.get('decorations'), list):
-            self._frame['decorations'] = []
-        if (self._frame['background'].get('type') == 'blurred_photo'
-                and 'brightness' not in (legacy.get('background') or {})
-                and 'brightness' not in (custom_values.get('background') or {})):
-            self._frame['background']['brightness'] = .72
+        self._frame = _frame_values(node)
+        base_doc, base_index = _node(baseline)
+        base_node = base_doc[base_index] if base_doc is not None and base_index is not None else {}
+        self._baseline_frame = _frame_values(base_node)
         previous = self._custom
         self._custom = custom
         self.setEnabled(self._document is not None)
@@ -639,6 +666,7 @@ class CustomFramePanel(QWidget):
         self._sync()
         self._refresh_decorations()
         self._update_revert()
+        self._update_group_resets()
         if previous != custom:
             self.custom_changed.emit(custom)
 
@@ -677,15 +705,9 @@ class CustomFramePanel(QWidget):
             if not widget.hasFocus():
                 widget.setText(str(value or ''))
                 widget.setToolTip(str(value or ''))
-        elif isinstance(widget, QPushButton):
-            color = QColor(str(value or default))
-            swatch = QPixmap(20, 14)
-            swatch.fill(Qt.GlobalColor.transparent)
-            painter = QPainter(swatch)
-            painter.fillRect(1, 1, 18, 12, color)
-            painter.end()
-            widget.setIcon(QIcon(swatch))
-            widget.setText(color.name().upper() if color.isValid() else str(value))
+        elif isinstance(widget, ColorProperty):
+            baseline = self._baseline_color(path, default, decoration)
+            widget.set_color(value or default, inherited=str(value).upper() == str(baseline).upper())
         del blocker
 
     def _sync(self):

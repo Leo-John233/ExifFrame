@@ -6,12 +6,14 @@ from decimal import Decimal
 import math
 
 from PySide6.QtCore import QEvent, QObject, QPointF, QRect, QRectF, QSignalBlocker, Qt, Signal
-from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPen, QPolygonF, QWheelEvent
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPalette, QPen, QWheelEvent
 from PySide6.QtWidgets import (
-    QAbstractSlider, QAbstractSpinBox, QApplication, QComboBox, QDateTimeEdit,
-    QHBoxLayout, QLabel, QLineEdit, QScrollArea, QSizePolicy, QSlider, QStyle,
-    QStyleOptionSlider, QVBoxLayout, QWidget,
+    QAbstractSlider, QAbstractSpinBox, QApplication, QColorDialog, QComboBox, QDateTimeEdit,
+    QFrame, QHBoxLayout, QLabel, QLineEdit, QScrollArea, QSizePolicy, QSlider, QStyle,
+    QStyleOptionSlider, QToolButton, QVBoxLayout, QWidget,
 )
+
+from .i18n import bind, tr, translator
 
 
 class _SliderLabel(QLabel):
@@ -64,6 +66,7 @@ class _SliderTrack(QSlider):
         self._drag_offset = 0
         self._dragging = False
         self._moved = False
+        self.setMouseTracking(True)
 
     def _option(self):
         option = QStyleOptionSlider()
@@ -71,30 +74,41 @@ class _SliderTrack(QSlider):
         return option
 
     def _handle(self, option):
-        width = min(17, self.width())
+        width = min(12, self.width())
         start = QStyle.sliderPositionFromValue(self.minimum(), self.maximum(), self.sliderPosition(),
                                               self.width() - width, option.upsideDown)
-        return QRect(start, 2, width, 14)
+        return QRect(start, 3, width, 12)
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        rail = QRectF(0, 6, self.width(), 4)
-        gradient = QLinearGradient(rail.topLeft(), rail.topRight())
-        gradient.setColorAt(0, QColor('#505153'))
-        gradient.setColorAt(1, QColor('#E4E4E4'))
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        dark = QApplication.palette().color(QPalette.ColorRole.Window).lightness() < 128
+        rail_color = QColor('#3A3A3A' if dark else '#C5C5C5')
+        filled_color = QColor('#A3A3A3' if dark else '#686868')
+        highlighted = self.underMouse() or self.hasFocus()
+        handle_color = QColor(('#E4E4E4' if highlighted else '#C1C1C1') if dark else
+                              ('#404040' if highlighted else '#707070'))
         if not self.isEnabled():
             painter.setOpacity(.45)
-        painter.fillRect(rail, gradient)
         handle = self._handle(self._option())
-        x0, x1 = handle.left() + .5, handle.right() + .5
-        top, base = handle.top() + .5, handle.bottom() + .5
-        shoulder = top + 8
-        pointer = QPolygonF([QPointF((x0 + x1) / 2, top), QPointF(x1, shoulder), QPointF(x1, base),
-                             QPointF(x0, base), QPointF(x0, shoulder)])
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QPen(QColor('#F4F4F4' if self.hasFocus() else '#3C3C3C'), 1))
-        painter.setBrush(QColor('#D2D2D2'))
-        painter.drawPolygon(pointer)
+        start = handle.width() / 2
+        end = max(start, self.width() - handle.width() / 2)
+        center = handle.center().x() + .5
+        painter.setPen(QPen(rail_color, 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawLine(QPointF(start, 9), QPointF(end, 9))
+        painter.setPen(QPen(filled_color, 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawLine(QPointF(start, 9), QPointF(center, 9))
+        painter.setPen(QPen(QColor('#272727' if dark else '#F6F6F6'), 1))
+        painter.setBrush(handle_color)
+        painter.drawEllipse(QPointF(center, 9), 4.5, 4.5)
+
+    def enterEvent(self, event):
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.update()
+        super().leaveEvent(event)
 
     def _set_from_x(self, x):
         option = self._option()
@@ -359,6 +373,167 @@ class CameraRawSlider(QWidget):
         self._editing = False
         self.track.setValue(self._encode(self._default))
         self._finish()
+
+
+def _display_color(value):
+    """按渲染管线的 RRGGBBAA 顺序读取透明色"""
+    text = str(value or '')
+    if len(text) == 9 and text.startswith('#'):
+        try:
+            return QColor(*(int(text[i:i + 2], 16) for i in (1, 3, 5, 7)))
+        except ValueError:
+            pass
+    return QColor(text)
+
+
+def _color_text(color):
+    result = color.name(QColor.NameFormat.HexRgb).upper()
+    return result if color.alpha() == 255 else f'{result}{color.alpha():02X}'
+
+
+class _ColorSwatch(QToolButton):
+    """在透明棋盘上绘制可点击的圆角色块"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName('colorSwatch')
+        self.setFixedSize(32, 22)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._color = QColor()
+
+    def set_color(self, color):
+        self._color = color
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(1, 1, self.width() - 2, self.height() - 2)
+        path = QPainterPath()
+        path.addRoundedRect(rect, 4, 4)
+        painter.save()
+        painter.setClipPath(path)
+        tile = 5
+        for y in range(0, self.height(), tile):
+            for x in range(0, self.width(), tile):
+                color = '#ECECEC' if (x // tile + y // tile) % 2 == 0 else '#A8A8A8'
+                painter.fillRect(x, y, tile, tile, QColor(color))
+        if self._color.isValid():
+            painter.fillRect(rect, self._color)
+        painter.restore()
+        border = self.palette().color(QPalette.ColorRole.Text)
+        border.setAlpha(190 if self.underMouse() or self.hasFocus() else 110)
+        painter.setPen(QPen(border, 1))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(path)
+
+    def enterEvent(self, event):
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.update()
+        super().leaveEvent(event)
+
+
+class ColorProperty(QWidget):
+    """颜色、实际值及恢复模板默认的紧凑属性行"""
+
+    color_changed = Signal(str)
+    reset_requested = Signal()
+
+    def __init__(self, title, parent=None):
+        super().__init__(parent)
+        self._value = '#FFFFFF'
+        self._inherited = False
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(5)
+        self.label = QLabel()
+        self.label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        bind(self.label, title)
+        self.swatch = _ColorSwatch()
+        bind(self.swatch, '选择颜色', 'setToolTip')
+        self.swatch.clicked.connect(self._choose_color)
+        self.value_label = QLabel()
+        self.value_label.setObjectName('colorPropertyValue')
+        self.value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.value_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        self.reset_button = QToolButton()
+        self.reset_button.setObjectName('propertyReset')
+        self.reset_button.setText('↶')
+        bind(self.reset_button, '重置为模板默认', 'setToolTip')
+        self.reset_button.clicked.connect(self.reset_requested)
+        row.addWidget(self.label, 1)
+        row.addWidget(self.swatch)
+        row.addWidget(self.value_label)
+        row.addWidget(self.reset_button)
+        translator.language_changed.connect(self._update_display)
+        self._update_display()
+
+    def set_color(self, value, inherited=False):
+        self._value = str(value or '')
+        self._inherited = bool(inherited)
+        self._update_display()
+
+    def _update_display(self):
+        color = _display_color(self._value)
+        value = _color_text(color) if color.isValid() else self._value
+        self.swatch.set_color(color)
+        self.value_label.setText(tr('沿用模板 · {color}', color=value) if self._inherited else value)
+        self.value_label.setToolTip(self.value_label.text())
+        self.reset_button.setEnabled(not self._inherited)
+
+    def _choose_color(self):
+        initial = _display_color(self._value)
+        if not initial.isValid():
+            initial = QColor('#FFFFFF')
+        selected = QColorDialog.getColor(initial, self, tr('选择颜色'),
+                                         QColorDialog.ColorDialogOption.ShowAlphaChannel)
+        if selected.isValid():
+            self.color_changed.emit(_color_text(selected))
+
+
+class CollapsibleSection(QWidget):
+    """细分隔线、扁平标题与分组重置"""
+
+    reset_requested = Signal()
+
+    def __init__(self, title, *, expanded=True, parent=None):
+        super().__init__(parent)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(3)
+        divider = QFrame()
+        divider.setObjectName('inspectorSectionDivider')
+        divider.setFixedHeight(1)
+        layout.addWidget(divider)
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(2)
+        self.toggle = QToolButton()
+        self.toggle.setObjectName('inspectorSection')
+        self.toggle.setCheckable(True)
+        self.toggle.setChecked(expanded)
+        self.toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.toggle.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+        self.toggle.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        bind(self.toggle, title)
+        self.reset_button = QToolButton()
+        self.reset_button.setObjectName('propertyReset')
+        self.reset_button.setText('↶')
+        bind(self.reset_button, '重置此分组', 'setToolTip')
+        self.reset_button.clicked.connect(self.reset_requested)
+        header.addWidget(self.toggle, 1)
+        header.addWidget(self.reset_button)
+        layout.addLayout(header)
+        self.body = QWidget()
+        self.body.setVisible(expanded)
+        self.toggle.toggled.connect(self.body.setVisible)
+        self.toggle.toggled.connect(lambda opened: self.toggle.setArrowType(
+            Qt.ArrowType.DownArrow if opened else Qt.ArrowType.RightArrow))
+        layout.addWidget(self.body)
 
 
 class NoWheelEventFilter(QObject):
