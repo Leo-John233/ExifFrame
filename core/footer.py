@@ -92,13 +92,28 @@ def get_footer_field(key):
 
 
 def _load(source):
+    from core.slot_style_metadata import strip_slot_metadata
     try:
-        data = json.loads(source)
+        data = json.loads(strip_slot_metadata(source))
     except (ValueError, TypeError) as error:
         raise FooterError('当前模板需要使用高级源码编辑') from error
     if not isinstance(data, list) or any(not isinstance(node, dict) for node in data):
         raise FooterError('当前模板需要使用高级源码编辑')
     return data
+
+
+def _dump(source, data):
+    """重写可视化模型时保留动态槽位的可移植样式"""
+    from core.slot_style_metadata import read_slot_metadata, write_slot_metadata
+    result = json.dumps(data, ensure_ascii=False, indent=2) + '\n'
+    for key, style in read_slot_metadata(source).items():
+        result = write_slot_metadata(result, key, style)
+    return result
+
+
+def has_dynamic_structure(source):
+    """动态处理器会改变运行时槽位顺序，不按原始索引猜测"""
+    return bool(re.search(r'["\']processor_name["\']\s*:\s*["\'][^"\']*\{[\{%]', source or ''))
 
 
 def text_targets(data):
@@ -114,6 +129,94 @@ def text_targets(data):
             overlays.append((f'text_{len(overlays)}', index, None, node))
     return ('footer' if footers else 'overlay'), footers + overlays
 
+
+
+def slot_targets(source: str) -> dict:
+    """返回可编辑文字及标识槽位，保留模板中的原始样式"""
+    data = _load(source)
+    _, targets = text_targets(data)
+    result = {}
+    for key, index, child, node in targets:
+        if not isinstance(node, dict):
+            continue
+        if node or child is None:
+            result[key] = {'kind': 'text', 'node': deepcopy(node),
+                           'style': deepcopy(node.get('slot_style') or {})}
+    count = 0
+    for node in data:
+        if node.get('processor_name') != 'watermark':
+            continue
+        count += 1
+        prefix = '' if count == 1 else f'watermark_{count}_'
+        for name in ('left_logo', 'center_logo', 'right_logo'):
+            if node.get(name) or (node.get('logo_styles') or {}).get(name):
+                result[prefix + name] = {'kind': 'logo', 'node': {'logo': node.get(name)},
+                                         'style': deepcopy((node.get('logo_styles') or {}).get(name) or {})}
+    return result
+
+
+def set_slot_style(source: str, key: str, changes: dict) -> str:
+    """更新单槽位覆写；None 删除覆写并恢复模板继承"""
+    allowed = {'font_path', 'color', 'height', 'height_ratio', 'visible'}
+    if not isinstance(changes, dict) or not set(changes).issubset(allowed):
+        raise FooterError('当前模板需要使用高级源码编辑')
+    from core.slot_style_metadata import read_slot_metadata, write_slot_metadata
+    if read_slot_metadata(source) or has_dynamic_structure(source):
+        return write_slot_metadata(source, key, changes)
+    try:
+        data = _load(source)
+    except FooterError:
+        return write_slot_metadata(source, key, changes)
+    _, targets = text_targets(data)
+    selected = next(((index, child, node) for name, index, child, node in targets if name == key), None)
+    owner = None
+    if selected is not None:
+        index, child, node = selected
+        if not isinstance(node, dict):
+            return write_slot_metadata(source, key, changes)
+        owner = node
+        if child and not data[index].get(child):
+            owner = data[index][child] = {'processor_name': 'rich_text'}
+        style = deepcopy(owner.get('slot_style') or {})
+    else:
+        count = 0
+        for node in data:
+            if node.get('processor_name') != 'watermark':
+                continue
+            count += 1
+            prefix = '' if count == 1 else f'watermark_{count}_'
+            name = key[len(prefix):] if key.startswith(prefix) else ''
+            if name in ('left_logo', 'center_logo', 'right_logo') and (node.get(name) or
+                    (node.get('logo_styles') or {}).get(name)):
+                owner = node
+                styles = deepcopy(owner.get('logo_styles') or {})
+                style = deepcopy(styles.get(name) or {})
+                break
+        if owner is None:
+            return write_slot_metadata(source, key, changes)
+    before = deepcopy(style)
+    for name_, value in changes.items():
+        if value is None:
+            style.pop(name_, None)
+        else:
+            style[name_] = deepcopy(value)
+    if style == before:
+        return source
+    if selected is not None:
+        if style:
+            owner['slot_style'] = style
+        else:
+            owner.pop('slot_style', None)
+    else:
+        if style:
+            styles[name] = style
+        else:
+            styles.pop(name, None)
+        if styles:
+            owner['logo_styles'] = styles
+        else:
+            owner.pop('logo_styles', None)
+    return json.dumps(data, ensure_ascii=False, indent=2) + '\n'
 
 def _generated_row(text):
     """直接读取组合函数的常量参数，不执行模板代码"""
@@ -388,7 +491,7 @@ def clear_row_character_styles(source, region):
                     node[attribute] = json.dumps(parts, ensure_ascii=False)
                     changed = True
         if changed:
-            return json.dumps(data, ensure_ascii=False, indent=2) + '\n'
+            return _dump(source, data)
         break
     return source
 
@@ -447,7 +550,7 @@ def write_layout(source: str, layout: dict) -> str:
         for node in data:
             if node.get('processor_name') in _TEXT_TYPES or node.get('processor_name') == 'watermark':
                 node['brand_glyph_policy'] = policy
-    return json.dumps(data, ensure_ascii=False, indent=2) + '\n'
+    return _dump(source, data)
 
 
 @lru_cache(maxsize=128)
