@@ -495,7 +495,8 @@ def _preview_inputs(nodes, source, image, original_size, info, cancelled):
     source_limit = max(1, round(max(original_size) * scale))
     if source_limit < max(image.size):
         image, _, _ = photo_proxy(source, max_side=source_limit, cancelled=cancelled)
-    source_scale = image.width / original_size[0]
+    # 像素取整可能让极小主图的实际比例偏大，始终遵循共同上限
+    source_scale = min(scale, image.width / original_size[0], image.height / original_size[1])
     source_key = ('source', str(source), info.st_mtime_ns, info.st_size, image.size, image.mode)
     inputs = {source: (image, source_key)}
     for path in paths:
@@ -503,14 +504,14 @@ def _preview_inputs(nodes, source, image, original_size, info, cancelled):
             continue
         check_cancelled(cancelled)
         before = path.stat()
-        limit = max(1, round(max(sizes[path]) * source_scale))
+        limit = min(1800, max(1, round(max(sizes[path]) * source_scale)))
         other, _, _ = photo_proxy(path, max_side=limit, cancelled=cancelled)
         after = path.stat()
         if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
             raise OSError('照片在预览期间发生变化，请重试')
         key = ('source', str(path), before.st_mtime_ns, before.st_size, other.size, other.mode)
         inputs[path] = (other, key)
-    return image, source_key, inputs
+    return image, source_key, inputs, source_scale
 
 
 def _preview_file_signature(template_source, files):
@@ -578,15 +579,16 @@ def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True, 
         raise ValueError('水印模板需要至少一个处理步骤')
     preview_inputs = None
     source_key = None
+    source_scale = 1.0
     if preview and not full_resolution:
-        image, source_key, preview_inputs = _preview_inputs(nodes, source, image, original_size, info, cancelled)
+        image, source_key, preview_inputs, source_scale = _preview_inputs(
+            nodes, source, image, original_size, info, cancelled)
         current = source.stat()
         if (current.st_mtime_ns, current.st_size) != (info.st_mtime_ns, info.st_size):
             raise OSError('照片在预览期间发生变化，请重试')
     elif preview:
         source_key = ('source', str(source), info.st_mtime_ns, info.st_size, image.size, image.mode)
         preview_inputs = {source: (image, source_key)}
-    source_scale = image.width / original_size[0]
     full_size = None
     if preview and not full_resolution and source_scale != 1 and nodes[-1].get('processor_name') == 'crop':
         width, height = int(nodes[-1].get('width') or 0), int(nodes[-1].get('height') or 0)
