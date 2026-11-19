@@ -18,8 +18,13 @@ class FilterProcessor(ImageProcessor, ABC):
 
 
 class BlurFilter(FilterProcessor):
+    @staticmethod
+    def preview_cache_params(ctx):
+        """提取影响模糊结果的参数"""
+        return (ctx.getint('blur_radius', 5),)
+
     def process(self, ctx: PipelineContext):
-        radius = ctx.getint("blur_radius", 5)
+        radius, = self.preview_cache_params(ctx)
 
         buffer = []
         for img in ctx.get_buffer():
@@ -426,9 +431,14 @@ class WatermarkWithTimestampFilter(FilterProcessor):
 
 
 class RoundedCornerFilter(FilterProcessor):
+    @staticmethod
+    def preview_cache_params(ctx):
+        """提取影响圆角结果的参数"""
+        return (ctx.getint('border_radius', 10),)
+
     def process(self, ctx: PipelineContext):
         # CSS风格: border-radius, 单位px
-        radius = ctx.getint("border_radius", 10)
+        radius, = self.preview_cache_params(ctx)
 
         buffer = []
         for img in ctx.get_buffer():
@@ -457,10 +467,13 @@ class RoundedCornerFilter(FilterProcessor):
 
 
 class ShadowFilter(FilterProcessor):
+    @staticmethod
+    def preview_cache_params(ctx):
+        """提取影响阴影结果的参数"""
+        return ctx.getcolor('shadow_color', (0, 0, 0, 180)), ctx.getint('shadow_radius', 30)
 
     def process(self, ctx: PipelineContext):
-        shadow_color = ctx.getcolor("shadow_color", (0, 0, 0, 180))
-        shadow_radius = ctx.getint("shadow_radius", 30)
+        shadow_color, shadow_radius = self.preview_cache_params(ctx)
         # 新参数：衰减强度，值越大边缘越干净（推荐 1.5 ~ 3.0）
         falloff = 1.5
         buffer = []

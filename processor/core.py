@@ -11,6 +11,7 @@ from typing import Dict, Any, Type, List, MutableMapping, Iterator, Optional
 from PIL import Image, ImageColor, ImageOps
 
 from core.configs import load_config
+from core.image_cache import cache_preview_image, cached_preview_image, check_cancelled
 from core.logger import logger
 from core.util import get_exif, log_rt
 
@@ -263,7 +264,16 @@ def register_processor(key: str, processor_cls: Type['ImageProcessor']):
     logger.debug(f"Registered processor: {key} -> {processor_cls.__name__}")
 
 
-def start_process(data: List[dict], input_path: str = None, output_path: str = None, initial_buffer: List = None):
+def _preview_filter_key(processor, node, input_keys):
+    """只缓存输入身份明确的内置重型滤镜"""
+    if (len(input_keys) != 1 or input_keys[0] is None or node.get('save_buffer', False)
+            or 'preview_cache_params' not in processor.__dict__):
+        return None
+    return ('filter', processor, input_keys[0], processor.preview_cache_params(node))
+
+
+def start_process(data: List[dict], input_path: str = None, output_path: str = None, initial_buffer: List = None,
+                  *, preview_source_key=None, cancelled=None):
     """
     执行处理管道
 
@@ -273,6 +283,7 @@ def start_process(data: List[dict], input_path: str = None, output_path: str = N
         output_path: 输出文件路径
         initial_buffer: 初始图像缓冲区（可选，用于不从文件加载的情况）
     """
+    check_cancelled(cancelled)
     nodes = [PipelineContext(datum) for datum in data]
 
     # 设置初始 buffer
@@ -293,9 +304,14 @@ def start_process(data: List[dict], input_path: str = None, output_path: str = N
     output = nodes[0].get_buffer()
 
     all_buffer = [output]
+    all_keys = None
+    if preview_source_key is not None:
+        initial_keys = [preview_source_key] if len(output) == 1 else [None] * len(output)
+        all_keys = [initial_keys]
     last_merger_idx = -1
 
     for idx, node in enumerate(nodes):
+        check_cancelled(cancelled)
         processor = get_processor(node.get_processor_name())
         if processor is None:
             raise RuntimeError(f"Processor '{node.get_processor_name()}' not found")
@@ -305,14 +321,21 @@ def start_process(data: List[dict], input_path: str = None, output_path: str = N
         if 'input_buffer' in node:
             node.update_buffer(node['input_buffer'])
             node['buffer_loaded'] = True
+            if all_keys is not None:
+                input_keys = ([preview_source_key] if node.get('_preview_source_input', False)
+                              and len(node['input_buffer']) == 1 else [None] * len(node['input_buffer']))
         elif 'select' in node:
             indexes = json.loads(node['select'])
             flattened = list(chain.from_iterable([all_buffer[i] for i in indexes]))
             node.update_buffer(flattened)
+            if all_keys is not None:
+                input_keys = list(chain.from_iterable([all_keys[i] for i in indexes]))
         else:
             # 使用 category() 方法判断是否为 merger，避免导入 Merger 类
             if processor_instance.category() != "merger":
                 node.update_buffer(output)
+                if all_keys is not None:
+                    input_keys = all_keys[-1][:]
             else:
                 # 收集下标从上一个 merger 之后, 到当前 idx 为止的 buffer
                 buffers_to_merge = all_buffer[last_merger_idx + 1:idx + 1]
@@ -320,12 +343,50 @@ def start_process(data: List[dict], input_path: str = None, output_path: str = N
                 # 将数组的数组展平为数组
                 flattened = list(chain.from_iterable(buffers_to_merge))
                 node.update_buffer(flattened)
+                if all_keys is not None:
+                    input_keys = list(chain.from_iterable(all_keys[last_merger_idx + 1:idx + 1]))
                 last_merger_idx = idx
 
-        processor_instance.process(node)
+        if all_keys is None:
+            processor_instance.process(node)
+            check_cancelled(cancelled)
+            output = node.get_buffer()
+            all_buffer.append(output)
+            continue
+        cacheable = 'preview_cache_params' in processor.__dict__
+        if cacheable:
+            # 独立文件输入可能替代上一步缓冲区，不能沿用其身份
+            reloads_file = bool(node.get('buffer_path')) and not node.get('buffer_loaded', False)
+            input_images = node.get_buffer()
+            if reloads_file or len(input_keys) != len(input_images):
+                input_keys = [None] * len(input_images)
+            key = _preview_filter_key(processor, node, input_keys)
+        else:
+            input_images = node.get('buffer', [])
+            key = None
+        cached = cached_preview_image(key) if key is not None else None
+        if cached is not None:
+            node.update_buffer([cached]).success()
+        else:
+            processor_instance.process(node)
+            check_cancelled(cancelled)
+            current = node.get_buffer()
+            if key is not None and len(current) == 1:
+                cache_preview_image(key, current[0])
+            else:
+                key = None
+        if key is None and preview_source_key is not None:
+            # 其他处理器可能原位修改输入，清除所有相同对象的缓存身份
+            changed = {id(image) for image in input_images}
+            for images, keys in zip(all_buffer, all_keys):
+                for item_index, image in enumerate(images):
+                    if id(image) in changed:
+                        keys[item_index] = None
         output = node.get_buffer()
         all_buffer.append(output)
+        all_keys.append([key] if key is not None and len(output) == 1 else [None] * len(output))
 
+    check_cancelled(cancelled)
     nodes[-1].save_buffer("final").success()
     if output_path is not None:
         nodes[-1].get_buffer()[0].convert("RGB").save(output_path, quality=load_config().getint('DEFAULT', 'quality'), subsampling=load_config().getint('DEFAULT', 'subsampling'))
