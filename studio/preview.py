@@ -296,7 +296,8 @@ class TemplatePreview(QWidget):
         if self._follow_workspace_style and settings is not None:
             for name in ('use_template_styles', 'title', 'subtitle', 'show_logo', 'font_scale',
                          'border_percent', 'border_override', 'background', 'text_color',
-                         'background_override', 'text_color_override'):
+                         'background_override', 'text_color_override', 'logo_choice', 'font_path',
+                         'text_alignment', 'text_spacing', 'line_spacing'):
                 setattr(self._settings, name, getattr(settings, name))
         if self.settings != before:
             self._failed = False
