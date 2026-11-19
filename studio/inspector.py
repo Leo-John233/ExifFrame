@@ -10,11 +10,12 @@ from PySide6.QtCore import QSignalBlocker, QSize, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox, QColorDialog, QComboBox, QFileDialog, QFormLayout, QFrame, QGridLayout,
-    QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea, QSizePolicy, QSlider,
-    QSpinBox, QStackedWidget, QTabWidget, QToolButton, QVBoxLayout, QWidget,
+    QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea, QSizePolicy,
+    QStackedWidget, QTabWidget, QToolButton, QVBoxLayout, QWidget,
 )
 
 from core.configs import fonts_dir
+from .controls import CameraRawSlider
 from .i18n import bind, tr, translator
 from .inspector_footer import InlineFooter
 from .pixmaps import TemplateThumbnail
@@ -131,6 +132,8 @@ class Inspector(QWidget):
 
     template_selected = Signal(str)
     style_changed = Signal(str, object)
+    interaction_started = Signal(str)
+    interaction_finished = Signal(str)
     metadata_changed = Signal(str, object)
     metadata_apply_requested = Signal(str, object)
     metadata_requested = Signal()
@@ -165,6 +168,7 @@ class Inspector(QWidget):
         self._selected_template = ''
         self._cards = {}
         self._style_values = {}
+        self._active_text = None
         self._frame_source = ''
         self._frame_baseline_source = None
         self._frame_document = None
@@ -285,32 +289,28 @@ class Inspector(QWidget):
         self.glass_controls = QWidget()
         glass = QFormLayout(self.glass_controls)
         glass.setContentsMargins(0, 0, 0, 0)
-        self.frame_brightness = self._percent_spin('frameBrightness', 200)
-        self.frame_vignette = self._percent_spin('frameVignette', 100)
-        self.frame_blur = self._percent_spin('frameBlur', 100)
-        for key, label, spin in (
-                ('frame_brightness', '背景亮度', self.frame_brightness),
-                ('frame_vignette', '暗角强度', self.frame_vignette),
-                ('frame_blur', '模糊强度', self.frame_blur)):
+        self.frame_brightness = self._number('背景亮度', -1, 200, -1, 'frameBrightness', ' %')
+        self.frame_vignette = self._number('暗角强度', -1, 100, -1, 'frameVignette', ' %')
+        self.frame_blur = self._number('模糊强度', -1, 100, -1, 'frameBlur', ' %')
+        for key, spin in (
+                ('frame_brightness', self.frame_brightness),
+                ('frame_vignette', self.frame_vignette),
+                ('frame_blur', self.frame_blur)):
             spin.valueChanged.connect(lambda value, name=key: self._frame_number_changed(name, value))
-            glass.addRow(self._label(label), spin)
+            glass.addRow(spin)
         form.addRow(self.glass_controls)
         self.inset_controls = QWidget()
         inset = QFormLayout(self.inset_controls)
         inset.setContentsMargins(0, 0, 0, 0)
         self.inset_anchor = self._combo('insetAnchor')
         self.inset_anchor.currentIndexChanged.connect(lambda _: self._frame_changed('inset_anchor', self.inset_anchor))
-        self.overlay_opacity = self._percent_spin('overlayOpacity', 100)
+        self.overlay_opacity = self._number('覆盖不透明度', -1, 100, -1, 'overlayOpacity', ' %')
         self.overlay_opacity.valueChanged.connect(lambda value: self._frame_number_changed('overlay_opacity', value))
         inset.addRow(self._label('角标位置'), self.inset_anchor)
-        inset.addRow(self._label('覆盖不透明度'), self.overlay_opacity)
+        inset.addRow(self.overlay_opacity)
         form.addRow(self.inset_controls)
-        self.border_slider = self._slider(5, 30, 'borderSlider')
-        self.border_value = QLabel()
-        row = QHBoxLayout()
-        row.addWidget(self.border_slider, 1)
-        row.addWidget(self.border_value)
-        form.addRow(self._label('底部留白'), row)
+        self.border_slider = self._number('底部留白', 5, 30, 5, 'borderSlider', ' %')
+        form.addRow(self.border_slider)
         self.border_slider.valueChanged.connect(self._border_changed)
         self.background_button = self._button('底色', lambda: self._choose_color('background'))
         self.background_button.setObjectName('backgroundColorButton')
@@ -338,12 +338,12 @@ class Inspector(QWidget):
         self.font_combo = self._combo('fontChoice')
         self.font_combo.currentIndexChanged.connect(self._font_changed)
         form.addRow(self._label('字体'), self.font_combo)
-        self.font_slider = self._slider(50, 200, 'fontScaleSlider')
-        self.font_value = QLabel()
-        row = QHBoxLayout()
-        row.addWidget(self.font_slider, 1)
-        row.addWidget(self.font_value)
-        form.addRow(self._label('水印缩放'), row)
+        self.glyph_combo = self._combo('brandGlyphPolicy')
+        self.glyph_combo.currentIndexChanged.connect(
+            lambda _: self._emit_style('brand_glyph_policy', self.glyph_combo.currentData()))
+        form.addRow(self._label('尼康 ℤ 符号'), self.glyph_combo)
+        self.font_slider = self._number('水印缩放', 50, 200, 100, 'fontScaleSlider', ' %')
+        form.addRow(self.font_slider)
         self.font_slider.valueChanged.connect(self._font_scale_changed)
         self.text_button = self._button('文字颜色', lambda: self._choose_color('text_color'))
         self.text_button.setObjectName('textColorButton')
@@ -359,20 +359,22 @@ class Inspector(QWidget):
         for item in (self.title_input, self.subtitle_input):
             item.setMinimumWidth(0)
             bind(item, '留空使用照片信息', 'setPlaceholderText')
-        self.title_input.textEdited.connect(lambda value: self._emit_style('title', value))
-        self.subtitle_input.textEdited.connect(lambda value: self._emit_style('subtitle', value))
+        self.title_input.textEdited.connect(lambda value: self._text_edited(self.title_input, 'title', value))
+        self.subtitle_input.textEdited.connect(lambda value: self._text_edited(self.subtitle_input, 'subtitle', value))
+        self.title_input.editingFinished.connect(lambda: self._finish_text(self.title_input))
+        self.subtitle_input.editingFinished.connect(lambda: self._finish_text(self.subtitle_input))
         form.addRow(self._label('相机显示文字'), self.title_input)
         form.addRow(self._label('镜头显示文字'), self.subtitle_input)
         self.alignment_combo = self._combo('textAlignment')
         self.alignment_combo.currentIndexChanged.connect(
             lambda index: self._emit_style('text_alignment', self.alignment_combo.currentData()))
         form.addRow(self._label('右侧文字对齐'), self.alignment_combo)
-        self.text_spacing_spin = self._optional_spin('textSpacing')
-        self.line_spacing_spin = self._optional_spin('lineSpacing')
+        self.text_spacing_spin = self._number('片段间距', -1, 5000, -1, 'textSpacing', ' px')
+        self.line_spacing_spin = self._number('行间距', -1, 5000, -1, 'lineSpacing', ' px')
         self.text_spacing_spin.valueChanged.connect(lambda value: self._emit_style('text_spacing', None if value < 0 else value))
         self.line_spacing_spin.valueChanged.connect(lambda value: self._emit_style('line_spacing', None if value < 0 else value))
-        form.addRow(self._label('片段间距'), self.text_spacing_spin)
-        form.addRow(self._label('行间距'), self.line_spacing_spin)
+        form.addRow(self.text_spacing_spin)
+        form.addRow(self.line_spacing_spin)
         layout.addWidget(text)
 
         footer = CollapsibleSection('页脚字段', expanded=False)
@@ -387,12 +389,9 @@ class Inspector(QWidget):
 
         export = CollapsibleSection('输出设置', expanded=False)
         form = QFormLayout(export.body)
-        self.quality_spin = QSpinBox()
-        self.quality_spin.setObjectName('qualitySpin')
-        self.quality_spin.setRange(1, 100)
-        self.quality_spin.setSuffix(' %')
+        self.quality_spin = self._number('JPEG 质量', 1, 100, 95, 'qualitySpin', ' %')
         self.quality_spin.valueChanged.connect(lambda value: self._emit_export('quality', value))
-        form.addRow(self._label('JPEG 质量'), self.quality_spin)
+        form.addRow(self.quality_spin)
         self.output_input = QLineEdit()
         self.output_input.setMinimumWidth(0)
         self.output_input.textEdited.connect(lambda value: self._emit_export('output_dir', value.strip()))
@@ -475,12 +474,13 @@ class Inspector(QWidget):
         bind(label, text)
         return label
 
-    @staticmethod
-    def _slider(low, high, name):
-        slider = QSlider(Qt.Orientation.Horizontal)
+    def _number(self, label, low, high, default, name, suffix):
+        slider = CameraRawSlider(low, high, default, suffix=suffix)
         slider.setObjectName(name)
-        slider.setRange(low, high)
         slider.setMinimumWidth(0)
+        bind(slider, label)
+        slider.interaction_started.connect(lambda: self.interaction_started.emit(name))
+        slider.interaction_finished.connect(lambda: self.interaction_finished.emit(name))
         return slider
 
     @staticmethod
@@ -492,22 +492,17 @@ class Inspector(QWidget):
         combo.setMinimumContentsLength(4)
         return combo
 
-    @staticmethod
-    def _optional_spin(name):
-        spin = QSpinBox()
-        spin.setObjectName(name)
-        spin.setRange(-1, 5000)
-        spin.setSuffix(' px')
-        return spin
+    def _text_edited(self, widget, key, value):
+        if self._active_text is None or self._active_text[0] is not widget:
+            self._active_text = (widget, key)
+            self.interaction_started.emit(key)
+        self._emit_style(key, value)
 
-    @staticmethod
-    def _percent_spin(name, maximum):
-        spin = QSpinBox()
-        spin.setObjectName(name)
-        spin.setRange(-1, maximum)
-        spin.setSuffix(' %')
-        spin.setSpecialValueText(tr('沿用模板'))
-        return spin
+    def _finish_text(self, widget):
+        if self._active_text is not None and self._active_text[0] is widget:
+            key = self._active_text[1]
+            self._active_text = None
+            self.interaction_finished.emit(key)
 
     def _emit_style(self, key, value):
         if not self._syncing:
@@ -519,11 +514,9 @@ class Inspector(QWidget):
             self.export_changed.emit(key, value)
 
     def _border_changed(self, value):
-        self.border_value.setText(tr('自动') if value == 5 else f'{value}%')
         self._emit_style('border_percent', None if value == 5 else value)
 
     def _font_scale_changed(self, value):
-        self.font_value.setText(f'{value}%')
         self._emit_style('font_scale', value / 100)
 
     def _logo_enabled(self, checked):
@@ -650,7 +643,7 @@ class Inspector(QWidget):
     def set_settings(self, settings):
         """同步状态时不触发用户编辑信号"""
         self._syncing = True
-        widgets = (self.template_styles_check, self.logo_check, self.logo_combo, self.font_combo,
+        widgets = (self.template_styles_check, self.logo_check, self.logo_combo, self.font_combo, self.glyph_combo,
                    self.font_slider, self.border_slider, self.title_input, self.subtitle_input,
                    self.alignment_combo, self.text_spacing_spin, self.line_spacing_spin,
                    self.quality_spin, self.output_input, self.overwrite_check, self.structure_check)
@@ -664,6 +657,7 @@ class Inspector(QWidget):
                 ('logo_choice', ''), ('font_path', ''), ('background', '#FFFFFF'), ('text_color', '#20252C'))}
             self._set_combo_value(self.logo_combo, self._style_values['logo_choice'])
             self._set_combo_value(self.font_combo, self._style_values['font_path'])
+            self._set_combo_value(self.glyph_combo, getattr(settings, 'brand_glyph_policy', ''))
             self.font_slider.setValue(round(getattr(settings, 'font_scale', 1.0) * 100))
             border = getattr(settings, 'border_percent', 12) if getattr(settings, 'border_override', False) else 5
             self.border_slider.setValue(border)
@@ -868,8 +862,6 @@ class Inspector(QWidget):
                                                         if not any(check.isChecked() for check in self.metadata_checks.values()) else ''))
 
     def _update_values(self):
-        self.font_value.setText(f'{self.font_slider.value()}%')
-        self.border_value.setText(tr('自动') if self.border_slider.value() == 5 else f'{self.border_slider.value()}%')
         self.saved_label.setText(tr('设置有修改，尚未保存' if self._dirty else '设置已保存'))
 
     def _retranslate(self):
@@ -897,6 +889,15 @@ class Inspector(QWidget):
             del blocker
         self.text_spacing_spin.setSpecialValueText(tr('沿用模板'))
         self.line_spacing_spin.setSpecialValueText(tr('沿用模板'))
+        self.border_slider.setSpecialValueText(tr('自动'))
+        glyph = self.glyph_combo.currentData() or ''
+        blocker = QSignalBlocker(self.glyph_combo)
+        self.glyph_combo.clear()
+        for label, value in (('沿用模板', ''), ('定制几何符号', 'geometric'),
+                             ('标准 Z', 'plain_z'), ('系统字体', 'system')):
+            self.glyph_combo.addItem(tr(label), value)
+        self._set_combo_value(self.glyph_combo, glyph)
+        del blocker
         self._update_frame_options()
         self._update_values()
         self._update_actions()
