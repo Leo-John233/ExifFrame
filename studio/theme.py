@@ -41,6 +41,12 @@ QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QDateTimeEdit { min-height: 22px
 QLineEdit:hover, QComboBox:hover, QSpinBox:hover { border-color: #757575; }
 QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled { color: #7C7C7C; background: #2E2E2E; border-color: #434343; }
 QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus, QSpinBox:focus, QDateTimeEdit:focus { border: 1px solid #8B8C8E; }
+QLineEdit#cameraRawValue { padding: 1px 4px; min-height: 19px; }
+QSlider#cameraRawTrack::groove:horizontal { height: 4px; background: #424345; border-radius: 2px; }
+QSlider#cameraRawTrack::sub-page:horizontal { background: #A0A1A3; border-radius: 2px; }
+QSlider#cameraRawTrack::handle:horizontal { background: #D0D1D2; border: 1px solid #77787A; width: 11px; margin: -5px 0; border-radius: 6px; }
+QSlider#cameraRawTrack::handle:horizontal:hover { background: #F0F0F0; }
+QSlider#cameraRawTrack:disabled::handle:horizontal { background: #737475; }
 QComboBox QAbstractItemView { background: #303030; border: 1px solid #6E6E6E; selection-background-color: #48494B; color: #DDDFE2; padding: 3px; }
 QTreeWidget, QListWidget { background: #202123; border: 1px solid #353638; border-radius: 4px; alternate-background-color: #242527; outline: none; }
 QTreeWidget:focus, QListWidget:focus { border-color: #8B8C8E; }
@@ -124,6 +130,8 @@ class _NativeTitlebarFilter(QObject):
 
 def apply_theme(app: QApplication) -> None:
     """统一深色界面并补足无窗口测试环境的字体"""
+    from .controls import install_no_wheel_filter
+    install_no_wheel_filter(app)
     if os.name == "nt" and not QFontDatabase.families():
         fonts = Path(os.environ.get("SystemRoot", "C:/Windows")) / "Fonts"
         for name in ("msyh.ttc", "msyhbd.ttc", "segoeui.ttf", "consola.ttf", "seguisym.ttf", "cambria.ttc"):
