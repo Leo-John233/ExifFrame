@@ -84,6 +84,14 @@ def _layout(size, style, parameters, inset=False):
 
 def frame_geometry(source_size, ctx):
     """不读取图像，仅计算指定源尺寸对应的画框几何"""
+    if 'custom_frame' in ctx:
+        from processor.custom_frame import custom_geometry, legacy_composite_size
+        frame = ctx.get('custom_frame') or {}
+        if not isinstance(frame, dict):
+            raise ValueError('自定义画框格式无效')
+        size = legacy_composite_size(source_size, ctx) if frame.get('legacy_composite') else source_size
+        return custom_geometry(size, frame, inset=ctx.get('overlay_mode') == 'inset_overlay',
+                               legacy_bottom=ctx.get('bottom_margin'))
     style = ctx.get('frame_style') or 'solid_border'
     if style not in _DEFAULTS:
         raise ValueError(f'未知画框样式：{style}')
@@ -253,6 +261,8 @@ def frame_base(source, ctx, image_id=None):
 def render_frame(source, ctx, image_id=None):
     """统一调度声明式和旧版画框，并共享底板缓存"""
     from processor.core import uses_frame_layers
+    if 'custom_frame' in ctx:
+        return _render_custom_frame(source, ctx, image_id)
     if not uses_frame_layers(ctx):
         if ctx.get('processor_name') == 'watermark_with_timestamp':
             from processor.frame_overlay import draw_timestamp
@@ -278,3 +288,69 @@ def render_frame(source, ctx, image_id=None):
         context.setdefault('right_top', row)
         ctx = context
     return draw_overlay(canvas, source, ctx, layout, image_id)
+
+
+def _render_custom_frame(source, ctx, image_id):
+    """依次组合可缓存底板、装饰和独立文字前景"""
+    import json
+    from copy import deepcopy
+    from processor.core import PipelineContext
+    from processor.custom_frame import custom_base
+    from processor.decorations import decoration_asset_versions, draw_decorations
+    from processor.frame_overlay import draw_overlay, palette_box_for
+
+    frame = ctx.get('custom_frame') or {}
+    if not isinstance(frame, dict):
+        raise ValueError('自定义画框格式无效')
+    working, cache_ctx, cache_id = source, ctx, image_id
+    legacy = bool(frame.get('legacy_composite'))
+    if legacy:
+        previous = {key: deepcopy(value) if isinstance(value, (dict, list))
+                    and key not in {'buffer', 'input_buffer'} else value
+                    for key, value in ctx.items() if key != 'custom_frame'}
+        working = source.copy()
+        previous.update(buffer=[working], buffer_loaded=True)
+        working = render_frame(working, PipelineContext(previous), image_id)
+        cache_ctx = dict(ctx)
+        cache_ctx['_frame_cache_key'] = None
+        cache_id = None
+    canvas, layout, base_key = custom_base(working, cache_ctx, cache_id, palette_source=source)
+    decorations = frame.get('decorations') or []
+    if not isinstance(decorations, list) or not all(isinstance(item, dict) for item in decorations):
+        raise ValueError('装饰图层格式无效')
+    overlay = dict(ctx)
+    if frame.get('legacy_palette_migrated'):
+        enabled = any(item.get('type') == 'palette_bar' and item.get('legacy_palette')
+                      and item.get('enabled', True) for item in decorations)
+        overlay['palette_bar'] = enabled
+        if enabled:
+            layout['legacy_palette_box'] = palette_box_for(overlay, layout)
+            overlay['_skip_legacy_palette_paint'] = True
+    versions = decoration_asset_versions(decorations)
+    draft = bool(ctx.get('_interactive_preview'))
+    options = json.dumps(decorations, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+    geometry_key = (layout['photo_box'], layout['caption_box'], layout['canvas_size'], layout['unit'],
+                    layout['inset_overlay'], layout.get('legacy_palette_box'))
+    decorated_key = ('custom_decorated', base_key, geometry_key, options, versions, draft) if base_key and decorations else None
+    cached = cached_preview_image(decorated_key) if decorated_key else None
+    if (cached is not None and _cache_identity(cache_ctx, cache_id) is not None
+            and decoration_asset_versions(decorations) == versions):
+        canvas = cached
+    elif decorations:
+        canvas = draw_decorations(canvas, source, decorations, layout, image_id, draft=draft)
+        if (decorated_key and _cache_identity(cache_ctx, cache_id) is not None
+                and decoration_asset_versions(decorations) == versions):
+            cache_preview_image(decorated_key, canvas)
+    if legacy:
+        return canvas
+    if ctx.get('processor_name') == 'watermark_with_timestamp':
+        row = {name: ctx[name] for name in ('text_segments', 'text', 'font_path', 'font', 'color',
+                                            'is_bold', 'trim', 'text_spacing', 'text_alignment',
+                                            'char_styles', 'highlight_rules') if name in ctx}
+        row['processor_name'] = 'multi_rich_text' if 'text_segments' in row else 'rich_text'
+        if ctx.get('height_ratio') is not None:
+            row['height_ratio'] = ctx['height_ratio']
+        elif ctx.get('height') is not None:
+            row['height_ratio'] = float(ctx['height']) / layout['unit']
+        overlay.setdefault('right_top', row)
+    return draw_overlay(canvas, source, overlay, layout, image_id)
