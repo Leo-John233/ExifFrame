@@ -88,35 +88,52 @@ def _palette_sample(image):
         sample = background.convert('RGB')
     else:
         sample = sample.convert('RGB')
-    quantized = sample.quantize(colors=5, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
+    return sample
+
+
+def _sample_colors(sample, count):
+    quantized = sample.quantize(colors=count, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
     palette = quantized.getpalette()
     counts = sorted(quantized.getcolors() or [], key=lambda item: (-item[0], item[1]))
     colors = [tuple(palette[index * 3:index * 3 + 3]) for _, index in counts]
     if not colors:
         colors = [(0, 0, 0)]
-    return tuple((colors + [colors[-1]] * 5)[:5])
+    return tuple((colors + [colors[-1]] * count)[:count])
 
 
-def dominant_palette(image, image_id=None):
-    """按原片版本复用五个主色，来源不明时只采样当前图"""
-    if not valid_file_image_id(image_id):
-        return _palette_sample(image)
-    with _palette_lock:
-        if image_id in _palette_cache:
-            _palette_cache.move_to_end(image_id)
-            return _palette_cache[image_id]
+def dominant_palette(image, image_id=None, count=5):
+    """不同颜色数共享同一文件版本的微缩样本"""
     try:
-        with Image.open(image_id[1]) as opened:
-            opened.draft('RGB', (160, 160))
-            opened.thumbnail((160, 160), Image.Resampling.LANCZOS)
-            result = _palette_sample(opened)
-        if not valid_file_image_id(image_id):
-            return _palette_sample(image)
-    except (OSError, ValueError):
-        return _palette_sample(image)
+        count = float(count)
+    except (TypeError, ValueError):
+        raise ValueError('色卡颜色数应为 3 到 8') from None
+    if not count.is_integer() or not 3 <= count <= 8:
+        raise ValueError('色卡颜色数应为 3 到 8')
+    count = int(count)
+    if not valid_file_image_id(image_id):
+        return _sample_colors(_palette_sample(image), count)
+    key = image_id, count
     with _palette_lock:
-        _palette_cache[image_id] = result
-        _palette_cache.move_to_end(image_id)
+        if key in _palette_cache:
+            _palette_cache.move_to_end(key)
+            return _palette_cache[key]
+    sample_key = 'palette_sample', image_id
+    sample = cached_preview_image(sample_key)
+    try:
+        if sample is None:
+            with Image.open(image_id[1]) as opened:
+                opened.draft('RGB', (160, 160))
+                opened.thumbnail((160, 160), Image.Resampling.LANCZOS)
+                sample = _palette_sample(opened)
+            if not valid_file_image_id(image_id):
+                return _sample_colors(_palette_sample(image), count)
+            cache_preview_image(sample_key, sample)
+    except (OSError, ValueError):
+        return _sample_colors(_palette_sample(image), count)
+    result = _sample_colors(sample, count)
+    with _palette_lock:
+        _palette_cache[key] = result
+        _palette_cache.move_to_end(key)
         while len(_palette_cache) > _PALETTE_LIMIT:
             _palette_cache.popitem(last=False)
     return result

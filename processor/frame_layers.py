@@ -295,7 +295,7 @@ def _render_custom_frame(source, ctx, image_id):
     import json
     from copy import deepcopy
     from processor.core import PipelineContext
-    from processor.custom_frame import custom_base
+    from processor.custom_frame import custom_base, plan_custom_base
     from processor.decorations import decoration_asset_versions, draw_decorations
     from processor.frame_overlay import draw_overlay, palette_box_for
 
@@ -314,7 +314,8 @@ def _render_custom_frame(source, ctx, image_id):
         cache_ctx = dict(ctx)
         cache_ctx['_frame_cache_key'] = None
         cache_id = None
-    canvas, layout, base_key = custom_base(working, cache_ctx, cache_id, palette_source=source)
+    plan = plan_custom_base(working, cache_ctx, cache_id)
+    layout, base_key = plan.layout, plan.key
     decorations = frame.get('decorations') or []
     if not isinstance(decorations, list) or not all(isinstance(item, dict) for item in decorations):
         raise ValueError('装饰图层格式无效')
@@ -333,14 +334,17 @@ def _render_custom_frame(source, ctx, image_id):
                     layout['inset_overlay'], layout.get('legacy_palette_box'))
     decorated_key = ('custom_decorated', base_key, geometry_key, options, versions, draft) if base_key and decorations else None
     cached = cached_preview_image(decorated_key) if decorated_key else None
-    if (cached is not None and _cache_identity(cache_ctx, cache_id) is not None
+    if (cached is not None and plan.current(cache_ctx, cache_id)
             and decoration_asset_versions(decorations) == versions):
         canvas = cached
-    elif decorations:
-        canvas = draw_decorations(canvas, source, decorations, layout, image_id, draft=draft)
-        if (decorated_key and _cache_identity(cache_ctx, cache_id) is not None
-                and decoration_asset_versions(decorations) == versions):
-            cache_preview_image(decorated_key, canvas)
+    else:
+        canvas, _, _ = custom_base(working, cache_ctx, cache_id, palette_source=source,
+                                   palette_image_id=image_id, plan=plan)
+        if decorations:
+            canvas = draw_decorations(canvas, source, decorations, layout, image_id, draft=draft)
+            if (decorated_key and plan.current(cache_ctx, cache_id)
+                    and decoration_asset_versions(decorations) == versions):
+                cache_preview_image(decorated_key, canvas)
     if legacy:
         return canvas
     if ctx.get('processor_name') == 'watermark_with_timestamp':

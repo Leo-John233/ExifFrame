@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import math
+import colorsys
+from dataclasses import dataclass
 import os
 from functools import lru_cache
 from pathlib import Path
@@ -41,7 +43,10 @@ def _available_bytes():
 
 
 def _value(data, key, default, low, high):
-    value = float(data.get(key, default))
+    try:
+        value = float(data.get(key, default))
+    except (TypeError, ValueError):
+        raise ValueError(f'{key} 参数超出范围') from None
     if not math.isfinite(value) or not low <= value <= high:
         raise ValueError(f'{key} 参数超出范围')
     return value
@@ -115,9 +120,13 @@ def legacy_custom_frame(node, source_size=None):
                                                   offset_y=parameters['shadow'] / 3,
                                                   opacity=100 / 255)
     if style == 'gallery_mat' and not inset:
-        result['decorations'].append({'type': 'border_line', 'legacy_style': 'gallery_mat', 'enabled': True})
+        result['decorations'].append({'type': 'border_line', 'legacy_style': 'gallery_mat', 'enabled': True,
+                                      'double': True, 'inset': .013, 'width': .001, 'gap': .012,
+                                      'color': '#D2CBC1', 'outer_color': '#A59D91', 'radius': 0})
     if style == 'film_strip' and not inset:
-        result['decorations'].append({'type': 'film_sprockets', 'legacy_style': 'film_strip', 'enabled': True})
+        result['decorations'].append({'type': 'film_sprockets', 'legacy_style': 'film_strip', 'enabled': True,
+                                      'edges': 'horizontal', 'hole_width': .04, 'hole_height': .025,
+                                      'spacing': .035, 'inset': .015, 'color': '#E1DBCD'})
     if node.get('palette_bar'):
         result['decorations'].append({'type': 'palette_bar', 'legacy_palette': True, 'enabled': True})
         result['legacy_palette_migrated'] = True
@@ -302,13 +311,22 @@ def _apply_texture(image, spec, unit, draft):
     tile = _texture_tile(kind, seed)
     edge = max(1, min(2048, round(unit * .20 * scale)))
     tile = tile.resize((edge, edge), Image.Resampling.BILINEAR if draft else Image.Resampling.LANCZOS)
-    texture = Image.new('L', image.size, 128)
-    for y in range(0, image.height, edge):
-        for x in range(0, image.width, edge):
-            texture.paste(tile, (x, y))
+    tile = tile.point(lambda v: 128 + round((v - 128) * opacity))
+    texture = Image.new('L', image.size)
+    texture.paste(tile, (0, 0))
+    # 成倍铺开纹理，长条照片使用很小的颗粒时也无需逐格遍历
+    width, height = min(edge, image.width), min(edge, image.height)
+    while width < image.width:
+        step = min(width, image.width - width)
+        texture.paste(texture.crop((0, 0, step, height)), (width, 0))
+        width += step
+    while height < image.height:
+        step = min(height, image.height - height)
+        texture.paste(texture.crop((0, 0, width, step)), (0, height))
+        height += step
     rgba = image.convert('RGBA')
-    gray = Image.merge('RGBA', (texture, texture, texture, rgba.getchannel('A')))
-    return Image.blend(rgba, gray, opacity * .35)
+    bands = [ImageChops.add(rgba.getchannel(c), texture, offset=-128) for c in 'RGB']
+    return Image.merge('RGBA', (*bands, rgba.getchannel('A')))
 
 
 def _image_background(path, size, fit, draft, fallback):
@@ -346,7 +364,13 @@ def _background(source, size, unit, background, image_id, draft):
     elif kind == 'gradient':
         canvas = _gradient(size, background, draft)
     elif kind == 'auto_dominant':
-        canvas = Image.new('RGBA', size, (*dominant_palette(source, image_id)[0], 255))
+        dominant = dominant_palette(source, image_id)[0]
+        hue, light, saturation = colorsys.rgb_to_hls(*(c / 255 for c in dominant))
+        light = min(1, (.52 + .30 * light) * _value(background, 'brightness', 1, 0, 2))
+        saturation = min(1, .34 * saturation * _value(background, 'saturation', 1, 0, 4))
+        tint = tuple(round(c * 255) for c in colorsys.hls_to_rgb(hue, light, saturation))
+        canvas = Image.new('RGBA', size, (*tint, 255))
+        return _apply_texture(canvas, background.get('texture') or {}, unit, draft)
     elif kind == 'blurred_photo':
         params = {'blur': _value(background, 'blur', .08, 0, 1),
                   'brightness': _value(background, 'brightness', .72, 0, 2),
@@ -423,9 +447,22 @@ def _legacy_glass_surface(spec):
             and _color(shadow.get('color', '#000000')) == (0, 0, 0, 255))
 
 
-def custom_base(source, ctx, image_id=None, *, palette_source=None):
-    """缓存不含装饰和文字的自定义底板"""
-    from processor.frame_layers import _cache_identity, _photo_with_shadow
+@dataclass(frozen=True)
+class BasePlan:
+    layout: dict
+    key: tuple | None
+    identity: tuple | None
+    asset: tuple | None
+
+    def current(self, ctx, image_id):
+        from processor.frame_layers import _cache_identity
+        background = (ctx.get('custom_frame') or {}).get('background') or {}
+        return _cache_identity(ctx, image_id) == self.identity and _asset_version(background) == self.asset
+
+
+def plan_custom_base(source, ctx, image_id):
+    """在复制大图之前确定可复用的最上层底板"""
+    from processor.frame_layers import _cache_identity
     frame = ctx.get('custom_frame') or {}
     if not isinstance(frame, dict):
         raise ValueError('自定义画框格式无效')
@@ -447,8 +484,19 @@ def custom_base(source, ctx, image_id=None, *, palette_source=None):
                          ensure_ascii=False, sort_keys=True, separators=(',', ':'))
     key = ('custom_frame_base', identity, source.size, source.mode, layout['photo_box'],
            layout['canvas_size'], options, asset, draft) if identity else None
+    return BasePlan(layout, key, identity, asset)
+
+
+def custom_base(source, ctx, image_id=None, *, palette_source=None, palette_image_id=None, plan=None):
+    """缓存不含装饰和文字的自定义底板"""
+    from processor.frame_layers import _photo_with_shadow
+    plan = plan or plan_custom_base(source, ctx, image_id)
+    layout, key = plan.layout, plan.key
+    frame = ctx.get('custom_frame') or {}
+    background, surface = frame.get('background') or {}, frame.get('photo_surface') or {}
+    draft = bool(ctx.get('_interactive_preview'))
     cached = cached_preview_image(key) if key else None
-    if cached is not None and _cache_identity(ctx, image_id) == identity and _asset_version(background) == asset:
+    if cached is not None and plan.current(ctx, image_id):
         return cached, layout, key
     texture = background.get('texture') or {}
     blank = (layout['canvas_size'] == source.size and layout['photo_box'] == (0, 0, *source.size)
@@ -460,17 +508,16 @@ def custom_base(source, ctx, image_id=None, *, palette_source=None):
     if blank:
         canvas = source.copy() if source.mode == 'RGBA' else source.convert('RGBA')
     else:
-        canvas = _background(palette_source or source, layout['canvas_size'], layout['unit'], background, image_id, draft)
-    if blank:
-        pass
-    elif _legacy_glass_surface(surface):
-        shadow = surface.get('shadow') or {}
-        _photo_with_shadow(canvas, source, layout['photo_box'], layout['unit'],
-                           float(surface.get('radius', 0)), float(shadow.get('blur', 0)))
-    else:
-        _surface(canvas, source, layout['photo_box'], layout['unit'], surface)
-    if asset is not None and _asset_version(background) != asset:
+        canvas = _background(palette_source or source, layout['canvas_size'], layout['unit'],
+                             background, palette_image_id or image_id, draft)
+        if _legacy_glass_surface(surface):
+            shadow = surface.get('shadow') or {}
+            _photo_with_shadow(canvas, source, layout['photo_box'], layout['unit'],
+                               float(surface.get('radius', 0)), float(shadow.get('blur', 0)))
+        else:
+            _surface(canvas, source, layout['photo_box'], layout['unit'], surface)
+    if plan.asset is not None and _asset_version(background) != plan.asset:
         raise OSError('背景图片在读取期间发生变化，请重试')
-    if key and _cache_identity(ctx, image_id) == identity:
+    if key and plan.current(ctx, image_id):
         cache_preview_image(key, canvas)
     return canvas, layout, key

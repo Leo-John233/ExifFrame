@@ -115,13 +115,11 @@ def _fit(group, box, align):
     return [_move(layer, x, y, scale) for layer in group]
 
 
-def plan_overlay(ctx, layout):
-    """以浮点坐标规划图层，落到画布时才舍入像素边界"""
+def _caption_area(ctx, layout):
     unit = layout['unit']
     left, top, right, bottom = layout['caption_box']
     inset = layout['inset_overlay']
     anchor = ctx.get('inset_anchor', 'bottom_right') if inset else 'bottom'
-    anchor_align = 0 if anchor.endswith('_left') else 1 if anchor.endswith('_right') else .5
     if inset:
         band = min(bottom - top, .16 * unit)
         if anchor.startswith('top'):
@@ -135,13 +133,34 @@ def plan_overlay(ctx, layout):
             else:
                 right = left + width
 
+    return (left, top, right, bottom), anchor
+
+
+def _palette_and_caption(box, unit):
+    left, top, right, bottom = box
+    bottom -= min(unit * .016, (bottom - top) * .08)
+    height = min(unit * .028, (bottom - top) * .23)
+    palette = left, bottom - height, right, bottom
+    return palette, (left, top, right, bottom - height - min(unit * .014, (bottom - top) * .08))
+
+
+def palette_box_for(ctx, layout):
+    box, _ = _caption_area(ctx, layout)
+    return _palette_and_caption(box, layout['unit'])[0]
+
+
+def plan_overlay(ctx, layout):
+    """以浮点坐标规划图层，落到画布时才舍入像素边界"""
+    unit = layout['unit']
+    inset = layout['inset_overlay']
+    box, anchor = _caption_area(ctx, layout)
+    anchor_align = 0 if anchor.endswith('_left') else 1 if anchor.endswith('_right') else .5
     layers = []
     if ctx.get('palette_bar'):
-        bottom -= min(unit * .016, (bottom - top) * .08)
-        height = min(unit * .028, (bottom - top) * .23)
-        layers.append(Layer('palette', (left, bottom - height, right, bottom)))
-        bottom -= height + min(unit * .014, (bottom - top) * .08)
-    box = left, top, right, bottom
+        palette, box = _palette_and_caption(box, unit)
+        if not ctx.get('_skip_legacy_palette_paint'):
+            layers.append(Layer('palette', palette))
+    left, top, right, bottom = box
     gap = .021 * unit
     line_gap = max(0, float(ctx.get('middle_spacing', .012 * unit)))
     scale = watermark_scale(ctx)
