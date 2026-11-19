@@ -197,10 +197,22 @@ def normalize_changes(changes: dict[str, str]) -> dict[str, str]:
     return result
 
 
+def normalize_watermark_changes(changes: dict[str, str]) -> dict[str, str]:
+    """校验水印信息并允许不写入原片的地名"""
+    values = normalize_changes({tag: value for tag, value in changes.items() if tag != 'Location'})
+    raw = changes.get('Location')
+    location = '' if raw is None else str(raw).strip()
+    if '\x00' in location:
+        raise MetadataError('invalid_value', 'Location')
+    if location:
+        values['Location'] = location
+    return values
+
+
 def merge_overrides(metadata: dict, changes: dict) -> dict:
     """把可编辑字段同步到原水印模板使用的别名"""
     result = dict(metadata)
-    values = normalize_changes(changes)
+    values = normalize_watermark_changes(changes)
     aliases = {'Model': ('CameraModelName',), 'ExposureTime': ('ShutterSpeed', 'ShutterSpeedValue'),
                'FNumber': ('Aperture', 'ApertureValue', 'AperatureValue'),
                'DateTimeOriginal': ('SubSecDateTimeOriginal',), 'CreateDate': ('SubSecCreateDate',)}

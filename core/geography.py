@@ -104,7 +104,10 @@ def _display_coordinate(value, latitude):
 
 
 def format_location(metadata: dict) -> str:
-    """只在经纬度完整有效时显示一项位置，避免留下半组坐标"""
+    """优先显示会话地名，否则仅在经纬度完整时显示位置"""
+    location = str(metadata.get('Location') or '').replace('\x00', '').strip()
+    if location:
+        return location
     latitude = coordinate_degrees(metadata.get('GPSLatitude'), metadata.get('GPSLatitudeRef'), latitude=True)
     longitude = coordinate_degrees(metadata.get('GPSLongitude'), metadata.get('GPSLongitudeRef'), latitude=False)
     if latitude is None or longitude is None:
