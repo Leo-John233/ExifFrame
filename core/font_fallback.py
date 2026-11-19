@@ -8,6 +8,7 @@ from bisect import bisect_left
 from collections import OrderedDict
 from contextlib import contextmanager
 from functools import lru_cache
+from io import BytesIO
 from itertools import count
 from pathlib import Path
 from queue import LifoQueue
@@ -49,6 +50,14 @@ def pooled_fonts():
         _font_pool.put(state)
 
 
+def _font_from_file(path):
+    """从内存加载字体，允许用户替换仍在缓存中的字体文件"""
+    path = Path(path)
+    font = ImageFont.truetype(BytesIO(path.read_bytes()), BASE_FONT_SIZE)
+    font.path = str(path)
+    return font
+
+
 def _load_font(font_path):
     """沿用原字体加载与回退顺序"""
     try:
@@ -56,10 +65,11 @@ def _load_font(font_path):
             font_file = Path(font_path)
             if not font_file.is_absolute():
                 font_file = fonts_dir / font_path
-            return ImageFont.truetype(str(font_file), BASE_FONT_SIZE)
+            return _font_from_file(font_file)
         for fallback in (fonts_dir / 'AlibabaPuHuiTi-2-45-Light.otf', 'arial.ttf', 'Arial.ttf', 'DejaVuSans.ttf'):
             try:
-                return ImageFont.truetype(fallback, BASE_FONT_SIZE)
+                return (_font_from_file(fallback) if Path(fallback).is_file()
+                        else ImageFont.truetype(fallback, BASE_FONT_SIZE))
             except OSError:
                 continue
         return ImageFont.load_default()
