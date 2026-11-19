@@ -123,6 +123,7 @@ class FileBrowser(QWidget):
                                      ("取消全选", lambda: self.select_all(False)),
                                      ("反选", self.invert_selection)):
                     button = QPushButton(text)
+                    button.clicked.connect(lambda checked=False: self.user_navigated.emit('import'))
                     button.clicked.connect(action)
                     controls.addWidget(button)
                 layout.addLayout(controls)
@@ -423,7 +424,7 @@ class FileBrowser(QWidget):
         if tree_kind is not None and event.type() == QEvent.Type.KeyPress:
             if event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_Left, Qt.Key.Key_Right,
                                Qt.Key.Key_Home, Qt.Key.Key_End, Qt.Key.Key_PageUp, Qt.Key.Key_PageDown,
-                               Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                               Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
                 self.user_navigated.emit(tree_kind)
         kind = self._viewports.get(watched)
         if kind is not None:
