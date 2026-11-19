@@ -334,14 +334,13 @@ def start_process(data: List[dict], input_path: str = None, output_path: str = N
         paths = [input_path] if input_path is not None else nodes[0].get('buffer_path', [])
         if isinstance(paths, (tuple, list)) and len(paths) == 1:
             source_id = file_image_id(paths[0])
-    all_ids = [[source_id] if len(output) == 1 else [None] * len(output)] if frame_provenance else None
-    if all_ids is not None and source_id is not None and len(output) == 1:
-        source_stage = (preview_source_key if _source_identity(preview_source_key) == source_id else
-                        ('source', *source_id[1:], output[0].size, output[0].mode, 'input'))
-        all_stages = [[source_stage]]
-    else:
-        source_stage = None
-        all_stages = [[None] * len(output)] if all_ids is not None else None
+    source_stage = None
+    all_stages = None
+    if frame_provenance:
+        if source_id is not None and len(output) == 1:
+            source_stage = (preview_source_key if _source_identity(preview_source_key) == source_id else
+                            ('source', *source_id[1:], output[0].size, output[0].mode, 'input'))
+        all_stages = [[source_stage] if len(output) == 1 else [None] * len(output)]
     all_keys = None
     if preview_source_key is not None:
         initial_keys = [preview_source_key] if len(output) == 1 else [None] * len(output)
@@ -367,16 +366,13 @@ def start_process(data: List[dict], input_path: str = None, output_path: str = N
                 else:
                     input_keys = ([preview_source_key] if node.get('_preview_source_input', False)
                                   and len(node['input_buffer']) == 1 else [None] * len(node['input_buffer']))
-            if all_ids is not None:
+            if all_stages is not None:
                 supplied = node.get('_preview_input_keys')
                 if supplied is not None and len(supplied) == len(node['input_buffer']):
-                    input_ids = [_source_identity(item) for item in supplied]
                     input_stages = [item if _source_identity(item) is not None else None for item in supplied]
                 elif node.get('_preview_source_input', False) and len(node['input_buffer']) == 1:
-                    input_ids = [source_id]
                     input_stages = [source_stage]
                 else:
-                    input_ids = [None] * len(node['input_buffer'])
                     input_stages = [None] * len(node['input_buffer'])
         elif 'select' in node:
             indexes = json.loads(node['select'])
@@ -384,8 +380,7 @@ def start_process(data: List[dict], input_path: str = None, output_path: str = N
             node.update_buffer(flattened)
             if all_keys is not None:
                 input_keys = list(chain.from_iterable([all_keys[i] for i in indexes]))
-            if all_ids is not None:
-                input_ids = list(chain.from_iterable([all_ids[i] for i in indexes]))
+            if all_stages is not None:
                 input_stages = list(chain.from_iterable([all_stages[i] for i in indexes]))
         else:
             # 使用 category() 方法判断是否为 merger，避免导入 Merger 类
@@ -393,8 +388,7 @@ def start_process(data: List[dict], input_path: str = None, output_path: str = N
                 node.update_buffer(output)
                 if all_keys is not None:
                     input_keys = all_keys[-1][:]
-                if all_ids is not None:
-                    input_ids = all_ids[-1][:]
+                if all_stages is not None:
                     input_stages = all_stages[-1][:]
             else:
                 # 收集下标从上一个 merger 之后, 到当前 idx 为止的 buffer
@@ -405,32 +399,29 @@ def start_process(data: List[dict], input_path: str = None, output_path: str = N
                 node.update_buffer(flattened)
                 if all_keys is not None:
                     input_keys = list(chain.from_iterable(all_keys[last_merger_idx + 1:idx + 1]))
-                if all_ids is not None:
-                    input_ids = list(chain.from_iterable(all_ids[last_merger_idx + 1:idx + 1]))
+                if all_stages is not None:
                     input_stages = list(chain.from_iterable(all_stages[last_merger_idx + 1:idx + 1]))
                 last_merger_idx = idx
 
-        if all_ids is not None:
+        if all_stages is not None:
             paths = node.get('buffer_path')
             if paths and not node.get('buffer_loaded', False) and isinstance(paths, (tuple, list)):
-                input_ids = [file_image_id(path) for path in paths]
-                input_stages = input_ids[:]
+                input_stages = [file_image_id(path) for path in paths]
             provenance_inputs = node.get('buffer', [])
             if node.get_processor_name() in {'watermark', 'watermark_with_timestamp'}:
-                node['_frame_image_id'] = input_ids[0] if len(input_ids) == 1 else None
-                node['_frame_cache_key'] = input_stages[0] if len(input_stages) == 1 else None
+                stage = input_stages[0] if len(input_stages) == 1 else None
+                node['_frame_image_id'] = _source_identity(stage)
+                node['_frame_cache_key'] = stage
             derived_stage = _preview_filter_key(processor, node, input_stages)
 
         if all_keys is None:
             processor_instance.process(node)
             check_cancelled(cancelled)
             output = node.get_buffer()
-            if all_ids is not None:
+            if all_stages is not None:
                 if 'preview_cache_params' not in processor.__dict__:
-                    _clear_identities(all_buffer, all_ids, provenance_inputs)
                     _clear_identities(all_buffer, all_stages, provenance_inputs)
-                trusted = derived_stage is not None and len(input_ids) == 1 and len(output) == 1
-                all_ids.append([input_ids[0]] if trusted else [None] * len(output))
+                trusted = derived_stage is not None and len(output) == 1
                 all_stages.append([derived_stage] if trusted else [None] * len(output))
             all_buffer.append(output)
             continue
@@ -460,18 +451,12 @@ def start_process(data: List[dict], input_path: str = None, output_path: str = N
                 key = None
         if key is None and preview_source_key is not None:
             # 其他处理器可能原位修改输入，清除所有相同对象的缓存身份
-            changed = {id(image) for image in input_images}
-            for images, keys in zip(all_buffer, all_keys):
-                for item_index, image in enumerate(images):
-                    if id(image) in changed:
-                        keys[item_index] = None
-            if all_ids is not None:
-                _clear_identities(all_buffer, all_ids, input_images)
+            _clear_identities(all_buffer, all_keys, input_images)
+            if all_stages is not None:
                 _clear_identities(all_buffer, all_stages, input_images)
         output = node.get_buffer()
-        if all_ids is not None:
-            trusted = derived_stage is not None and len(input_ids) == 1 and len(output) == 1
-            all_ids.append([input_ids[0]] if trusted else [None] * len(output))
+        if all_stages is not None:
+            trusted = derived_stage is not None and len(output) == 1
             all_stages.append([derived_stage] if trusted else [None] * len(output))
         all_buffer.append(output)
         all_keys.append([key] if key is not None and len(output) == 1 else [None] * len(output))
