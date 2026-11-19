@@ -143,6 +143,22 @@ def bind_static_texts(root, exclude=()):
                 bind(item, source, setter)
 
 
+def region_title(region, number=None) -> str:
+    """统一显示普通区域、独立文字与多水印区域"""
+    from core.footer import REGION_LABELS
+
+    if region in REGION_LABELS:
+        return tr(REGION_LABELS[region] + '区域')
+    match = re.fullmatch(r'watermark_([0-9]+)_(left_top|left_bottom|right_top|right_bottom)', str(region))
+    if match:
+        return tr('水印 {number} · {region}', number=int(match.group(1)),
+                  region=tr(REGION_LABELS[match.group(2)] + '区域'))
+    match = re.fullmatch(r'text_([0-9]+)', str(region))
+    if match:
+        return tr('文字区域 {number}', number=int(match.group(1)) + 1)
+    return tr('文字区域 {number}', number=number) if number is not None else str(region)
+
+
 def localize_error(error) -> str:
     """翻译应用错误片段并保留路径和模板源码中的用户文本"""
     if isinstance(error, json.JSONDecodeError):
@@ -186,6 +202,40 @@ register_translations({
     '导出已选 ({count})': 'Export selected ({count})',
     '导出当前照片，原文件保持不变（Ctrl+R）': 'Export the current photo without changing the original (Ctrl+R)',
     '选择一张输入照片或勾选要导出的照片': 'Select an input photo or check photos to export',
+    '逐字样式': 'Character styling',
+    '选择字符': 'Select characters',
+    '选择照片后显示文字': 'Select a photo to display text',
+    '已选 {count} 个字符': '{count} characters selected',
+    '自定义颜色…': 'Custom color…',
+    '字符字体': 'Character font',
+    '跟随整段': 'Use segment font',
+    '应用字体': 'Apply font',
+    '清除选中样式': 'Clear selected styles',
+    '清除本行样式': 'Clear row styles',
+    '清除本行全部样式': 'Clear all row styles',
+    '徕卡红': 'Leica red',
+    '哈苏橙': 'Hasselblad orange',
+    '尼康黄': 'Nikon yellow',
+    '富士绿': 'Fujifilm green',
+    '灰色': 'Gray',
+    '白色': 'White',
+    '黑色': 'Black',
+    '规则高亮': 'Highlight rules',
+    '正则表达式': 'Regular expression',
+    '按选中文字添加': 'Add selected text',
+    '添加规则': 'Add rule',
+    '删除规则': 'Remove rule',
+    '无高亮规则': 'No highlight rules',
+    '规则高亮需单独删除': 'Remove highlight rules separately',
+    '请选择连续文字': 'Select contiguous text',
+    '正则表达式无效': 'Invalid regular expression',
+    '单字样式必须是对象': 'Character styles must be an object',
+    '单字颜色应使用 #RRGGBB': 'Character colors must use #RRGGBB',
+    '单字字体应为字体名称或路径': 'Character fonts must be a font name or path',
+    '单字索引应为非负整数': 'Character indexes must be non-negative integers',
+    '高亮规则必须是列表': 'Highlight rules must be a list',
+    '请输入匹配表达式': 'Enter a matching expression',
+    '匹配表达式无效': 'Invalid matching expression',
     '样式已应用到当前照片': 'Style applied to the current photo',
     '样式已同步到 {count} 张照片': 'Style synced to {count} photos',
     '已向 {count} 张照片应用 {fields} 个字段': 'Applied {fields} fields to {count} photos',
@@ -261,6 +311,7 @@ register_translations({
     '删除': 'Remove',
     '区域内分隔符': 'Separator in this region',
     '文字区域 {number}': 'Text region {number}',
+    '水印 {number} · {region}': 'Watermark {number} · {region}',
     '左上': 'Top left',
     '左下': 'Bottom left',
     '右上': 'Top right',
@@ -389,6 +440,8 @@ register_translations({
 
 
 _ERROR_SOURCES = {
+    '单字样式必须是对象', '单字颜色应使用 #RRGGBB', '单字字体应为字体名称或路径',
+    '单字索引应为非负整数', '高亮规则必须是列表', '请输入匹配表达式', '匹配表达式无效',
     "当前模板需要使用高级源码编辑", "模板中没有可组合的文字区域", "底部信息区域无效", "标识位置无效",
     "缺失值处理方式无效", "分隔符过长", "每个区域最多放置 32 项信息", "底部信息字段无效", "自定义文字过长",
     "文字区必须保留在原有版式内", "底部空间不足以容纳水印内容",
