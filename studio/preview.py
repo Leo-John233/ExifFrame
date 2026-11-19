@@ -108,13 +108,41 @@ class _PreviewTask(QRunnable):
 class _PreviewTasks(QObject):
     """任务由应用持有，关闭编辑窗口无需等待当前图像处理"""
 
+    background_ready = Signal()
+
     def __init__(self, app):
         super().__init__(app)
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(2)
         self.jobs = {}
         self._serial = 0
+        self.pause_background = Event()
+        self._busy = set()
+        self._idle_timer = QTimer(self)
+        self._idle_timer.setSingleShot(True)
+        self._idle_timer.setInterval(250)
+        self._idle_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._idle_timer.timeout.connect(self._resume_background)
         app.aboutToQuit.connect(self.cancel_all)
+
+    def hold(self, owner):
+        self._busy.add(id(owner))
+        self._idle_timer.stop()
+        self.pause_background.set()
+
+    def release(self, owner):
+        self.release_key(id(owner))
+
+    def release_key(self, key):
+        self._busy.discard(key)
+        if not self._busy and self.pause_background.is_set():
+            self._idle_timer.start()
+
+    @Slot()
+    def _resume_background(self):
+        if not self._busy:
+            self.pause_background.clear()
+            self.background_ready.emit()
 
     def create(self, version, path, settings, owner_stopped, full_resolution=False, original_only=False):
         self._serial += 1
@@ -122,6 +150,7 @@ class _PreviewTasks(QObject):
         job = _PreviewTask(self._serial, version, path, settings, owner_stopped, signals,
                            full_resolution, original_only)
         self.jobs[job.job_id] = job
+        self.hold(job)
         signals.finished.connect(self._release)
         return job
 
@@ -129,6 +158,7 @@ class _PreviewTasks(QObject):
     def _release(self, job_id):
         job = self.jobs.pop(job_id, None)
         if job is not None:
+            self.release(job)
             job.signals.deleteLater()
 
     @Slot()
@@ -234,6 +264,7 @@ class TemplatePreview(QWidget):
         translator.language_changed.connect(self._retranslate)
         # 控件销毁也会置取消标记，避免调用方遗漏 shutdown 时继续投递结果
         self.destroyed.connect(lambda *args, stopped=self._stopped: stopped.set())
+        self.destroyed.connect(lambda *args, owner=self._owner, key=id(self): owner.release_key(key))
         self._show_image(None)
         self.set_photo(photo_path)
         self._retranslate()
@@ -308,6 +339,7 @@ class TemplatePreview(QWidget):
         self._valid_source = False
         self._pending = False
         self.timer.stop()
+        self._owner.release(self)
         self._set_status('模板有误，保留上次预览：{error}', error=message)
         self._retranslate()
 
@@ -333,6 +365,7 @@ class TemplatePreview(QWidget):
 
     def _invalidate(self):
         # 代次递增与取消标记同步，后台据此丢弃旧任务
+        self._owner.hold(self)
         self._render_revision_id += 1
         self._hq_pending = self._hq_ready = False
         if self._active is not None:
@@ -348,7 +381,9 @@ class TemplatePreview(QWidget):
         else:
             self._set_status('正在更新照片预览…')
             if not self._suspended:
-                self.timer.start()
+                self.timer.start(80)
+        if not self._pending or self._suspended:
+            self._owner.release(self)
 
     @Slot()
     def _start_latest(self):
@@ -365,6 +400,7 @@ class TemplatePreview(QWidget):
         task.signals.result.connect(self._result)
         task.signals.error.connect(self._error)
         task.signals.finished.connect(self._finished)
+        self._owner.release(self)
         self._owner.pool.start(task)
 
     @Slot(int, object, object, str, str, bool)
@@ -399,6 +435,7 @@ class TemplatePreview(QWidget):
             if self._hq_pending:
                 self._hq_pending = self._pending = False
                 self.timer.stop()
+                self._owner.release(self)
             return
         if (self._closed or self._suspended or not self._valid_source or not self._photo_path
                 or self._hq_ready or self._hq_pending or self._pending
@@ -406,7 +443,8 @@ class TemplatePreview(QWidget):
                     and self._active.full_resolution)):
             return
         self._hq_pending = self._pending = True
-        self.timer.start()
+        self._owner.hold(self)
+        self.timer.start(80)
 
     def _request_original(self):
         if self._closed or self._suspended or not self._photo_path:
@@ -449,12 +487,14 @@ class TemplatePreview(QWidget):
             self._invalidate()
             self.timer.stop()
             self._pending = bool(self._photo_path and self._valid_source)
+        self._owner.release(self)
 
     def resume(self):
         if self._closed or not self._suspended:
             return
         self._suspended = False
         if self._pending:
+            self._owner.hold(self)
             self._request()
         if self.view.comparing_original:
             self._request_original()
@@ -506,6 +546,7 @@ class TemplatePreview(QWidget):
             return
         self._closed = True
         self._stopped.set()
+        self._owner.release(self)
         self._render_revision_id += 1
         self._pending = False
         self.timer.stop()

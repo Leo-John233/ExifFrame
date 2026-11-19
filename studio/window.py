@@ -6,7 +6,7 @@ import os
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
-from threading import Event
+from threading import Event, Lock
 
 from PySide6.QtCore import QRunnable, QSize, Qt, QThreadPool, QTimer, QUrl, Slot
 from PySide6.QtGui import QAction, QActionGroup, QColor, QDesktopServices, QIcon, QKeySequence, QPainter, QPixmap
@@ -24,10 +24,19 @@ from core.desktop_service import (
 from .about import AboutDialog
 from .canvas import ImageCanvas, is_full_image
 from .files import FileBrowser
-from .i18n import bind_static_texts, install_qt_translations, language, localize_error, set_language, tr, translator
+from .i18n import bind_static_texts, install_qt_translations, language, localize_error, register_translations, set_language, tr, translator
 from .template_editor import TemplateEditor
 from .workers import ImageTask, WorkerSignals
 from .pixmaps import TemplateThumbnail
+
+
+register_translations({
+    '正在读取照片…': 'Loading photo…',
+    '导出当前照片': 'Export current photo',
+    '导出已选 ({count})': 'Export selected ({count})',
+    '导出当前照片，原文件保持不变（Ctrl+R）': 'Export the current photo without changing the original (Ctrl+R)',
+    '选择一张输入照片或勾选要导出的照片': 'Select an input photo or check photos to export',
+})
 
 
 class FooterMetadataTask(QRunnable):
@@ -47,11 +56,14 @@ class FooterMetadataTask(QRunnable):
                 path = self.paths[0].resolve()
                 info = path.stat()
                 modified, size = info.st_mtime_ns, info.st_size
+                if self.cancel.is_set():
+                    return
                 metadata = _metadata(str(path), modified)
                 if not self.cancel.is_set():
                     self.signals.result.emit(self.kind, self.token, (path, modified, size, metadata))
         except Exception as exc:
-            self.signals.error.emit(self.kind, self.token, str(exc))
+            if not self.cancel.is_set():
+                self.signals.error.emit(self.kind, self.token, str(exc))
         finally:
             self.signals.finished.emit(self.kind, self.token)
 
@@ -96,6 +108,7 @@ class MainWindow(QMainWindow):
         self._preview_error = ""
         self._metadata_close_job = None
         self._footer_metadata = {}
+        self._footer_metadata_pending = False
         self._active_wizard = None
         self._completion_refresh = None
         self._export_finish_message = None
@@ -103,12 +116,31 @@ class MainWindow(QMainWindow):
         self._watermark_image = None
         self._watermark_signature = None
         self._render_signature = None
+        from .preview import _task_owner
+        self._priority = _task_owner()
+        self._priority.background_ready.connect(self._start_visible_thumbnails)
+        self._background_io_lock = Lock()
+        self._scan_tokens = {}
+        self._selection_revision = 0
+        self._auto_selecting = False
+        self._latest_manual_import = None
+        self._visible_paths = {'import': (), 'output': ()}
+        self._thumbnail_task = None
+        self._thumbnail_failed = set()
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(2)
+        self.scan_pool = QThreadPool(self)
+        self.scan_pool.setMaxThreadCount(1)
+        self.thumbnail_pool = QThreadPool(self)
+        self.thumbnail_pool.setMaxThreadCount(1)
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
         self.timer.setInterval(80)
         self.timer.timeout.connect(self._render_preview)
+        self._idle_check = QTimer(self)
+        self._idle_check.setSingleShot(True)
+        self._idle_check.setInterval(80)
+        self._idle_check.timeout.connect(self._release_preview_if_idle)
         self._build_actions()
         self._build_ui()
         # 固定控件绑定一次，动态内容在语言信号到达后原地更新
@@ -213,6 +245,10 @@ class MainWindow(QMainWindow):
         self.files.file_selected.connect(self._file_selected)
         self.files.selection_changed.connect(self._update_actions)
         self.files.selection_changed.connect(self._queue_selection_changed)
+        self.files.user_navigated.connect(self._user_navigated)
+        self.files.visible_paths_invalidated.connect(self._visible_paths_invalidated)
+        self.files.visible_paths_changed.connect(self._visible_paths_changed)
+        self.files.file_details_changed.connect(self._file_details_changed)
         self.files.clear_requested.connect(self._clear_photos)
         self.input_tree, self.output_tree = self.files.input_tree, self.files.output_tree
         self.input_input, self.output_input = self.files.input_path, self.files.output_path
@@ -665,10 +701,15 @@ class MainWindow(QMainWindow):
 
     def _scan_directory(self, kind, folder):
         """刷新目录前取消旧扫描以丢弃迟到的文件信号"""
+        if kind == 'import':
+            self._latest_manual_import = None
         for task in self._tasks.values():
             if task.kind == kind:
                 task.cancel.set()
         self.files.begin_scan(kind, folder)
+        self._thumbnail_failed = {item for item in self._thumbnail_failed if item[0] != kind}
+        if self._thumbnail_task is not None and self._thumbnail_task.browser_kind == kind:
+            self._thumbnail_task.cancel.set()
         if self._current_kind == kind:
             self._current_data = None
             self._invalidate_preview()
@@ -678,7 +719,14 @@ class MainWindow(QMainWindow):
             self._comparison_full = self._comparison_upgrade = False
             self.photo_view.set_image(None)
             self.canvas_name.setText(tr("预览"))
-        task = self._start_task(kind, paths=[Path(folder)], settings=replace(self.settings))
+        scan_settings = replace(self.settings, metadata_overrides={}, input_files=(), protected_sources=())
+        task = self._start_task(kind, paths=[Path(folder)], settings=scan_settings, batch_size=8,
+                                pause=self._priority.pause_background, io_lock=self._background_io_lock)
+        task.restore_checks = kind == 'import'
+        task.manual_import = False
+        task.select_first = True
+        task.selection_revision = self._selection_revision
+        self._scan_tokens[kind] = task.token
         self._update_actions()
         return task
 
@@ -686,14 +734,19 @@ class MainWindow(QMainWindow):
         self._load_directories()
 
     def add_paths(self, paths):
-        """手动添加与拖入均在后台解码缩略图"""
+        """手动添加与拖入均在后台扫描"""
         if self._exporting or self._closing:
             return
-        accepted = [Path(path) for path in paths if Path(path).is_dir() or Path(path).suffix.lower() in SUPPORTED_SUFFIXES]
-        known = self.files.items["import"]
-        accepted = [path for path in accepted if os.path.normcase(str(path.resolve())) not in known]
+        accepted = [Path(path) for path in paths if path]
         if accepted:
-            self._start_task("import", paths=accepted, settings=replace(self.settings))
+            scan_settings = replace(self.settings, metadata_overrides={}, input_files=(), protected_sources=())
+            task = self._start_task("import", paths=accepted, settings=scan_settings, batch_size=8,
+                                    pause=self._priority.pause_background, io_lock=self._background_io_lock)
+            task.restore_checks = False
+            task.manual_import = True
+            task.select_first = True
+            task.selection_revision = self._selection_revision
+            self._latest_manual_import = task.token
             self._update_actions()
 
     def _clear_photos(self):
@@ -703,7 +756,10 @@ class MainWindow(QMainWindow):
         for task in self._tasks.values():
             if task.kind == "import":
                 task.cancel.set()
-        self.files.begin_scan("import", self.files.roots["import"])
+        self._latest_manual_import = None
+        if self._thumbnail_task is not None and self._thumbnail_task.browser_kind == 'import':
+            self._thumbnail_task.cancel.set()
+        self.files.begin_scan("import", self.files.roots["import"], preserve_checks=False)
         if self._current_kind == "import":
             self._file_selected("import", None)
         self._set_status("输入队列已清空")
@@ -714,13 +770,123 @@ class MainWindow(QMainWindow):
 
     @Slot(int, object)
     def _import_item(self, token, data):
-        task = next((task for (kind, key), task in self._tasks.items() if key == token and kind in ("import", "output")), None)
+        task = next((task for (kind, key), task in self._tasks.items()
+                     if key == token and kind in ("import", "output", "thumbnail")), None)
         if self._closing or not task or task.cancel.is_set():
             return
-        self.files.add_file(task.kind, data)
+        if task.kind == 'thumbnail':
+            path, image, width, height, signature = data
+            key = os.path.normcase(os.path.abspath(path))
+            if self.files.update_file(task.browser_kind, path, image, width, height, signature,
+                                      task.item_tokens.get(key)):
+                task.received.add(key)
+            return
+        self._add_scan_items(task, (data,))
+
+    @Slot(int, object)
+    def _import_batch(self, token, items):
+        task = next((task for (kind, key), task in self._tasks.items()
+                     if key == token and kind in ('import', 'output')), None)
+        if not self._closing and task is not None and not task.cancel.is_set():
+            self._add_scan_items(task, items)
+
+    def _add_scan_items(self, task, items):
+        kind = task.kind
+        added = self.files.add_files(kind, items, restore_checks=task.restore_checks)
+        for path in added:
+            self._thumbnail_failed.discard((kind, os.path.normcase(os.path.abspath(path))))
+        first = added[0] if added else None
+        if first is not None and task.select_first:
+            task.select_first = False
+            older_manual = (kind == 'import' and task.manual_import
+                            and task.token != self._latest_manual_import)
+            if older_manual and self.input_tree.currentItem() is not None:
+                return
+            if task.selection_revision == self._selection_revision:
+                item = self.files.items[kind].get(os.path.normcase(os.path.abspath(first)))
+                if item is not None:
+                    self._auto_selecting = True
+                    try:
+                        if kind == 'import':
+                            self.files.tabs.setCurrentIndex(0)
+                        self.files.trees[kind].setCurrentItem(item)
+                    finally:
+                        self._auto_selecting = False
+
+    @Slot(str)
+    def _user_navigated(self, kind):
+        self._selection_revision += 1
+
+    @Slot(str)
+    def _visible_paths_invalidated(self, kind):
+        self._visible_paths[kind] = ()
+        if self._thumbnail_task is not None:
+            self._thumbnail_task.cancel.set()
+
+    @Slot(str, object)
+    def _visible_paths_changed(self, kind, paths):
+        self._visible_paths[kind] = tuple(paths)
+        task = self._thumbnail_task
+        current_kind = 'import' if self.files.tabs.currentIndex() == 0 else 'output'
+        wanted = {os.path.normcase(os.path.abspath(path)) for path in self._visible_paths[current_kind]}
+        if task is not None and (task.browser_kind != current_kind
+                                 or any(os.path.normcase(os.path.abspath(path)) not in wanted for path in task.paths)):
+            task.cancel.set()
+        self._start_visible_thumbnails()
+
+    @Slot(str, object)
+    def _file_details_changed(self, kind, data):
+        if not self._current_data or kind != self._current_kind or data[0] != self._current_data[0]:
+            return
+        self._current_data = data
+        if not self._rendering and not self._preview_error and not self.photo_view.photo.pixmap().isNull():
+            _, width, height = data
+            mode = '输出文件' if kind == 'output' else '原图' if self.original_toggle.isChecked() else '水印预览'
+            self._set_preview_status('{mode} · {width} × {height}', mode=mode, width=width, height=height)
+
+    @Slot(str, int, object)
+    def _task_dimensions(self, kind, token, data):
+        task = self._tasks.get((kind, token))
+        if self._closing or task is None or task.cancel.is_set() or not self._current_data:
+            return
+        if kind in ('preview', 'original') and token != self._render_revision_id:
+            return
+        if kind == 'comparison' and task is not self._comparison_task:
+            return
+        path, width, height = data
+        if path == self._current_data[0]:
+            self.files.update_dimensions(self._current_kind, path, width, height)
+
+    @Slot()
+    def _start_visible_thumbnails(self):
+        if (self._closing or self._exporting or self._priority.pause_background.is_set()
+                or self._thumbnail_task is not None or not hasattr(self, 'files')):
+            return
+        kind = 'import' if self.files.tabs.currentIndex() == 0 else 'output'
+        paths = []
+        for path in self._visible_paths[kind]:
+            key = (kind, os.path.normcase(os.path.abspath(path)))
+            if key not in self._thumbnail_failed and self.files.needs_thumbnail(kind, path):
+                paths.append(path)
+                if len(paths) == 8:
+                    break
+        if not paths:
+            return
+        task = self._start_task('thumbnail', paths=paths, pause=self._priority.pause_background,
+                                io_lock=self._background_io_lock)
+        task.browser_kind = kind
+        task.received = set()
+        task.item_tokens = {os.path.normcase(os.path.abspath(path)): self.files.item_token(kind, path)
+                            for path in paths}
+        self._thumbnail_task = task
 
     @Slot(str, object)
     def _file_selected(self, kind, data):
+        if not self._auto_selecting:
+            self._selection_revision += 1
+        for task in self._tasks.values():
+            if task.kind == 'footer_metadata' and (not data or task.paths[0] != data[0]):
+                task.cancel.set()
         self._current_kind, self._current_data = kind, data
         if self._comparison_task is not None:
             self._comparison_task.cancel.set()
@@ -743,8 +909,11 @@ class MainWindow(QMainWindow):
         self.original_toggle.setEnabled(kind == "import")
         self.original_action.setEnabled(kind == "import")
         self.photo_view.set_image(None)
-        self._set_preview_status("{width} × {height} · {mode}", width=width, height=height,
-                                 mode="输出文件" if kind == "output" else "输入文件")
+        if width and height:
+            self._set_preview_status("{width} × {height} · {mode}", width=width, height=height,
+                                     mode="输出文件" if kind == "output" else "输入文件")
+        else:
+            self._set_preview_status("正在读取照片…")
         self._update_actions()
         if kind == "import" and self._visible_footer_editors():
             self._ensure_watermark_mode()
@@ -847,10 +1016,12 @@ class MainWindow(QMainWindow):
         # 先递增代次以阻止去抖等待期间旧图片覆盖当前选择
         self._invalidate_preview()
         self._pending = True
-        self.timer.start()
+        self.timer.start(80)
 
     def _invalidate_preview(self):
         # 代次递增与取消标记同步，后台据此丢弃旧任务
+        self._priority.hold(self)
+        self._idle_check.start()
         self._render_revision_id += 1
         self._hq_pending = self._hq_ready = False
         for task in self._tasks.values():
@@ -858,6 +1029,13 @@ class MainWindow(QMainWindow):
                 task.cancel.set()
         self._pending = False
         self.timer.stop()
+
+    def _release_preview_if_idle(self):
+        if not self._pending and not self.timer.isActive():
+            if self._context_pending:
+                self._context_pending = False
+                self._sync_template_context(immediate=True)
+            self._priority.release(self)
 
     def _preview_zoom_changed(self, zoom, view=None):
         view = view or self.photo_view
@@ -868,6 +1046,7 @@ class MainWindow(QMainWindow):
             if self._hq_pending and not any(item.zoom > 1.0 for item in active_views):
                 self._hq_pending = self._pending = False
                 self.timer.stop()
+                self._release_preview_if_idle()
             return
         active = next((task for (kind, token), task in self._tasks.items()
                        if kind in ('preview', 'original') and token == self._render_revision_id), None)
@@ -876,7 +1055,8 @@ class MainWindow(QMainWindow):
                 or (active is not None and active.full_resolution)):
             return
         self._hq_pending = self._pending = True
-        self.timer.start()
+        self._priority.hold(self)
+        self.timer.start(80)
 
     def _request_original(self, view=None, *, force_full=False):
         if self._closing or self._exporting or self._current_kind != 'import' or self.original_toggle.isChecked():
@@ -926,6 +1106,8 @@ class MainWindow(QMainWindow):
                 self._ensure_watermark_mode()
         path = self._current_path()
         if not path:
+            self._pending = False
+            self._release_preview_if_idle()
             self._send_footer_preview(None)
             return
         if self._closing or self._exporting or self._rendering or not self._pending or not path:
@@ -943,6 +1125,7 @@ class MainWindow(QMainWindow):
         self._render_signature = deepcopy(self._preview_signature())
         self._start_task(kind, token=self._render_revision_id, paths=[path],
                          settings=replace(self.settings, input_files=selected), full_resolution=full_resolution)
+        self._priority.release(self)
 
     def _start_task(self, kind, token=None, **kwargs):
         # 深拷贝会话元数据以免编辑窗口修改正在处理的批次
@@ -959,10 +1142,19 @@ class MainWindow(QMainWindow):
         task.signals.error.connect(self._task_error)
         task.signals.finished.connect(self._task_finished)
         task.signals.item.connect(self._import_item)
+        task.signals.batch.connect(self._import_batch)
+        task.signals.dimensions.connect(self._task_dimensions)
         task.signals.progress.connect(self._task_progress)
         task.signals.summary.connect(self._summary_changed)
         self._tasks[(task.kind, task.token)] = task
-        self.pool.start(task)
+        if task.kind in ('import', 'output'):
+            self.scan_pool.start(task)
+        elif task.kind == 'thumbnail':
+            self.thumbnail_pool.start(task)
+        else:
+            self._priority.hold(task)
+            priority = 2 if task.kind in ('preview', 'original', 'comparison') else 0
+            self.pool.start(task, priority)
 
     @Slot(str, int, object)
     def _task_result(self, kind, token, result):
@@ -990,7 +1182,10 @@ class MainWindow(QMainWindow):
                 self._send_footer_preview(self._watermark_image)
             _, width, height = self._current_data
             mode = "输出文件" if self._current_kind == "output" else "原图" if kind == "original" else "水印预览"
-            self._set_preview_status("{mode} · {width} × {height}", mode=mode, width=width, height=height)
+            if width and height:
+                self._set_preview_status("{mode} · {width} × {height}", mode=mode, width=width, height=height)
+            else:
+                self._set_preview_status(mode)
             self._preview_zoom_changed(self.photo_view.zoom)
         elif kind in ("import", "output"):
             if kind == "output" and token == self._completion_refresh and self._export_finish_message:
@@ -1024,6 +1219,8 @@ class MainWindow(QMainWindow):
     def _task_error(self, kind, token, message):
         if self._closing:
             return
+        if kind == 'thumbnail':
+            return
         if kind == 'comparison':
             if self._comparison_task is not None and self._tasks.get((kind, token)) is self._comparison_task:
                 self._set_preview_status('原图读取失败，保留水印预览')
@@ -1043,6 +1240,8 @@ class MainWindow(QMainWindow):
     @Slot(str, int)
     def _task_finished(self, kind, token):
         task = self._tasks.pop((kind, token), None)
+        if task is not None and kind not in ('import', 'output', 'thumbnail'):
+            self._priority.release(task)
         if kind in ("preview", "original"):
             self._rendering = False
             if self._pending and not self.timer.isActive():
@@ -1052,14 +1251,31 @@ class MainWindow(QMainWindow):
             if self._comparison_upgrade:
                 self._comparison_upgrade = False
                 self._request_original(force_full=True)
+        elif kind == 'footer_metadata' and self._footer_metadata_pending and not self._closing:
+            self._footer_metadata_pending = False
+            self._refresh_footer_examples()
         elif kind == "export":
             self._set_exporting(False)
         elif kind == "import" and not any(task_kind == "import" for task_kind, _ in self._tasks):
             self._sync_template_context()
             self._refresh_footer_examples(request=False)
-            self._schedule_preview()
+            if self.files._selected_count:
+                self._schedule_preview()
         elif kind == "output" and token == self._completion_refresh:
             self._completion_refresh = None
+        if task is not None and self._scan_tokens.get(kind) == token:
+            if getattr(task, 'restore_checks', False):
+                self.files.finish_scan(kind)
+            self._scan_tokens.pop(kind, None)
+        if kind == 'thumbnail' and task is not None and task is self._thumbnail_task:
+            if not task.cancel.is_set():
+                for path in task.paths:
+                    key = os.path.normcase(os.path.abspath(path))
+                    if key not in task.received:
+                        self._thumbnail_failed.add((task.browser_kind, key))
+            self._thumbnail_task = None
+            self._start_visible_thumbnails()
+        self._release_preview_if_idle()
         self._update_actions()
         if self._closing and not self._tasks:
             QTimer.singleShot(0, self, self.close)
@@ -1110,17 +1326,23 @@ class MainWindow(QMainWindow):
             return
         busy = self._exporting or self._closing
         importing = any(kind == "import" for kind, _ in self._tasks)
-        count = self.files._selected_count
+        selected = self.files._selected_count
+        current = bool(self._current_data and self._current_kind == 'import')
+        count = selected or int(current)
         self.export_action.setEnabled(bool(count and self.presets and not importing and not busy))
-        self.export_action.setText(tr("正在导出…") if self._exporting else tr("导出 1 张照片") if count == 1 else
-                                   tr("导出 {count} 张照片", count=count) if count else tr("导出照片"))
+        self.export_action.setText(tr("正在导出…") if self._exporting else
+                                   tr('导出已选 ({count})', count=selected) if selected else
+                                   tr('导出当前照片') if current else tr("导出照片"))
         if importing:
             self.export_action.setToolTip(tr("正在读取照片，完成后可以导出"))
-        elif count:
+        elif selected:
             self.export_action.setToolTip(tr("导出这张勾选照片，原文件保持不变（Ctrl+R）") if count == 1 else
                                          tr("导出 {count} 张勾选照片，原文件保持不变（Ctrl+R）", count=count))
+        elif current:
+            self.export_action.setToolTip(tr('导出当前照片，原文件保持不变（Ctrl+R）'))
         else:
-            self.export_action.setToolTip(tr("在输入列表勾选需要导出的照片" if self.files.items["import"] else "先添加照片，再勾选需要导出的照片"))
+            self.export_action.setToolTip(tr('选择一张输入照片或勾选要导出的照片' if self.files.items["import"]
+                                             else "先添加照片，再勾选需要导出的照片"))
         self.cancel_action.setEnabled(self._exporting and not self._closing)
         self.cancel_action.setVisible(self._exporting)
         for action in (self.add_action, self.directory_action, self.refresh_action, self.new_template_action,
@@ -1160,6 +1382,8 @@ class MainWindow(QMainWindow):
     def _export(self):
         """固定本轮勾选和设置快照后交由后台逐张处理"""
         paths = self.files.selected_paths()
+        if not paths and self._current_kind == 'import' and self._current_data:
+            paths = [self._current_data[0]]
         if self._exporting or self._closing or not paths or any(kind == "import" for kind, _ in self._tasks):
             return
         if not self.settings.output_dir and not self._choose_output():
@@ -1214,7 +1438,7 @@ class MainWindow(QMainWindow):
             for preview in self._template_previews():
                 preview.resume()
             if self._pending:
-                self.timer.start()
+                self.timer.start(80)
         self._update_actions()
 
     def _cancel_export(self):
@@ -1321,10 +1545,15 @@ class MainWindow(QMainWindow):
             if hasattr(editor, 'metadata_button'):
                 editor.metadata_button.setEnabled(bool(self._current_path()) and not self._exporting)
         path = self._current_path()
-        pending = any(task.kind == "footer_metadata" and task.paths[0] == path for task in self._tasks.values())
+        tasks = [task for task in self._tasks.values() if task.kind == "footer_metadata"]
+        pending = any(task.paths[0] == path and not task.cancel.is_set() for task in tasks)
         if request and path and context["metadata"] is None and not pending and not self._closing:
-            self._serial += 1
-            self._connect_task(FooterMetadataTask(self._serial, path))
+            if tasks:
+                self._footer_metadata_pending = True
+            else:
+                self._footer_metadata_pending = False
+                self._serial += 1
+                self._connect_task(FooterMetadataTask(self._serial, path))
 
     def _track_template_editor(self, editor):
         """源码与组合编辑共用草稿、保存和关闭处理"""
@@ -1555,6 +1784,8 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
         self.timer.stop()
+        self._idle_check.stop()
+        self._priority.release(self)
         if self._tasks:
             self._closing = True
             self.centralWidget().setEnabled(False)
