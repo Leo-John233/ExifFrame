@@ -15,6 +15,11 @@ from tempfile import NamedTemporaryFile
 ONEFILE_MARKER = 'exifframe-onefile.marker'
 _SEEDED_MARKER = '.resources-seeded'
 _CONFIG_DIRS = ('templates', 'fonts', 'logos')
+_STYLE_PACK_MARKER = '.style-pack-1-seeded'
+_STYLE_PACK = (
+    '极简无框角标', '拍立得经典宽底', '毛玻璃悬浮卡片', '美术馆装裱画框',
+    '35mm胶片暗房印记', '主色提取色卡栏', '红标铭牌强调风', '极简双行分割线',
+)
 
 
 def application_root() -> Path:
@@ -195,6 +200,15 @@ def initialize_user_config(migrate_legacy: bool = True) -> None:
                     if item.is_file():
                         _copy_seed_file(item, target / item.relative_to(source))
             marker.touch(exist_ok=True)
+        # 升级时只补一次新增模板，后续保留用户删除
+        style_marker = target / _STYLE_PACK_MARKER
+        if not style_marker.is_file():
+            bundled = resource_path('config/templates')
+            additions = [bundled / f'{name}.json' for name in _STYLE_PACK]
+            if all(path.is_file() for path in additions):
+                for item in additions:
+                    _copy_seed_file(item, target / 'templates' / item.name)
+                style_marker.touch(exist_ok=True)
         # 保留目录存在，以便用户删除所有标识或模板后仍能启动
         for name in _CONFIG_DIRS:
             (target / name).mkdir(parents=True, exist_ok=True)
