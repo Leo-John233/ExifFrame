@@ -14,15 +14,13 @@ import uuid
 import zipfile
 from pathlib import Path
 
-if __package__:
-    from .build_guard import run as _run_limited
-    from .style_resources import bundled_style_files
-else:
-    from build_guard import run as _run_limited
-    from style_resources import bundled_style_files
-
-
 ROOT = Path(__file__).resolve().parents[1]
+if not __package__:
+    sys.path.insert(0, str(ROOT))
+
+from build_support.build_guard import run as _run_limited
+from build_support.style_resources import bundled_style_files
+
 NUMPY_VERSION = '2.5.2'
 NUMPY_WHEEL = f'numpy-{NUMPY_VERSION}-cp313-cp313-win_amd64.whl'
 PYINSTALLER_VERSION = '6.20.0'

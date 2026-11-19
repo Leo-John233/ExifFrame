@@ -172,6 +172,13 @@ register_translations({
 })
 
 
+register_translations({
+    '标识深浅版本无效': 'Invalid logo color variant',
+    '标识底色清理模式无效': 'Invalid logo background removal mode',
+    '标识图片在读取期间发生变化，请重试': 'The logo changed while being read. Please try again',
+})
+
+
 def region_title(region, number=None) -> str:
     """统一显示普通区域、独立文字与多水印区域"""
     from core.footer import REGION_LABELS
