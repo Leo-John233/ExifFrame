@@ -18,6 +18,7 @@ from tempfile import NamedTemporaryFile
 
 from PIL import Image, ImageColor, PngImagePlugin
 
+from core.logo_variants import VARIANT_MAP_NAME, logo_variant_pair
 from core.runtime_paths import config_path
 
 
@@ -36,6 +37,34 @@ _STYLE_FIELDS = (
     'use_template_styles', 'logo_choice', 'font_path', 'text_alignment',
     'text_spacing', 'line_spacing', 'brand_glyph_policy',
 )
+
+
+class _StyleAssets(dict):
+    """与图片字节一起携带可选的深浅标识配对"""
+
+    def __init__(self, *args, variants=(), **kwargs):
+        super().__init__(*args, **kwargs)
+        self.variants = list(variants)
+
+
+def _checked_variants(variants, names):
+    """只接受归档内完整且没有冲突的哈希图片配对"""
+    if not isinstance(variants, (list, tuple)) or len(variants) > len(names) // 2:
+        raise ValueError('样式包素材无效或已损坏')
+    result, membership = [], {}
+    for pair in variants:
+        if (not isinstance(pair, (list, tuple)) or len(pair) != 2
+                or any(not isinstance(item, str) or not _ASSET_NAME.fullmatch(item) or item not in names
+                       for item in pair) or pair[0] == pair[1]):
+            raise ValueError('样式包素材无效或已损坏')
+        pair = tuple(pair)
+        if any(item in membership and membership[item] != pair for item in pair):
+            raise ValueError('样式包素材无效或已损坏')
+        if pair not in result:
+            result.append(pair)
+        for item in pair:
+            membership[item] = pair
+    return result
 
 
 def _image_bytes(data):
@@ -130,6 +159,16 @@ def asset_signature(source, logo_choice=''):
     _rewrite_references(source, collect)
     if _image_reference(logo_choice):
         collect(logo_choice)
+    for value in tuple(paths):
+        path = Path(value).expanduser()
+        if re.fullmatch(r'[0-9a-f]{64}\.(?:png|jpg)', path.name):
+            paths.append(str(path.parent / VARIANT_MAP_NAME))
+        try:
+            pair = logo_variant_pair(path)
+        except (OSError, ValueError):
+            pair = None
+        if pair:
+            paths.extend(str(path) for path in pair)
     result = []
     for value in dict.fromkeys(paths):
         try:
@@ -182,7 +221,13 @@ def _prepare(source, settings, *, asset_root=None):
 
     validate_template(source)
     style = _checked_style({key: getattr(settings, key) for key in _STYLE_FIELDS})
-    assets = {}
+    assets = _StyleAssets()
+
+    def add_asset(path):
+        data, extension = _read_asset(path)
+        name = f'assets/{hashlib.sha256(data).hexdigest()}.{extension}'
+        assets[name] = data
+        return name
 
     def collect(value):
         try:
@@ -191,11 +236,14 @@ def _prepare(source, settings, *, asset_root=None):
                 candidate = Path(asset_root) / path
                 if candidate.is_file():
                     path = candidate
-            data, extension = _read_asset(path)
+            name = add_asset(path)
         except OSError as exc:
             raise ValueError(f'所选样式引用的素材不存在：{value}') from exc
-        name = f'assets/{hashlib.sha256(data).hexdigest()}.{extension}'
-        assets[name] = data
+        pair = logo_variant_pair(path)
+        if pair:
+            variants = tuple(add_asset(item) for item in pair)
+            if len(set(variants)) == 2 and name in variants and variants not in assets.variants:
+                assets.variants.append(variants)
         return name
 
     source = _rewrite_references(source, collect)
@@ -203,6 +251,7 @@ def _prepare(source, settings, *, asset_root=None):
         style['logo_choice'] = collect(style['logo_choice'])
     if sum(map(len, assets.values())) > _MAX_PACK_BYTES:
         raise ValueError('样式包素材过大')
+    _checked_variants(assets.variants, assets)
     return source, style, assets
 
 
@@ -262,6 +311,11 @@ def _install(name, source, style, assets):
                 filename = Path(entry).name
                 (folder / filename).write_bytes(data)
                 mapping[entry] = f'config/style_assets/{folder.name}/{filename}'
+            variants = _checked_variants(getattr(assets, 'variants', ()), assets)
+            if variants:
+                pairs = [[Path(item).name for item in pair] for pair in variants]
+                (folder / VARIANT_MAP_NAME).write_text(
+                    json.dumps({'version': 1, 'pairs': pairs}, ensure_ascii=True), encoding='utf-8')
 
         def replace(value):
             if value not in mapping:
@@ -297,6 +351,9 @@ def export_style_pack(path, name, source, settings, *, overwrite=False):
     source, style, assets = _prepare(source, settings)
     manifest = {'format': 'exifframe-style', 'version': 1, 'name': name,
                 'template': source, 'style': style, 'assets': sorted(assets)}
+    variants = _checked_variants(getattr(assets, 'variants', ()), assets)
+    if variants:
+        manifest['logo_variants'] = variants
     content = json.dumps(manifest, ensure_ascii=False, indent=2).encode('utf-8')
     if len(content) > _MAX_MANIFEST_BYTES:
         raise ValueError('样式包格式无效')
@@ -344,6 +401,9 @@ def _write_export(path, writer, *, overwrite=False):
 def _archive_bytes(name, source, style, assets):
     manifest = {'format': 'exifframe-style', 'version': 1, 'name': name,
                 'template': source, 'style': style, 'assets': sorted(assets)}
+    variants = _checked_variants(getattr(assets, 'variants', ()), assets)
+    if variants:
+        manifest['logo_variants'] = variants
     content = json.dumps(manifest, ensure_ascii=False, indent=2).encode('utf-8')
     if len(content) > _MAX_MANIFEST_BYTES:
         raise ValueError('样式包格式无效')
@@ -420,7 +480,8 @@ def _read_pack(path):
             if (not isinstance(listed, list) or any(not isinstance(item, str) for item in listed)
                     or len(listed) != len(set(listed)) or set(listed) != set(names) - {'manifest.json'}):
                 raise ValueError('样式包格式无效')
-            assets = {}
+            variants = _checked_variants(manifest.get('logo_variants', ()), listed)
+            assets = _StyleAssets(variants=variants)
             for entry in listed:
                 data = archive.read(entry)
                 match = _ASSET_NAME.fullmatch(entry)

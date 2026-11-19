@@ -410,13 +410,13 @@ class WorkspaceEditors:
                 self._tasks[(task.kind, task.token)] = task
                 self._priority.hold(task)
                 self.pool.start(task)
-                self._set_status('正在导出模板卡片…')
+                self._preset_feedback('正在导出模板卡片…')
             elif chosen == 'json':
                 export_style_json(path, name, source, settings, overwrite=overwrite)
-                self._set_status('模板已导出：{path}', path=str(path))
+                self._preset_feedback('模板已导出：{path}', path=str(path))
             else:
                 export_style_pack(path, name, source, settings, overwrite=overwrite)
-                self._set_status('模板已导出：{path}', path=str(path))
+                self._preset_feedback('模板已导出：{path}', path=str(path))
         except Exception as exc:
             self._record_errors('无法导出模板', [str(exc)])
             QMessageBox.warning(self, tr('无法导出模板'), localize_error(exc))
@@ -424,7 +424,7 @@ class WorkspaceEditors:
     @Slot(str, int, object)
     def _style_card_result(self, kind, token, path):
         if not self._closing:
-            self._set_status('模板已导出：{path}', path=path)
+            self._preset_feedback('模板已导出：{path}', path=path)
 
     @Slot(str, int, str)
     def _style_card_error(self, kind, token, message):
@@ -441,7 +441,7 @@ class WorkspaceEditors:
             name = import_style_pack(selected)
             self._template_saved(name)
             self.inspector.show_my_templates()
-            self._set_status('模板已导入：{name}', name=name)
+            self._preset_feedback('模板已导入：{name}', name=name)
         except Exception as exc:
             self._record_errors('无法导入模板', [str(exc)])
             QMessageBox.warning(self, tr('无法导入模板'), localize_error(exc))
