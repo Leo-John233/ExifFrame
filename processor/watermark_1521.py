@@ -3,14 +3,13 @@
 import json
 import math
 from collections import OrderedDict
-from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageOps
 
 from core.font_fallback import (_font_cache_state, _font_key, _font_token, _native_z, _supports,
-                                _weight, load_font, pooled_fonts, render_with_fallback)
+                                _weight, font_at_size, load_font, pooled_fonts, render_with_fallback)
 from processor.core import _parse_color
-from processor.generators import location_text_font
+from processor.generators import location_text_font, render_character_node
 from processor.types import Alignment
 
 
@@ -20,30 +19,15 @@ _TEXT_LIMIT = 16 * 1024 * 1024
 
 def _font_at_size(path, size):
     """在独占槽位内复用对应字号"""
-    primary = load_font(path)
-    key = (_font_token(primary), size)
-    state = _font_cache_state()
-    if not hasattr(state, 'variants'):
-        state.variants = OrderedDict()
-    cache = state.variants
-    if key not in cache:
-        variant = primary.font_variant(size=size) if hasattr(primary, 'font_variant') else primary
-        if variant is not primary:
-            variant._exifframe_token = ('variant', _font_token(primary), size)
-        if isinstance(getattr(primary, 'path', None), (str, Path)):
-            variant._exifframe_path = primary.path
-        cache[key] = variant
-        if len(cache) > 8:
-            cache.popitem(last=False)
-    cache.move_to_end(key)
-    return cache[key]
+    return font_at_size(path, size)
 
 
 @pooled_fonts()
 def _segment_image(segment):
     """按旧版字形边界生成单个文字片段"""
     original = segment.get('text') or '   '
-    path, text, location = location_text_font(original, segment.get('font_path'), segment.get('is_bold', False))
+    path, text, location = location_text_font(original, segment.get('font_path') or segment.get('font'),
+                                              segment.get('is_bold', False))
     primary = load_font(path)
     size = 260 if segment.get('is_bold', False) or _weight(primary) >= 600 else 240
     font = _font_at_size(path, size)
@@ -99,6 +83,9 @@ def _segment_image(segment):
 
 
 def _row_image(node):
+    styled = render_character_node(node, watermark=True)
+    if styled is not None:
+        return styled[0]
     if node.get('processor_name') == 'rich_text':
         return _segment_image(node)[0]
     segments = node.get('text_segments') or []
