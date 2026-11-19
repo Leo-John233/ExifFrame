@@ -376,13 +376,23 @@ class CameraRawSlider(QWidget):
 
 
 def _display_color(value):
-    """按渲染管线的 RRGGBBAA 顺序读取透明色"""
-    text = str(value or '')
-    if len(text) == 9 and text.startswith('#'):
+    """读取渲染管线支持的名称、十六进制和元组颜色"""
+    text = str(value or '').strip()
+    if ',' in text:
         try:
-            return QColor(*(int(text[i:i + 2], 16) for i in (1, 3, 5, 7)))
+            values = [int(part.strip()) for part in text.strip('()[]').split(',')]
+            if len(values) in (3, 4) and all(0 <= part <= 255 for part in values):
+                return QColor(*values)
         except ValueError:
             pass
+    # Pillow 与处理管线一致，八位十六进制使用 RRGGBBAA 顺序
+    try:
+        from PIL import ImageColor
+        values = ImageColor.getrgb(text)
+        if len(values) in (3, 4) and all(0 <= part <= 255 for part in values):
+            return QColor(*values)
+    except (ValueError, TypeError):
+        pass
     return QColor(text)
 
 
