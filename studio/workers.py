@@ -6,7 +6,7 @@ import ctypes
 import hashlib
 import os
 import re
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import CancelledError, FIRST_COMPLETED, ThreadPoolExecutor, wait
 from ctypes import wintypes
 from dataclasses import replace
 from pathlib import Path
@@ -17,7 +17,8 @@ from PySide6.QtCore import QObject, QRunnable, Signal
 from PySide6.QtGui import QImage
 
 from core.desktop_service import SUPPORTED_SUFFIXES, export_photo, read_template, render_photo
-from core.image_cache import photo_thumbnail
+from core.image_cache import photo_proxy, photo_thumbnail
+from studio.canvas import set_image_size
 
 
 # 仅为已检查内存规模的内置源码启用双路，模板变化后需重新核验
@@ -33,11 +34,27 @@ _BOUNDED_TEMPLATES = {
 }
 
 
-def qt_image(image: Image.Image) -> QImage:
+def qt_image(image: Image.Image, full_size=None) -> QImage:
     """复制像素以避免后台对象释放后预览失效"""
     rgba = image.convert("RGBA")
-    return QImage(rgba.tobytes(), rgba.width, rgba.height, rgba.width * 4,
-                  QImage.Format.Format_RGBA8888).copy()
+    result = QImage(rgba.tobytes(), rgba.width, rgba.height, rgba.width * 4,
+                    QImage.Format.Format_RGBA8888).copy()
+    return set_image_size(result, full_size or image.info.get('preview_full_size') or image.size)
+
+
+def original_image(path, *, full_resolution=False, cancelled=None):
+    """在后台读取原图或共享代理并附上方向修正后的尺寸"""
+    if cancelled and cancelled():
+        raise CancelledError()
+    if full_resolution:
+        with Image.open(path) as source:
+            image = ImageOps.exif_transpose(source).convert('RGB')
+        size = image.size
+    else:
+        image, size, _ = photo_proxy(path, cancelled=cancelled)
+    if cancelled and cancelled():
+        raise CancelledError()
+    return qt_image(image, size)
 
 
 def _available_physical_memory():
@@ -135,10 +152,11 @@ class WorkerSignals(QObject):
 class ImageTask(QRunnable):
     """每项任务拥有取消标记且只在安全的单张边界停止"""
 
-    def __init__(self, kind: str, token: int, *, paths=(), settings=None, output=None):
+    def __init__(self, kind: str, token: int, *, paths=(), settings=None, output=None, full_resolution=False):
         super().__init__()
         self.kind, self.token = kind, token
         self.paths, self.settings, self.output = tuple(paths), settings, output
+        self.full_resolution = full_resolution
         self.cancel = Event()
         self.signals = WorkerSignals()
 
@@ -151,16 +169,17 @@ class ImageTask(QRunnable):
             elif self.kind == "export":
                 result = self._export()
             else:
-                if self.kind == "original":
-                    with Image.open(self.paths[0]) as source:
-                        source.draft("RGB", (1600, 1600))
-                        source.thumbnail((1600, 1600))
-                        photo = ImageOps.exif_transpose(source).convert("RGB")
+                if self.kind in ("original", "comparison"):
+                    result = original_image(self.paths[0], full_resolution=self.full_resolution,
+                                            cancelled=self.cancel.is_set)
                 else:
-                    photo = render_photo(self.paths[0], self.settings, preview=True)
-                result = qt_image(photo)
+                    photo = render_photo(self.paths[0], self.settings, preview=True,
+                                         full_resolution=self.full_resolution, cancelled=self.cancel.is_set)
+                    result = qt_image(photo)
             if not self.cancel.is_set() or self.kind == "export":
                 self.signals.result.emit(self.kind, self.token, result)
+        except CancelledError:
+            pass
         except Exception as exc:
             if not self.cancel.is_set() or self.kind == "export":
                 self.signals.error.emit(self.kind, self.token, str(exc))
@@ -182,14 +201,19 @@ class ImageTask(QRunnable):
                     continue
                 seen.add(identity)
                 try:
-                    # 刷新目录时复用按文件修改时间区分的小图缓存
-                    photo, width, height = photo_thumbnail(path)
+                    if self.kind == 'import':
+                        photo, (width, height), _ = photo_proxy(path, cancelled=self.cancel.is_set)
+                        photo.thumbnail((144, 112), Image.Resampling.LANCZOS)
+                    else:
+                        photo, width, height = photo_thumbnail(path)
                     thumb = qt_image(photo)
                     if self.cancel.is_set():
                         return errors
                     self.signals.item.emit(self.token, (path.resolve(), thumb, width, height))
                     added += 1
                     self.signals.progress.emit(added, 0, path.name)
+                except CancelledError:
+                    return errors
                 except Exception as exc:
                     errors.append(f"{path.name}：{exc}")
         return errors

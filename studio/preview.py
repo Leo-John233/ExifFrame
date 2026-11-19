@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import CancelledError
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
@@ -12,11 +13,12 @@ from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal, 
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QApplication, QFileDialog, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget
 
-from core.desktop_service import WatermarkSettings, _metadata, list_presets, render_photo
+from core.desktop_service import WatermarkSettings, _metadata, _template_path, list_presets, render_photo
 from core.metadata import merge_overrides, metadata_key
 from core.sample_photo import example_photo_path
+from studio.canvas import ImageCanvas, is_full_image
 from studio.i18n import bind, localize_error, register_translations, tr, translator
-from studio.workers import qt_image
+from studio.workers import original_image, qt_image
 
 
 register_translations({
@@ -38,7 +40,8 @@ register_translations({
 
 
 class _PreviewSignals(QObject):
-    result = Signal(int, object, object, str, str)
+    result = Signal(int, object, object, str, str, bool)
+    original = Signal(int, object, bool)
     error = Signal(int, object)
     finished = Signal(int)
 
@@ -46,11 +49,13 @@ class _PreviewSignals(QObject):
 class _PreviewTask(QRunnable):
     """使用独立设置和像素副本，后台任务不持有界面控件"""
 
-    def __init__(self, job_id, version, path, settings, owner_stopped, signals):
+    def __init__(self, job_id, version, path, settings, owner_stopped, signals,
+                 full_resolution=False, original_only=False):
         super().__init__()
         self.job_id, self.version = job_id, version
         self.path, self.settings = path, settings
         self.owner_stopped, self.signals = owner_stopped, signals
+        self.full_resolution, self.original_only = full_resolution, original_only
         self.cancel = Event()
 
     def _cancelled(self):
@@ -60,13 +65,25 @@ class _PreviewTask(QRunnable):
         try:
             if self._cancelled():
                 return
+            if self.original_only:
+                image = original_image(self.path, full_resolution=self.full_resolution, cancelled=self._cancelled)
+                if not self._cancelled():
+                    self.signals.original.emit(self.version, image, self.full_resolution)
+                return
             settings = self.settings
-            names = [preset.name for preset in list_presets()]
             # 未保存的新模板只借用现有名称通过校验，实际渲染使用完整草稿
-            if settings.template_name not in names and names:
-                settings = replace(settings, template_name=names[0])
+            try:
+                template = _template_path(settings.template_name)
+                usable = template.is_file() and template.resolve().stem == settings.template_name
+            except (OSError, ValueError):
+                usable = False
+            if not usable:
+                names = [preset.name for preset in list_presets()]
+                if names:
+                    settings = replace(settings, template_name=names[0])
             path = self.path.resolve()
-            photo = render_photo(path, settings, preview=True)
+            photo = render_photo(path, settings, preview=True, full_resolution=self.full_resolution,
+                                 cancelled=self._cancelled)
             if self._cancelled():
                 return
             metadata = dict(_metadata(str(path), path.stat().st_mtime_ns))
@@ -77,7 +94,10 @@ class _PreviewTask(QRunnable):
                     metadata.setdefault('ImageHeight', str(source.height))
             image = qt_image(photo)
             if not self._cancelled():
-                self.signals.result.emit(self.version, image, metadata, path.stem, path.parent.as_posix())
+                self.signals.result.emit(self.version, image, metadata, path.stem, path.parent.as_posix(),
+                                         self.full_resolution)
+        except CancelledError:
+            pass
         except Exception as error:
             if not self._cancelled():
                 self.signals.error.emit(self.version, error.with_traceback(None))
@@ -96,10 +116,11 @@ class _PreviewTasks(QObject):
         self._serial = 0
         app.aboutToQuit.connect(self.cancel_all)
 
-    def create(self, version, path, settings, owner_stopped):
+    def create(self, version, path, settings, owner_stopped, full_resolution=False, original_only=False):
         self._serial += 1
         signals = _PreviewSignals(self)
-        job = _PreviewTask(self._serial, version, path, settings, owner_stopped, signals)
+        job = _PreviewTask(self._serial, version, path, settings, owner_stopped, signals,
+                           full_resolution, original_only)
         self.jobs[job.job_id] = job
         signals.finished.connect(self._release)
         return job
@@ -130,9 +151,6 @@ class TemplatePreview(QWidget):
 
     def __init__(self, parent=None, photo_path=None, settings=None, follow_workspace_style=False):
         super().__init__(parent)
-        # 延迟导入使源码编辑器也能复用图像视图
-        from studio.footer_editor import _ImageView
-
         self.setObjectName('templatePreviewWidget')
         self._settings = deepcopy(settings if settings is not None else WatermarkSettings())
         self._follow_workspace_style = follow_workspace_style
@@ -141,9 +159,13 @@ class TemplatePreview(QWidget):
         self._photo_path = None
         self._source = ''
         self._valid_source = False
-        self._version = 0
+        self._render_revision_id = 0
+        self._photo_version = 0
         self._pending = False
         self._active = None
+        self._hq_pending = self._hq_ready = False
+        self._original_active = None
+        self._original_full = self._original_upgrade = False
         self._failed = False
         self._closed = False
         self._suspended = False
@@ -153,7 +175,7 @@ class TemplatePreview(QWidget):
         self._owner = _task_owner()
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
-        self.timer.setInterval(350)
+        self.timer.setInterval(80)
         self.timer.timeout.connect(self._start_latest)
 
         layout = QVBoxLayout(self)
@@ -161,16 +183,15 @@ class TemplatePreview(QWidget):
         layout.setSpacing(8)
         tools = QHBoxLayout()
         tools.setSpacing(6)
-        self.view = _ImageView(self)
-        self.fit_button = bind(QPushButton(), '适应')
-        self.actual_button = QPushButton('100%')
+        self.view = ImageCanvas(self)
+        self.view.zoom_changed.connect(self._zoom_changed)
+        self.view.original_requested.connect(self._request_original)
+        self.fit_button = self.view.hud_fit
+        self.actual_button = self.view.hud_actual
         self.detail_button = bind(QPushButton(), '水印细节')
-        self.fit_button.clicked.connect(self.view.fit_photo)
-        self.actual_button.clicked.connect(self.view.actual_size)
         self.detail_button.clicked.connect(self.view.footer_detail)
-        for button in (self.fit_button, self.actual_button, self.detail_button):
-            button.setAutoDefault(False)
-            tools.addWidget(button)
+        self.detail_button.setAutoDefault(False)
+        tools.addWidget(self.detail_button)
         tools.addStretch()
         layout.addLayout(tools)
         self.filename_label = QLabel()
@@ -234,7 +255,7 @@ class TemplatePreview(QWidget):
                                input_dir='', output_dir='')
         return snapshot
 
-    def update_context(self, input_files, metadata_overrides, settings=None):
+    def update_context(self, input_files, metadata_overrides, settings=None, *, immediate=False):
         """更新会话上下文而不改变预览照片或源码"""
         if self._closed:
             return
@@ -250,8 +271,10 @@ class TemplatePreview(QWidget):
             self._failed = False
             self._invalidate()
             self._request()
+            if immediate and self._pending and not self._suspended:
+                self.timer.start(0)
 
-    def set_source(self, source: str):
+    def set_source(self, source: str, *, immediate=False):
         """有效源码去抖渲染，父编辑器对无效源码调用 set_error"""
         if self._closed:
             return
@@ -265,6 +288,17 @@ class TemplatePreview(QWidget):
         self._failed = False
         self._invalidate()
         self._request()
+        if immediate and self._pending and not self._suspended:
+            self.timer.start(0)
+
+    def invalidate_source(self):
+        """输入变化时立即丢弃旧任务并保留上次图像"""
+        if self._closed:
+            return
+        self._valid_source = False
+        self._pending = False
+        self.timer.stop()
+        self._invalidate()
 
     def set_error(self, message):
         """保留已有图像并立即令所有旧结果失效"""
@@ -284,6 +318,11 @@ class TemplatePreview(QWidget):
         selected = Path(path).expanduser().absolute() if path else None
         changed = selected != self._photo_path
         self._photo_path = selected
+        if changed:
+            self._photo_version += 1
+            if self._original_active is not None:
+                self._original_active.cancel.set()
+            self._original_full = self._original_upgrade = False
         self._failed = False
         self._invalidate()
         if changed:
@@ -293,7 +332,9 @@ class TemplatePreview(QWidget):
         self._retranslate()
 
     def _invalidate(self):
-        self._version += 1
+        # 代次递增与取消标记同步，后台据此丢弃旧任务
+        self._render_revision_id += 1
+        self._hq_pending = self._hq_ready = False
         if self._active is not None:
             self._active.cancel.set()
 
@@ -317,25 +358,29 @@ class TemplatePreview(QWidget):
             return
         self._pending = False
         snapshot = self.settings
-        task = self._owner.create(self._version, self._photo_path, snapshot, self._stopped)
+        full_resolution = self._hq_pending
+        self._hq_pending = False
+        task = self._owner.create(self._render_revision_id, self._photo_path, snapshot, self._stopped, full_resolution)
         self._active = task
         task.signals.result.connect(self._result)
         task.signals.error.connect(self._error)
         task.signals.finished.connect(self._finished)
         self._owner.pool.start(task)
 
-    @Slot(int, object, object, str, str)
-    def _result(self, version, image, metadata, filename, file_dir):
-        if self._closed or version != self._version or not self._valid_source:
+    @Slot(int, object, object, str, str, bool)
+    def _result(self, version, image, metadata, filename, file_dir, full_resolution):
+        if self._closed or version != self._render_revision_id or not self._valid_source:
             return
         self._failed = False
+        self._hq_ready = full_resolution or is_full_image(image)
         self._show_image(image)
         self._set_status('照片预览已更新')
         self._publish_metadata(metadata, filename, file_dir)
+        self._zoom_changed(self.view.zoom)
 
     @Slot(int, object)
     def _error(self, version, error):
-        if self._closed or version != self._version:
+        if self._closed or version != self._render_revision_id:
             return
         self._failed = True
         self._set_status('预览失败，保留上次结果：{error}', error=error)
@@ -347,11 +392,59 @@ class TemplatePreview(QWidget):
         if not self._closed and not self._suspended and self._pending and not self.timer.isActive():
             self._start_latest()
 
+    def _zoom_changed(self, zoom):
+        if self.view.comparing_original:
+            self._request_original()
+        if zoom <= 1.0:
+            if self._hq_pending:
+                self._hq_pending = self._pending = False
+                self.timer.stop()
+            return
+        if (self._closed or self._suspended or not self._valid_source or not self._photo_path
+                or self._hq_ready or self._hq_pending or self._pending
+                or (self._active is not None and self._active.version == self._render_revision_id
+                    and self._active.full_resolution)):
+            return
+        self._hq_pending = self._pending = True
+        self.timer.start()
+
+    def _request_original(self):
+        if self._closed or self._suspended or not self._photo_path:
+            return
+        full_resolution = self.view.zoom > 1.0
+        if not self.view.original.pixmap().isNull() and (not full_resolution or self._original_full):
+            return
+        if self._original_active is not None:
+            self._original_upgrade |= full_resolution and not self._original_active.full_resolution
+            return
+        task = self._owner.create(self._photo_version, self._photo_path, None, self._stopped,
+                                  full_resolution, original_only=True)
+        self._original_active = task
+        task.signals.original.connect(self._original_result)
+        task.signals.finished.connect(self._original_finished)
+        self._owner.pool.start(task)
+
+    @Slot(int, object, bool)
+    def _original_result(self, version, image, full_resolution):
+        if not self._closed and version == self._photo_version:
+            self._original_full = full_resolution or is_full_image(image)
+            self.view.set_original_image(image)
+
+    @Slot(int)
+    def _original_finished(self, job_id):
+        if self._original_active is not None and self._original_active.job_id == job_id:
+            self._original_active = None
+        if self._original_upgrade and not self._closed and not self._suspended:
+            self._original_upgrade = False
+            self._request_original()
+
     def suspend(self):
         """导出前停止启动新预览，等待在途处理自然结束"""
         if self._closed or self._suspended:
             return
         self._suspended = True
+        if self._original_active is not None:
+            self._original_active.cancel.set()
         if self._active is not None or self._pending or self.timer.isActive():
             self._invalidate()
             self.timer.stop()
@@ -363,6 +456,8 @@ class TemplatePreview(QWidget):
         self._suspended = False
         if self._pending:
             self._request()
+        if self.view.comparing_original:
+            self._request_original()
 
     def _publish_metadata(self, metadata, filename, file_dir):
         value = (metadata, filename, file_dir, self._photo_path)
@@ -411,11 +506,13 @@ class TemplatePreview(QWidget):
             return
         self._closed = True
         self._stopped.set()
-        self._version += 1
+        self._render_revision_id += 1
         self._pending = False
         self.timer.stop()
         if self._active is not None:
             self._active.cancel.set()
+        if self._original_active is not None:
+            self._original_active.cancel.set()
         self.choose_button.setEnabled(False)
         self.empty_choose.setEnabled(False)
 

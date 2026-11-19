@@ -22,6 +22,7 @@ from core.desktop_service import (
     save_settings, save_workspace_settings, write_template,
 )
 from .about import AboutDialog
+from .canvas import ImageCanvas, is_full_image
 from .files import FileBrowser
 from .i18n import bind_static_texts, install_qt_translations, language, localize_error, set_language, tr, translator
 from .template_editor import TemplateEditor
@@ -55,40 +56,14 @@ class FooterMetadataTask(QRunnable):
             self.signals.finished.emit(self.kind, self.token)
 
 
-class PhotoView(QWidget):
-    """在深灰画布上等比显示照片或简短空态提示"""
+class PhotoView(ImageCanvas):
+    """主窗口照片画布和空态提示"""
 
     def __init__(self):
         super().__init__()
-        self.pixmap = QPixmap()
-        self.empty_message = "添加照片后开始编辑水印\n\n拖入 JPG、PNG、HEIC 文件或文件夹，或点击上方“添加照片”"
         self.setMinimumSize(220, 200)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        translator.language_changed.connect(self.update)
-
-    def set_image(self, image):
-        """保留原始预览像素供窗口缩放时重新绘制"""
-        self.pixmap = QPixmap.fromImage(image) if image is not None else QPixmap()
-        self.update()
-
-    def set_empty_message(self, source):
-        """区分输入队列、输出列表和预览加载状态"""
-        self.empty_message = source
-        self.update()
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#141516"))
-        if self.pixmap.isNull():
-            painter.setPen(QColor("#A6A7A9"))
-            painter.drawText(self.rect().adjusted(20, 20, -20, -20),
-                             Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, tr(self.empty_message))
-            return
-        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        bounds = self.rect().adjusted(16, 16, -16, -16)
-        size = self.pixmap.size().scaled(bounds.size(), Qt.AspectRatioMode.KeepAspectRatio)
-        painter.drawPixmap(bounds.center().x() - size.width() // 2,
-                           bounds.center().y() - size.height() // 2, size.width(), size.height(), self.pixmap)
+        self.empty_message = '添加照片后开始编辑水印\n\n拖入 JPG、PNG、HEIC 文件或文件夹，或点击上方“添加照片”'
+        translator.language_changed.connect(self.viewport().update)
 
 
 class MainWindow(QMainWindow):
@@ -105,8 +80,11 @@ class MainWindow(QMainWindow):
         self.presets = list_presets()
         self._tasks, self._drafts, self._editors = {}, {}, []
         self._draft_owners = {}
-        self._serial = self._generation = 0
+        self._serial = self._render_revision_id = 0
         self._rendering = self._pending = self._closing = self._exporting = self._restoring = False
+        self._hq_pending = self._hq_ready = self._context_pending = False
+        self._comparison_task = self._comparison_image = None
+        self._comparison_full = self._comparison_upgrade = False
         self._dirty = self._locked = False
         self._current_data, self._current_kind = None, "import"
         self._last_output, self._errors = None, []
@@ -129,7 +107,7 @@ class MainWindow(QMainWindow):
         self.pool.setMaxThreadCount(2)
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
-        self.timer.setInterval(250)
+        self.timer.setInterval(80)
         self.timer.timeout.connect(self._render_preview)
         self._build_actions()
         self._build_ui()
@@ -256,6 +234,8 @@ class MainWindow(QMainWindow):
         layout.addLayout(heading)
         self.photo_view = PhotoView()
         self.photo_view.setObjectName("photoPreview")
+        self.photo_view.zoom_changed.connect(self._preview_zoom_changed)
+        self.photo_view.original_requested.connect(self._request_original)
         layout.addWidget(self.photo_view, 1)
         self.preview_status = QLabel("未选择照片")
         self.preview_status.setObjectName("previewStatus")
@@ -523,9 +503,7 @@ class MainWindow(QMainWindow):
         self._update_labels()
         self._update_actions()
         if refresh_preview:
-            self._sync_template_context()
-            if self._visible_footer_editors():
-                self._ensure_watermark_mode()
+            self._context_pending = True
             self._schedule_preview()
 
     def _update_labels(self):
@@ -693,7 +671,11 @@ class MainWindow(QMainWindow):
         self.files.begin_scan(kind, folder)
         if self._current_kind == kind:
             self._current_data = None
-            self._generation += 1
+            self._invalidate_preview()
+            if self._comparison_task is not None:
+                self._comparison_task.cancel.set()
+            self._comparison_task = self._comparison_image = None
+            self._comparison_full = self._comparison_upgrade = False
             self.photo_view.set_image(None)
             self.canvas_name.setText(tr("预览"))
         task = self._start_task(kind, paths=[Path(folder)], settings=replace(self.settings))
@@ -740,6 +722,10 @@ class MainWindow(QMainWindow):
     @Slot(str, object)
     def _file_selected(self, kind, data):
         self._current_kind, self._current_data = kind, data
+        if self._comparison_task is not None:
+            self._comparison_task.cancel.set()
+        self._comparison_task = self._comparison_image = None
+        self._comparison_full = self._comparison_upgrade = False
         self._watermark_image = self._watermark_signature = None
         self._send_footer_preview(None)
         if not data:
@@ -831,6 +817,8 @@ class MainWindow(QMainWindow):
             original = self._ensure_watermark_mode()
             image = self._current_footer_image()
             editor.set_preview(image)
+            if self._comparison_image is not None:
+                editor.photo_view.set_original_image(self._comparison_image)
             if self._current_path() and (original or image is None):
                 self._schedule_preview()
         # 只取消最小化，保留用户已有的最大化状态
@@ -857,9 +845,55 @@ class MainWindow(QMainWindow):
 
     def _schedule_preview(self):
         # 先递增代次以阻止去抖等待期间旧图片覆盖当前选择
-        self._generation += 1
+        self._invalidate_preview()
         self._pending = True
         self.timer.start()
+
+    def _invalidate_preview(self):
+        # 代次递增与取消标记同步，后台据此丢弃旧任务
+        self._render_revision_id += 1
+        self._hq_pending = self._hq_ready = False
+        for task in self._tasks.values():
+            if task.kind in ("preview", "original"):
+                task.cancel.set()
+        self._pending = False
+        self.timer.stop()
+
+    def _preview_zoom_changed(self, zoom, view=None):
+        view = view or self.photo_view
+        if view.comparing_original:
+            self._request_original(view)
+        if zoom <= 1.0:
+            active_views = [self.photo_view, *(editor.photo_view for editor in self._visible_footer_editors())]
+            if self._hq_pending and not any(item.zoom > 1.0 for item in active_views):
+                self._hq_pending = self._pending = False
+                self.timer.stop()
+            return
+        active = next((task for (kind, token), task in self._tasks.items()
+                       if kind in ('preview', 'original') and token == self._render_revision_id), None)
+        if (self._closing or self._exporting or not self._current_path()
+                or self._hq_ready or self._hq_pending or self._pending
+                or (active is not None and active.full_resolution)):
+            return
+        self._hq_pending = self._pending = True
+        self.timer.start()
+
+    def _request_original(self, view=None, *, force_full=False):
+        if self._closing or self._exporting or self._current_kind != 'import' or self.original_toggle.isChecked():
+            return
+        path = self._current_path()
+        if path is None:
+            return
+        view = view or self.photo_view
+        full_resolution = force_full or view.zoom > 1.0
+        if self._comparison_image is not None:
+            view.set_original_image(self._comparison_image)
+            if not full_resolution or self._comparison_full:
+                return
+        if self._comparison_task is not None:
+            self._comparison_upgrade |= full_resolution and not self._comparison_task.full_resolution
+            return
+        self._comparison_task = self._start_task('comparison', paths=[path], full_resolution=full_resolution)
 
     def _queue_selection_changed(self):
         """导入期间不反复推迟首张预览，完整批次在扫描结束后刷新"""
@@ -868,11 +902,11 @@ class MainWindow(QMainWindow):
             self._refresh_footer_examples(request=False)
             self._schedule_preview()
 
-    def _sync_template_context(self):
+    def _sync_template_context(self, *, immediate=False):
         """让已打开的编辑器使用当前勾选和照片信息快照"""
         selected = tuple(str(path) for path in self.files.selected_paths())
         for preview in self._template_previews():
-            preview.update_context(selected, self.settings.metadata_overrides, self.settings)
+            preview.update_context(selected, self.settings.metadata_overrides, self.settings, immediate=immediate)
         if self._active_wizard is not None:
             self._active_wizard.refresh_preview_context()
 
@@ -885,6 +919,11 @@ class MainWindow(QMainWindow):
         return previews
 
     def _render_preview(self):
+        if self._context_pending:
+            self._context_pending = False
+            self._sync_template_context(immediate=True)
+            if self._visible_footer_editors():
+                self._ensure_watermark_mode()
         path = self._current_path()
         if not path:
             self._send_footer_preview(None)
@@ -892,6 +931,8 @@ class MainWindow(QMainWindow):
         if self._closing or self._exporting or self._rendering or not self._pending or not path:
             return
         self._pending, self._rendering = False, True
+        full_resolution = self._hq_pending
+        self._hq_pending = False
         self._set_preview_status("正在生成预览…")
         self._preview_error = ""
         self.preview_status.setToolTip("")
@@ -900,8 +941,8 @@ class MainWindow(QMainWindow):
         # 与实际导出共用勾选文件快照，支持模板中的跨照片处理
         selected = tuple(str(item) for item in self.files.selected_paths())
         self._render_signature = deepcopy(self._preview_signature())
-        self._start_task(kind, token=self._generation, paths=[path],
-                         settings=replace(self.settings, input_files=selected))
+        self._start_task(kind, token=self._render_revision_id, paths=[path],
+                         settings=replace(self.settings, input_files=selected), full_resolution=full_resolution)
 
     def _start_task(self, kind, token=None, **kwargs):
         # 深拷贝会话元数据以免编辑窗口修改正在处理的批次
@@ -927,18 +968,30 @@ class MainWindow(QMainWindow):
     def _task_result(self, kind, token, result):
         if self._closing:
             return
-        if kind in ("preview", "original") and token == self._generation:
+        if kind == 'comparison':
+            task = self._tasks.get((kind, token))
+            if task is not None and task is self._comparison_task and task.paths[0] == self._current_path():
+                self._comparison_image = result
+                self._comparison_full = task.full_resolution or is_full_image(result)
+                self.photo_view.set_original_image(result)
+                for editor in self._visible_footer_editors():
+                    editor.photo_view.set_original_image(result)
+            return
+        if kind in ("preview", "original") and token == self._render_revision_id:
             if self._render_signature != self._preview_signature():
                 self._schedule_preview()
                 return
+            task = self._tasks.get((kind, token))
+            self._hq_ready = bool(task and task.full_resolution) or is_full_image(result)
             self.photo_view.set_image(result)
             if kind == "preview":
-                self._watermark_image = result.copy()
+                self._watermark_image = result
                 self._watermark_signature = self._render_signature
                 self._send_footer_preview(self._watermark_image)
             _, width, height = self._current_data
             mode = "输出文件" if self._current_kind == "output" else "原图" if kind == "original" else "水印预览"
-            self._set_preview_status("{mode} · {width} × {height} · 适应窗口", mode=mode, width=width, height=height)
+            self._set_preview_status("{mode} · {width} × {height}", mode=mode, width=width, height=height)
+            self._preview_zoom_changed(self.photo_view.zoom)
         elif kind in ("import", "output"):
             if kind == "output" and token == self._completion_refresh and self._export_finish_message:
                 source, values = self._export_finish_message
@@ -971,8 +1024,13 @@ class MainWindow(QMainWindow):
     def _task_error(self, kind, token, message):
         if self._closing:
             return
+        if kind == 'comparison':
+            if self._comparison_task is not None and self._tasks.get((kind, token)) is self._comparison_task:
+                self._set_preview_status('原图读取失败，保留水印预览')
+                self._record_errors('预览失败', [message])
+            return
         if kind in ("preview", "original"):
-            if token == self._generation:
+            if token == self._render_revision_id:
                 self._set_preview_status("预览失败，详情见状态栏")
                 self._preview_error = message
                 self.preview_status.setToolTip(localize_error(message))
@@ -984,11 +1042,16 @@ class MainWindow(QMainWindow):
 
     @Slot(str, int)
     def _task_finished(self, kind, token):
-        self._tasks.pop((kind, token), None)
+        task = self._tasks.pop((kind, token), None)
         if kind in ("preview", "original"):
             self._rendering = False
             if self._pending and not self.timer.isActive():
                 self._render_preview()
+        elif kind == 'comparison' and task is not None and task is self._comparison_task:
+            self._comparison_task = None
+            if self._comparison_upgrade:
+                self._comparison_upgrade = False
+                self._request_original(force_full=True)
         elif kind == "export":
             self._set_exporting(False)
         elif kind == "import" and not any(task_kind == "import" for task_kind, _ in self._tasks):
@@ -1113,8 +1176,10 @@ class MainWindow(QMainWindow):
                                              protected_sources=tuple(str(path) for path in self.files.all_paths())),
                                self._last_output)
         self.timer.stop()
+        if self._comparison_task is not None:
+            self._comparison_task.cancel.set()
         if self._rendering:
-            self._generation += 1
+            self._render_revision_id += 1
             self._pending = True
             for task in self._tasks.values():
                 if task.kind in ("preview", "original"):
@@ -1272,6 +1337,11 @@ class MainWindow(QMainWindow):
             editor.advanced_requested.connect(lambda source, window=editor: self._handoff_editor(window, source, visual=False))
             editor.metadata_requested.connect(self._edit_metadata)
             editor.view_main_requested.connect(lambda window=editor: self._show_main_from_editor(window))
+            editor.preview_invalidated.connect(self._invalidate_preview)
+            editor.photo_view.zoom_changed.connect(
+                lambda zoom, view=editor.photo_view: self._preview_zoom_changed(zoom, view))
+            editor.photo_view.original_requested.connect(
+                lambda view=editor.photo_view: self._request_original(view))
         self._editors.append(editor)
         self._show_template_editor(editor)
         self._refresh_footer_examples()

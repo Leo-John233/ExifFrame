@@ -17,6 +17,7 @@ register_translations({
         'Scroll to zoom, drag to pan, double-click for fit or 100%, hold Space for the original',
     '原图': 'Original',
     '适应': 'Fit',
+    '原图读取失败，保留水印预览': 'Could not load the original; watermark preview retained',
     '{mode} · {width} × {height}': '{mode} · {width} × {height}',
 })
 
@@ -40,6 +41,11 @@ def image_size(image):
         except (TypeError, ValueError):
             pass
     return image.width(), image.height()
+
+
+def is_full_image(image):
+    width, height = image_size(image)
+    return image.width() >= width and image.height() >= height
 
 
 class ImageCanvas(QGraphicsView):
@@ -96,6 +102,10 @@ class ImageCanvas(QGraphicsView):
     @property
     def zoom(self) -> float:
         return self._zoom
+
+    @property
+    def comparing_original(self) -> bool:
+        return self._holding_original
 
     def set_empty_message(self, source):
         self.empty_message = source
@@ -241,8 +251,7 @@ class ImageCanvas(QGraphicsView):
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat() and not self.photo.pixmap().isNull():
             self._holding_original = True
-            if self.original.pixmap().isNull():
-                self.original_requested.emit()
+            self.original_requested.emit()
             self._show_comparison()
             event.accept()
             return

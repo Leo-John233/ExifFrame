@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import json
 
-from PySide6.QtCore import QRect, Qt, Signal
+from PySide6.QtCore import QRect, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QSyntaxHighlighter, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMessageBox,
@@ -134,6 +134,10 @@ class TemplateEditor(QDialog):
         self._preview_photo_path = photo_path
         self._preview_settings = settings
         self._status = ('修改后自动预览，点击保存模板保留修改', {})
+        self.source_timer = QTimer(self)
+        self.source_timer.setSingleShot(True)
+        self.source_timer.setInterval(80)
+        self.source_timer.timeout.connect(self._apply_source_change)
         self.setObjectName("templateEditor")
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowTitleHint |
                             Qt.WindowType.WindowSystemMenuHint | Qt.WindowType.WindowMinMaxButtonsHint |
@@ -144,6 +148,8 @@ class TemplateEditor(QDialog):
         self.setWindowModality(Qt.WindowModality.NonModal)
         self._build_ui()
         self.editor.setPlainText(initial_source)
+        self.source_timer.stop()
+        self._apply_source_change()
         self.editor.document().setModified(initial_source != self._saved_source)
         self._update_title()
         self._update_position()
@@ -317,6 +323,11 @@ class TemplateEditor(QDialog):
     def _text_changed(self):
         self._close_approved = False
         self._update_title()
+        self.preview.invalidate_source()
+        self.source_timer.start()
+        self._set_status('源码已修改，尚未检查格式')
+
+    def _apply_source_change(self):
         # 每次修改先使错误草稿失效，只有有效源码进入去抖预览
         try:
             validate_template(self.source())
@@ -324,7 +335,7 @@ class TemplateEditor(QDialog):
             self.preview.set_error(exc)
             self._set_status('格式检查失败：{error}', error=exc)
             return
-        self.preview.set_source(self.source())
+        self.preview.set_source(self.source(), immediate=True)
         self._set_status('预览自动更新 记得保存模板')
 
     def _update_title(self):
@@ -430,13 +441,14 @@ class TemplateEditor(QDialog):
 
     def check_format(self) -> bool:
         """使用与模板写入一致的规则校验草稿"""
+        self.source_timer.stop()
         try:
             validate_template(self.source())
         except Exception as exc:
             self.preview.set_error(exc)
             self._error('格式检查失败：{error}', exc, error=exc)
             return False
-        self.preview.set_source(self.source())
+        self.preview.set_source(self.source(), immediate=True)
         has_control = "{%" in self.source()
         self._set_status("Jinja 语法通过，条件和循环的最终结果请用照片预览验证" if has_control else "格式检查通过")
         self.status_label.setToolTip("")
@@ -529,6 +541,7 @@ class TemplateEditor(QDialog):
     def closeEvent(self, event):
         if self._close_approved or self.confirm_close():
             self._close_approved = True
+            self.source_timer.stop()
             self.preview.shutdown()
             super().closeEvent(event)
         else:
@@ -538,5 +551,6 @@ class TemplateEditor(QDialog):
         # Esc 和标题栏关闭遵循相同的未保存检查
         if self._close_approved or self.confirm_close():
             self._close_approved = True
+            self.source_timer.stop()
             self.preview.shutdown()
             super().reject()

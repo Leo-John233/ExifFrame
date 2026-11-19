@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from PySide6.QtCore import QEvent, Qt
+from PySide6.QtCore import QEvent, QTimer, Qt
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QLineEdit,
     QPlainTextEdit, QPushButton, QScrollArea, QSplitter,
@@ -77,6 +77,11 @@ class TemplateWizard(QDialog):
         self._style_key = None
         self._style_drafts = {}
         self._composition_error = None
+        self._content_pending = False
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setSingleShot(True)
+        self._refresh_timer.setInterval(80)
+        self._refresh_timer.timeout.connect(self._flush_pending)
         self._loading = True
         self._context = dict(metadata=metadata, filename=filename, file_dir=file_dir)
         self._preview_path = photo_path if photo_path is not None else example_photo_path()
@@ -205,7 +210,7 @@ class TemplateWizard(QDialog):
         self.buttons.rejected.connect(self.reject)
         bottom.addWidget(self.buttons)
         layout.addLayout(bottom)
-        self.name_input.textChanged.connect(self._refresh)
+        self.name_input.textChanged.connect(self._schedule_refresh)
         self.mode.currentIndexChanged.connect(self._change_style)
         self.styles.currentIndexChanged.connect(self._change_style)
 
@@ -240,6 +245,8 @@ class TemplateWizard(QDialog):
         """每个起始样式保留独立草稿，切回来时恢复用户组合"""
         if self._loading:
             return
+        if self._refresh_timer.isActive() or self._content_pending:
+            self._flush_pending()
         mode = self.mode.currentData()
         key = (mode, self.styles.currentData() if mode == '内置样式' else self.current_template if mode == '复制当前模板' else '')
         if key == self._style_key:
@@ -283,6 +290,25 @@ class TemplateWizard(QDialog):
         """真实字段调整才更新草稿，名称和语言变化不重建模型"""
         if self._loading:
             return
+        self._content_pending = True
+        self.preview.invalidate_source()
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(bool(self.name_input.text().strip()))
+        self._refresh_timer.start()
+
+    def _schedule_refresh(self, *args):
+        if not self._loading:
+            self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(bool(self.name_input.text().strip()))
+            self._refresh_timer.start()
+
+    def _flush_pending(self):
+        self._refresh_timer.stop()
+        if self._content_pending:
+            self._content_pending = False
+            self._apply_content()
+        else:
+            self._refresh()
+
+    def _apply_content(self):
         try:
             self._visual_source = self.footer_panel.composed_source()
             self._advanced_source = None
@@ -302,6 +328,10 @@ class TemplateWizard(QDialog):
     def _refresh(self, *args):
         if self._loading:
             return
+        if self._content_pending:
+            self._flush_pending()
+            return
+        self._refresh_timer.stop()
         mode = self.mode.currentData()
         self.styles.setEnabled(mode == '内置样式')
         advanced = self._advanced_source is not None
@@ -328,7 +358,7 @@ class TemplateWizard(QDialog):
             if self.source.strip() == '[]':
                 raise ValueError(tr('水印模板需要至少一个处理步骤'))
             source_valid = True
-            self.preview.set_source(self.source)
+            self.preview.set_source(self.source, immediate=True)
             name = self.name_input.text().strip()
             path = _template_path(name)
             if path.exists() or any(item.name.casefold() == path.name.casefold() for item in path.parent.glob('*.json')):
@@ -349,6 +379,8 @@ class TemplateWizard(QDialog):
     def _advanced(self):
         from .preview import TemplatePreview
 
+        if self._refresh_timer.isActive() or self._content_pending:
+            self._flush_pending()
         if self._composition_error is not None:
             self.status.setText(tr('无法读取当前组合：{error}', error=localize_error(self._composition_error)))
             return
@@ -376,8 +408,12 @@ class TemplateWizard(QDialog):
         layout.addWidget(error)
         buttons = _WizardButtons('使用此源码')
         layout.addWidget(buttons)
+        source_timer = QTimer(dialog)
+        source_timer.setSingleShot(True)
+        source_timer.setInterval(80)
 
         def update_preview():
+            source_timer.stop()
             try:
                 source = editor.toPlainText()
                 validate_template(source)
@@ -389,7 +425,7 @@ class TemplateWizard(QDialog):
                 buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(False)
                 return False
             error.clear()
-            preview.set_source(source)
+            preview.set_source(source, immediate=True)
             buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(True)
             return True
 
@@ -405,10 +441,17 @@ class TemplateWizard(QDialog):
                 pass
             dialog.accept()
 
-        editor.textChanged.connect(update_preview)
+        def schedule_preview():
+            preview.invalidate_source()
+            buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(True)
+            source_timer.start()
+
+        source_timer.timeout.connect(update_preview)
+        editor.textChanged.connect(schedule_preview)
         buttons.accepted.connect(apply)
         buttons.rejected.connect(dialog.reject)
         dialog.finished.connect(preview.shutdown)
+        dialog.finished.connect(source_timer.stop)
         update_preview()
         if dialog.exec() == QDialog.DialogCode.Accepted:
             if preview.photo_path:
@@ -447,7 +490,7 @@ class TemplateWizard(QDialog):
         self._refresh()
 
     def accept(self):
-        self._refresh()
+        self._flush_pending()
         if not self.buttons.button(QDialogButtonBox.StandardButton.Ok).isEnabled():
             return
         self.name = self.name_input.text().strip()
@@ -455,9 +498,11 @@ class TemplateWizard(QDialog):
         super().accept()
 
     def reject(self):
+        self._refresh_timer.stop()
         self.preview.shutdown()
         super().reject()
 
     def closeEvent(self, event):
+        self._refresh_timer.stop()
         self.preview.shutdown()
         super().closeEvent(event)

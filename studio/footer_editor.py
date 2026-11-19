@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from PySide6.QtCore import QPoint, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QImage, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDialog, QFrame,
-    QGraphicsPixmapItem, QGraphicsScene, QGraphicsView, QScrollArea,
+    QScrollArea,
     QGridLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMessageBox, QPushButton, QSizePolicy,
     QSplitter, QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 
 from core.desktop_service import validate_template, write_template
 from core.footer import FIELD_CATALOG, REGION_LABELS, FooterError, get_footer_field, normalize_layout, preview_rows, read_layout, write_layout
+from studio.canvas import ImageCanvas
 from studio.i18n import bind, localize_error, register_translations, tr, translator
 
 
@@ -118,71 +119,8 @@ class _ItemsList(QListWidget):
             self.reordered.emit()
 
 
-class _ImageView(QGraphicsView):
-    """保留缩放状态的照片预览与底部细节导航"""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setScene(QGraphicsScene(self))
-        self.photo = QGraphicsPixmapItem()
-        self.photo.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
-        self.scene().addItem(self.photo)
-        self._mode = 'fit'
-        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
-        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
-        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
-        self.setFrameShape(QFrame.Shape.NoFrame)
-        self.setMinimumSize(220, 160)
-        bind(self, '滚轮缩放，拖动查看；双击适应窗口', 'setToolTip')
-
-    def set_image(self, image):
-        pixmap = QPixmap.fromImage(image) if isinstance(image, QImage) else QPixmap(image) if isinstance(image, QPixmap) else QPixmap()
-        old_size = self.photo.pixmap().size()
-        self.photo.setPixmap(pixmap)
-        self.setSceneRect(QRectF(pixmap.rect()))
-        if old_size != pixmap.size() and self._mode is None:
-            self._mode = 'fit'
-        self._apply_mode()
-
-    def _apply_mode(self):
-        if self.photo.pixmap().isNull():
-            return
-        if self._mode == 'fit':
-            self.fitInView(self.photo, Qt.AspectRatioMode.KeepAspectRatio)
-        elif self._mode == 'detail':
-            self.resetTransform()
-            self.centerOn(self.sceneRect().center().x(), self.sceneRect().bottom() - self.viewport().height() / 2)
-
-    def fit_photo(self):
-        self._mode = 'fit'
-        self._apply_mode()
-
-    def actual_size(self):
-        self._mode = None
-        self.resetTransform()
-
-    def footer_detail(self):
-        self._mode = 'detail'
-        self._apply_mode()
-
-    def wheelEvent(self, event):
-        if self.photo.pixmap().isNull():
-            event.ignore()
-            return
-        factor = 1.0015 ** event.angleDelta().y()
-        current = self.transform().m11()
-        target = max(0.05, min(20, current * factor))
-        self._mode = None
-        self.scale(target / current, target / current)
-        event.accept()
-
-    def mouseDoubleClickEvent(self, event):
-        self.fit_photo()
-        event.accept()
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._apply_mode()
+class _ImageView(ImageCanvas):
+    """沿用组合编辑器的共享预览画布"""
 
 
 def _fit_editor_window(window, width, height):
@@ -227,6 +165,10 @@ class FooterPanel(QWidget):
                 self._fields[key] = field
         self._region_buttons = {}
         self._preview_labels = {}
+        self._preview_refresh_timer = QTimer(self)
+        self._preview_refresh_timer.setSingleShot(True)
+        self._preview_refresh_timer.setInterval(80)
+        self._preview_refresh_timer.timeout.connect(self._refresh_preview)
         self._build_ui()
         self.set_source(source)
         translator.language_changed.connect(self.retranslate_ui)
@@ -776,7 +718,7 @@ class FooterPanel(QWidget):
         self._changed()
 
     def _changed(self):
-        self._refresh_preview()
+        self._preview_refresh_timer.start()
         self.changed.emit()
 
     def _refresh_preview(self):
@@ -821,6 +763,7 @@ class FooterEditor(QDialog):
     """封装可视化草稿的预览、保存和高级源码交接"""
 
     source_preview = Signal(str)
+    preview_invalidated = Signal()
     saved = Signal(str)
     advanced_requested = Signal(str)
     metadata_requested = Signal()
@@ -837,6 +780,7 @@ class FooterEditor(QDialog):
         self._new = not bool(name)
         self._close_approved = False
         self._last_preview_source = None
+        self._preview_invalidated = False
         self._status = ('修改会自动更新左侧预览，保存后写入模板', {})
         self._image_status = ('等待照片预览', {})
         self.setObjectName('footerEditor')
@@ -875,14 +819,11 @@ class FooterEditor(QDialog):
         preview_tools = QHBoxLayout()
         preview_tools.setSpacing(8)
         self.photo_view = _ImageView()
-        self.fit_button = bind(QPushButton(), '适应')
-        self.fit_button.clicked.connect(self.photo_view.fit_photo)
-        self.actual_button = QPushButton('100%')
-        self.actual_button.clicked.connect(self.photo_view.actual_size)
+        self.fit_button = self.photo_view.hud_fit
+        self.actual_button = self.photo_view.hud_actual
         self.detail_button = bind(QPushButton(), '水印细节')
         self.detail_button.clicked.connect(self.photo_view.footer_detail)
-        for button in (self.fit_button, self.actual_button, self.detail_button):
-            preview_tools.addWidget(button)
+        preview_tools.addWidget(self.detail_button)
         preview_tools.addStretch()
         preview_layout.addLayout(preview_tools)
         self.empty_preview = QLabel()
@@ -952,7 +893,7 @@ class FooterEditor(QDialog):
             self.addAction(action)
         self.preview_timer = QTimer(self)
         self.preview_timer.setSingleShot(True)
-        self.preview_timer.setInterval(400)
+        self.preview_timer.setInterval(80)
         self.preview_timer.timeout.connect(self._auto_preview)
         self.panel.changed.connect(self._composition_changed)
         self.name_input.textChanged.connect(self._changed)
@@ -979,6 +920,8 @@ class FooterEditor(QDialog):
     def _composition_changed(self):
         self._changed()
         if self.live_preview.isChecked():
+            self._preview_invalidated = True
+            self.preview_invalidated.emit()
             self.preview_timer.start()
 
     def _live_toggled(self, enabled):
@@ -1000,8 +943,9 @@ class FooterEditor(QDialog):
         except Exception as exc:
             self._set_status('预览失败：{error}', error=exc)
             return False
-        if not force and source == self._last_preview_source:
+        if not force and source == self._last_preview_source and not self._preview_invalidated:
             return True
+        self._preview_invalidated = False
         self._last_preview_source = source
         self._set_image_status('正在更新预览…')
         self.source_preview.emit(source)
@@ -1051,6 +995,7 @@ class FooterEditor(QDialog):
         self.name = self._saved_name = name
         self.preview_timer.stop()
         self._last_preview_source = source
+        self._preview_invalidated = False
         self._saved_source = self._initial_source = source
         self.panel.set_source(source)
         self._initial_layout = self.panel.layout_data()
