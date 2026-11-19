@@ -17,7 +17,8 @@ from PIL import Image, ImageOps
 from PySide6.QtCore import QObject, QRunnable, Signal
 from PySide6.QtGui import QImage
 
-from core.desktop_service import SUPPORTED_SUFFIXES, export_photo, read_template, render_photo
+from core.desktop_service import (SUPPORTED_SUFFIXES, _protected_source_index, export_photo,
+                                  read_template, render_photo)
 from core.image_cache import photo_proxy, photo_thumbnail
 from studio.canvas import image_size, set_image_size
 
@@ -160,7 +161,7 @@ class ImageTask(QRunnable):
     """每项任务拥有取消标记且只在安全的单张边界停止"""
 
     def __init__(self, kind: str, token: int, *, paths=(), settings=None, output=None, full_resolution=False,
-                 batch_size=1, pause=None, io_lock=None):
+                 batch_size=1, pause=None, io_lock=None, export_snapshot=None):
         super().__init__()
         self.kind, self.token = kind, token
         self.paths, self.settings, self.output = tuple(paths), settings, output
@@ -169,6 +170,7 @@ class ImageTask(QRunnable):
         self.pause = pause if pause is not None else Event()
         self.io_lock = io_lock
         self.batch_size = max(1, min(64, int(batch_size)))
+        self.export_snapshot = export_snapshot
         self.signals = WorkerSignals()
 
     def run(self):
@@ -384,7 +386,26 @@ class ImageTask(QRunnable):
         processed = 0
         settings = self.settings
         source_unavailable = False
-        if not settings.template_source:
+        photo_settings = None
+        if self.export_snapshot is not None:
+            snapshot = self.export_snapshot
+            sources = {}
+            for name, source in snapshot.template_specs:
+                if not source and name not in sources:
+                    try:
+                        sources[name] = read_template(name)
+                    except (OSError, ValueError):
+                        source_unavailable = True
+            snapshot = snapshot.with_template_sources(sources)
+            photo_settings = {path: snapshot.settings_for(path) for path in self.paths}
+            if photo_settings:
+                settings = next(iter(photo_settings.values()))
+                if settings.overwrite_existing:
+                    _protected_source_index(settings)
+                    protected = getattr(settings, '_protected_source_index', None)
+                    for item in photo_settings.values():
+                        item._protected_source_index = protected
+        elif not settings.template_source:
             try:
                 settings = replace(settings, template_source=read_template(settings.template_name))
             except (OSError, ValueError):
@@ -394,7 +415,8 @@ class ImageTask(QRunnable):
             if self.cancel.is_set():
                 return 'cancelled', None
             try:
-                return 'completed', export_photo(path, settings, self.output)
+                selected = photo_settings[path] if photo_settings is not None else settings
+                return 'completed', export_photo(path, selected, self.output)
             except FileExistsError:
                 return 'skipped', str(path)
             except Exception as exc:
@@ -410,7 +432,11 @@ class ImageTask(QRunnable):
             self.signals.progress.emit(processed, len(self.paths), path.name)
             self.signals.summary.emit({"completed": len(completed), "errors": len(errors), "skipped": len(skipped)})
 
-        workers = 1 if source_unavailable else _export_workers(self.paths, settings, self.output, self.cancel)
+        variants = {(item.template_name, item.template_source) for item in photo_settings.values()} if photo_settings else set()
+        custom_logo = any(item.logo_choice and Path(item.logo_choice).is_absolute()
+                          for item in photo_settings.values()) if photo_settings else False
+        workers = (1 if source_unavailable or len(variants) > 1 or custom_logo
+                   else _export_workers(self.paths, settings, self.output, self.cancel))
         if workers == 1:
             for path in self.paths:
                 if self.cancel.is_set():
