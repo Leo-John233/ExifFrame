@@ -2,6 +2,7 @@
 
 from collections import OrderedDict
 from concurrent.futures import CancelledError
+from functools import lru_cache
 from pathlib import Path
 from threading import RLock
 
@@ -79,6 +80,29 @@ def _signature(path):
     return str(source), info.st_mtime_ns, info.st_size
 
 
+def _check_source_version(source, modified, file_size):
+    """照片在解码期间变化时不复用旧身份"""
+    if _signature(source) != (source, modified, file_size):
+        raise OSError('照片在预览期间发生变化，请重试')
+
+
+@lru_cache(maxsize=512)
+def _dimensions(source, modified, file_size):
+    with Image.open(source) as opened:
+        encoded_size = opened.size
+        full_size = encoded_size[::-1] if opened.getexif().get(274, 1) in (5, 6, 7, 8) else encoded_size
+    _check_source_version(source, modified, file_size)
+    return full_size, encoded_size
+
+
+def photo_dimensions(path: Path, cancelled=None):
+    """读取照片方向修正后的尺寸和编码尺寸"""
+    check_cancelled(cancelled)
+    dimensions = _dimensions(*_signature(path))
+    check_cancelled(cancelled)
+    return dimensions
+
+
 def _thumbnail(source, modified, file_size, bounds):
     key = ('thumbnail', source, modified, file_size, bounds)
     cached = _preview_cache.get(key)
@@ -111,6 +135,7 @@ def photo_proxy(path: Path, max_side=1800, cancelled=None):
     cached = _preview_cache.get(key)
     if cached is not None:
         image, (full_size, encoded_size) = cached
+        _check_source_version(source, modified, file_size)
         check_cancelled(cancelled)
         return image, full_size, encoded_size
     with Image.open(source) as opened:
@@ -121,6 +146,7 @@ def photo_proxy(path: Path, max_side=1800, cancelled=None):
         check_cancelled(cancelled)
         image = ImageOps.exif_transpose(opened).copy()
     check_cancelled(cancelled)
+    _check_source_version(source, modified, file_size)
     _preview_cache.put(key, image, (full_size, encoded_size))
     return image, full_size, encoded_size
 
