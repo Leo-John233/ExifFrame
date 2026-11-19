@@ -105,25 +105,36 @@ def photo_dimensions(path: Path, cancelled=None):
     return dimensions
 
 
-def _thumbnail(source, modified, file_size, bounds):
+def _thumbnail(source, modified, file_size, bounds, cancelled=None):
     key = ('thumbnail', source, modified, file_size, bounds)
     cached = _preview_cache.get(key)
     if cached is not None:
+        _check_source_version(source, modified, file_size)
+        check_cancelled(cancelled)
         image, (width, height) = cached
         return image, width, height
     with Image.open(source) as opened:
         width, height = opened.size
-        if opened.getexif().get(274, 1) in (5, 6, 7, 8):
+        rotated = opened.getexif().get(274, 1) in (5, 6, 7, 8)
+        if rotated:
             width, height = height, width
-        opened.thumbnail(bounds, Image.Resampling.LANCZOS)
+        check_cancelled(cancelled)
+        opened.thumbnail(bounds[::-1] if rotated else bounds, Image.Resampling.LANCZOS)
+        check_cancelled(cancelled)
         image = ImageOps.exif_transpose(opened).convert('RGBA')
+    check_cancelled(cancelled)
+    _check_source_version(source, modified, file_size)
     _preview_cache.put(key, image, (width, height))
     return image, width, height
 
 
-def photo_thumbnail(path: Path, bounds=(144, 112)):
+def photo_thumbnail(path: Path, bounds=(144, 112), cancelled=None):
     """返回独立缩略图和方向修正后的原始尺寸"""
-    image, width, height = _thumbnail(*_signature(path), tuple(bounds))
+    check_cancelled(cancelled)
+    signature = _signature(path)
+    image, width, height = _thumbnail(*signature, tuple(bounds), cancelled)
+    _check_source_version(*signature)
+    check_cancelled(cancelled)
     return image, width, height
 
 
