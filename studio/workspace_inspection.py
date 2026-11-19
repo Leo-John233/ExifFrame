@@ -1,12 +1,41 @@
 """照片检查器与工作区状态的联动"""
 
+import json
+import re
 from copy import deepcopy
 from dataclasses import replace
+from functools import lru_cache
 from pathlib import Path
 
 from core.desktop_service import read_template, save_workspace_settings
+from core.footer import text_targets
 from core.metadata import FIELDS, MetadataError, normalize_watermark_changes
 from .i18n import language, localize_error, tr
+
+
+@lru_cache(maxsize=16)
+def _text_template_signature(source):
+    """只跟踪影响文字内容的模板表达式"""
+    try:
+        _, targets = text_targets(json.loads(source))
+        result = []
+        for key, _, _, node in targets:
+            segments = node.get('text_segments')
+            if isinstance(segments, list):
+                segments = tuple(item.get('text') if isinstance(item, dict) else repr(item) for item in segments)
+            elif not isinstance(segments, (str, type(None))):
+                segments = repr(segments)
+            result.append((key, node.get('processor_name'), node.get('text'), segments))
+        return tuple(result)
+    except (ValueError, TypeError, AttributeError):
+        return source
+
+
+@lru_cache(maxsize=16)
+def _text_context_flags(source):
+    signature = _text_template_signature(source)
+    return (bool(re.search(r'\bfiles\b', source)),
+            bool(re.search(r'\b(?:auto_logo|_logo_choice)\b', str(signature))))
 
 
 class WorkspaceInspection:
@@ -48,6 +77,7 @@ class WorkspaceInspection:
         self.state.set_checked_paths(self.files.selected_paths())
 
     def _checked_paths_changed(self, paths):
+        self._invalidate_changed_rows()
         self._update_actions()
         self._queue_selection_changed()
 
@@ -79,7 +109,36 @@ class WorkspaceInspection:
             source = settings.template_source or read_template(settings.template_name)
         except (ValueError, OSError):
             source = ''
+        self._invalidate_changed_rows(settings, source)
         self.inspector.inline_footer.set_source(source)
+
+    def _footer_text_context(self, settings, source):
+        path = self._editable_photo()
+        signature = _text_template_signature(source)
+        uses_files, uses_logo = _text_context_flags(source)
+        files = tuple(str(item) for item in self.state.checked_paths) if uses_files else ()
+        if not files and uses_files and path:
+            files = (str(path),)
+        title = '' if settings.use_template_styles else settings.title
+        subtitle = '' if settings.use_template_styles else settings.subtitle
+        logo = ('' if settings.use_template_styles else settings.logo_choice) if uses_logo else None
+        return (path, settings.template_name, signature, title, subtitle, logo,
+                self.state.metadata_for(path), files)
+
+    def _invalidate_changed_rows(self, settings=None, source=None):
+        settings = settings or self._photo_settings()
+        if source is None:
+            try:
+                source = settings.template_source or read_template(settings.template_name)
+            except (ValueError, OSError):
+                source = ''
+        target = (self._editable_photo(), settings.template_name)
+        context_changed = (self._rendered_rows_context is not None
+                           and self._footer_text_context(settings, source) != self._rendered_rows_context)
+        if target != self._rendered_rows_target or context_changed:
+            self.inspector.inline_footer.set_rendered_rows({})
+            self._rendered_rows_target = target
+            self._rendered_rows_context = None
 
     def _show_photo_fields(self, metadata=None, *, force=False):
         path = self.state.selected_photo
@@ -217,6 +276,7 @@ class WorkspaceInspection:
         self._sync_template_context()
         path = self._editable_photo()
         if path and self.state.photo_key(path) in keys:
+            self._invalidate_changed_rows()
             self._show_photo_fields()
             self._schedule_preview()
             self._refresh_footer_examples(request=False)

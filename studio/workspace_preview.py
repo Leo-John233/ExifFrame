@@ -13,7 +13,7 @@ from .preview import _task_owner
 from .state import STYLE_FIELDS
 from .i18n import localize_error
 from .template_editor import TemplateEditor
-from .workers import ImageTask
+from .workers import ImageTask, qt_rendered_rows
 
 
 class WorkspacePreview:
@@ -27,6 +27,8 @@ class WorkspacePreview:
         self._comparison_task = self._comparison_image = None
         self._comparison_full = self._comparison_upgrade = False
         self._watermark_image = self._watermark_signature = self._render_signature = None
+        self._rendered_rows_target = None
+        self._rendered_rows_context = self._rendered_rows_job_context = None
         self._preview_source, self._preview_values, self._preview_error = '未选择照片', {}, ''
         self._priority = _task_owner()
         self._priority.background_ready.connect(self._start_visible_thumbnails)
@@ -201,6 +203,8 @@ class WorkspacePreview:
         # 与实际导出共用勾选文件快照，支持模板中的跨照片处理
         selected = tuple(str(item) for item in self.state.checked_paths)
         self._render_signature = deepcopy(self._preview_signature())
+        if kind == 'preview':
+            self._rendered_rows_job_context = self._footer_text_context(self._photo_settings(), self._render_signature[-2])
         self._start_task(kind, token=self._render_revision_id, paths=[path],
                          settings=replace(self._photo_settings(), input_files=selected), full_resolution=full_resolution)
         self._priority.release(self)
@@ -257,6 +261,8 @@ class WorkspacePreview:
             if kind == "preview":
                 self._watermark_image = result
                 self._watermark_signature = self._render_signature
+                self._rendered_rows_context = self._rendered_rows_job_context
+                self.inspector.inline_footer.set_rendered_rows(qt_rendered_rows(result))
                 self._send_footer_preview(self._watermark_image)
             _, width, height = self._current_data
             mode = "输出文件" if self._current_kind == "output" else "原图" if kind == "original" else "水印预览"
