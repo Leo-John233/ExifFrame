@@ -50,6 +50,7 @@ class FileBrowser(QWidget):
         self._checked = set()
         self._order = {}
         self._next_order = 0
+        self._next_item_token = 0
         self._selected_count = 0
         self._batching = False
         self._viewports = {}
@@ -224,6 +225,8 @@ class FileBrowser(QWidget):
             item = QTreeWidgetItem(parent, [path.name, size_text])
             item.setTextAlignment(1, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             item.setData(0, Qt.ItemDataRole.UserRole, (path, width, height))
+            self._next_item_token += 1
+            item.setData(0, Qt.ItemDataRole.UserRole + 4, self._next_item_token)
             if image is not None and not image.isNull():
                 item.setIcon(0, QIcon(QPixmap.fromImage(image)))
                 item.setData(0, Qt.ItemDataRole.UserRole + 2, True)
@@ -266,6 +269,11 @@ class FileBrowser(QWidget):
         item = self.items[kind].get(_identity(path))
         return item is not None and not item.data(0, Qt.ItemDataRole.UserRole + 2)
 
+    def item_token(self, kind, path):
+        """区分同一路径被移除后重新添加的列表项"""
+        item = self.items[kind].get(_identity(path))
+        return item.data(0, Qt.ItemDataRole.UserRole + 4) if item is not None else None
+
     def update_dimensions(self, kind, path, width, height):
         """更新已存在照片的尺寸而不改变当前选择"""
         item = self.items[kind].get(_identity(path))
@@ -285,20 +293,15 @@ class FileBrowser(QWidget):
             self.file_details_changed.emit(kind, data)
         return True
 
-    def update_file(self, kind, path, image, width, height, signature):
-        """只为仍存在且版本未改变的项目更新缩略图"""
+    def update_file(self, kind, path, image, width, height, signature, item_token):
+        """只为同一列表项更新后台核验过版本的缩略图"""
         item = self.items[kind].get(_identity(path))
-        if item is None or image is None or image.isNull() or signature is None:
-            return False
-        try:
-            info = Path(path).stat()
-        except OSError:
-            return False
-        if (info.st_mtime_ns, info.st_size) != tuple(signature):
+        if (item is None or item_token is None or item.data(0, Qt.ItemDataRole.UserRole + 4) != item_token
+                or image is None or image.isNull() or signature is None):
             return False
         self._changing = True
         try:
-            item.setData(0, Qt.ItemDataRole.UserRole + 2, True)
+            item.setData(0, Qt.ItemDataRole.UserRole + 2, tuple(signature))
             item.setIcon(0, QIcon(QPixmap.fromImage(image)))
         finally:
             self._changing = False
