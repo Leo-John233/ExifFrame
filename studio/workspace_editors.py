@@ -10,8 +10,10 @@ from threading import Event
 
 from PySide6.QtCore import QRunnable, Qt, Slot
 from PySide6.QtWidgets import QFileDialog, QInputDialog, QMessageBox
-from core.desktop_service import WatermarkSettings, list_presets, read_template, write_template
-from core.style_pack import export_style_pack, import_style_pack, save_custom_template
+from core.desktop_service import WatermarkSettings, list_presets, read_template, render_photo, write_template
+from core.sample_photo import example_photo_path
+from core.style_pack import (export_style_json, export_style_pack, export_style_png, import_style_pack,
+                             read_preset_style, save_custom_template)
 from .i18n import localize_error, tr
 from .template_editor import TemplateEditor
 from .workers import WorkerSignals
@@ -39,6 +41,34 @@ class FooterMetadataTask(QRunnable):
                 metadata = _metadata(str(path), modified)
                 if not self.cancel.is_set():
                     self.signals.result.emit(self.kind, self.token, (path, modified, size, metadata))
+        except Exception as exc:
+            if not self.cancel.is_set():
+                self.signals.error.emit(self.kind, self.token, str(exc))
+        finally:
+            self.signals.finished.emit(self.kind, self.token)
+
+
+class StyleCardTask(QRunnable):
+    """在后台按冻结的模板和照片生成完整卡片"""
+
+    def __init__(self, token, path, photo, name, source, settings, overwrite):
+        super().__init__()
+        self.kind, self.token = 'style_card', token
+        self.path, self.photo, self.name = Path(path), Path(photo), name
+        self.source, self.settings, self.overwrite = source, deepcopy(settings), overwrite
+        self.cancel = Event()
+        self.signals = WorkerSignals()
+
+    def run(self):
+        try:
+            if self.cancel.is_set():
+                return
+            image = render_photo(self.photo, self.settings, preview=True, cancelled=self.cancel.is_set)
+            if self.cancel.is_set():
+                return
+            export_style_png(self.path, self.name, self.source, self.settings, image, overwrite=self.overwrite)
+            if not self.cancel.is_set():
+                self.signals.result.emit(self.kind, self.token, str(self.path))
         except Exception as exc:
             if not self.cancel.is_set():
                 self.signals.error.emit(self.kind, self.token, str(exc))
@@ -318,36 +348,103 @@ class WorkspaceEditors:
             self._record_errors('无法保存模板', [str(exc)])
             QMessageBox.warning(self, tr('无法保存模板'), localize_error(exc))
 
-    def _export_style_pack(self):
-        settings = self._photo_settings()
-        selected, _ = QFileDialog.getSaveFileName(
-            self, tr('导出样式包'), settings.template_name + '.efstyle', tr('样式包 (*.efstyle)'))
+    def _export_style_pack(self, template_name=None, format_hint=None):
+        try:
+            current = self._photo_settings()
+            name = template_name or current.template_name
+            if name == current.template_name:
+                settings = current
+                source = self._effective_template_source(settings)
+            else:
+                settings = replace(WatermarkSettings(template_name=name), **read_preset_style(name))
+                source = self._drafts.get(name) or read_template(name)
+                settings = replace(settings, metadata_overrides=deepcopy(current.metadata_overrides))
+            photo = self._editable_photo() or example_photo_path()
+            selected_paths = tuple(str(item) for item in self.state.checked_paths) if self._editable_photo() else ()
+            settings = replace(settings, template_name=name, template_source=source,
+                               input_files=selected_paths or (str(photo),))
+            if self._editable_photo() is None:
+                settings = replace(settings, metadata_overrides={}, protected_sources=())
+        except Exception as exc:
+            self._record_errors('无法导出模板', [str(exc)])
+            QMessageBox.warning(self, tr('无法导出模板'), localize_error(exc))
+            return
+        filters = {'png': tr('PNG 模板卡片 (*.png)'), 'json': tr('JSON 纯配置 (*.json)'),
+                   'zip': tr('ZIP 样式包 (*.zip)'), 'efstyle': tr('样式包 (*.efstyle)')}
+        initial_format = format_hint if format_hint in filters else 'png'
+        selected, selected_filter = QFileDialog.getSaveFileName(
+            self, tr('导出模板'), f'{name}.{initial_format}',
+            filters[initial_format] if format_hint else ';;'.join(filters.values()))
         if not selected:
             return
         path = Path(selected)
-        if path.suffix.casefold() != '.efstyle':
-            path = path.with_name(path.name + '.efstyle')
+        filter_choice = next((key for key, label in filters.items() if selected_filter == label), None)
+        chosen = filter_choice or initial_format
+        suffix = path.suffix.casefold().lstrip('.')
+        if format_hint:
+            chosen = initial_format
+            if suffix != chosen:
+                path = path.with_name(path.name + '.' + chosen)
+        elif filter_choice:
+            if suffix != chosen:
+                path = path.with_suffix('.' + chosen) if suffix in filters else path.with_name(path.name + '.' + chosen)
+        elif suffix in filters:
+            chosen = suffix
+        else:
+            path = path.with_name(path.name + '.' + chosen)
         try:
+            # 所有已导入照片和内置示例始终受覆盖保护
+            protected = [*self.files.all_paths(), photo, example_photo_path()]
+            target = path.resolve()
+            for item in protected:
+                existing = Path(item).resolve()
+                if target == existing or (target.exists() and existing.exists() and target.samefile(existing)):
+                    raise ValueError('不能覆盖已导入的原照片，请选择独立的输出目录')
             overwrite = path == Path(selected) and path.is_file()
-            export_style_pack(path, settings.template_name, self._effective_template_source(settings), settings,
-                              overwrite=overwrite)
-            self._set_status('样式包已导出：{path}', path=str(path))
+            if chosen == 'png':
+                self._serial += 1
+                task = StyleCardTask(self._serial, path, photo, name, source, settings, overwrite)
+                task.signals.result.connect(self._style_card_result)
+                task.signals.error.connect(self._style_card_error)
+                task.signals.finished.connect(self._task_finished)
+                self._tasks[(task.kind, task.token)] = task
+                self._priority.hold(task)
+                self.pool.start(task)
+                self._set_status('正在导出模板卡片…')
+            elif chosen == 'json':
+                export_style_json(path, name, source, settings, overwrite=overwrite)
+                self._set_status('模板已导出：{path}', path=str(path))
+            else:
+                export_style_pack(path, name, source, settings, overwrite=overwrite)
+                self._set_status('模板已导出：{path}', path=str(path))
         except Exception as exc:
-            self._record_errors('无法导出样式包', [str(exc)])
-            QMessageBox.warning(self, tr('无法导出样式包'), localize_error(exc))
+            self._record_errors('无法导出模板', [str(exc)])
+            QMessageBox.warning(self, tr('无法导出模板'), localize_error(exc))
+
+    @Slot(str, int, object)
+    def _style_card_result(self, kind, token, path):
+        if not self._closing:
+            self._set_status('模板已导出：{path}', path=path)
+
+    @Slot(str, int, str)
+    def _style_card_error(self, kind, token, message):
+        if not self._closing:
+            self._record_errors('无法导出模板', [message])
+            QMessageBox.warning(self, tr('无法导出模板'), localize_error(message))
 
     def _import_style_pack(self):
-        selected, _ = QFileDialog.getOpenFileName(self, tr('导入样式包'), '', tr('样式包 (*.efstyle)'))
+        selected, _ = QFileDialog.getOpenFileName(self, tr('导入模板'), '',
+                                                   tr('模板文件 (*.png *.json *.zip *.efstyle)'))
         if not selected:
             return
         try:
             name = import_style_pack(selected)
             self._template_saved(name)
             self.inspector.show_my_templates()
-            self._set_status('样式包已导入：{name}', name=name)
+            self._set_status('模板已导入：{name}', name=name)
         except Exception as exc:
-            self._record_errors('无法导入样式包', [str(exc)])
-            QMessageBox.warning(self, tr('无法导入样式包'), localize_error(exc))
+            self._record_errors('无法导入模板', [str(exc)])
+            QMessageBox.warning(self, tr('无法导入模板'), localize_error(exc))
 
     def _edit_template(self):
         from .source_panel import SourcePanel

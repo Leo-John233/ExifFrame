@@ -784,3 +784,24 @@ register_translations({
 })
 register_translations({'保留原位置': 'Keep original position', '左侧': 'Left', '右侧': 'Right'})
 register_translations({'我的模板': 'My presets', '缺失值': 'Missing', '缺失值策略影响所有区域': 'The missing-value policy affects all slots'})
+
+_PRESET_CARD_ERRORS = {
+    '模板卡片预览无效': 'The preset card preview is invalid',
+    '模板卡片素材过大，请使用 ZIP 样式包': 'The preset card assets are too large. Export a ZIP style pack instead.',
+    '模板卡片图片无效或已损坏': 'The preset card image is invalid or damaged',
+    '模板卡片数据无效或已损坏': 'The preset card data is invalid or damaged',
+    '模板卡片数据校验失败': 'The preset card data failed its integrity check',
+    '该 PNG 不含 ExifFrame 模板配置，如需作为自定义相框贴图请在「画框定制」中导入':
+        'This PNG does not contain an ExifFrame preset. To use it as a custom frame image, import it under Frame customization.',
+}
+register_translations(_PRESET_CARD_ERRORS)
+_ERROR_SOURCES.update(_PRESET_CARD_ERRORS)
+register_translations({
+    '导出模板': 'Export preset', '导入模板': 'Import preset',
+    'PNG 模板卡片 (*.png)': 'PNG preset card (*.png)', 'JSON 纯配置 (*.json)': 'JSON configuration (*.json)',
+    'ZIP 样式包 (*.zip)': 'ZIP style pack (*.zip)',
+    '模板文件 (*.png *.json *.zip *.efstyle)': 'Preset files (*.png *.json *.zip *.efstyle)',
+    '正在导出模板卡片…': 'Exporting preset card…', '模板已导出：{path}': 'Preset exported: {path}',
+    '模板已导入：{name}': 'Preset imported: {name}',
+    '无法导出模板': 'Unable to export preset', '无法导入模板': 'Unable to import preset',
+})

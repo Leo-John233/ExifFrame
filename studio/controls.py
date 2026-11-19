@@ -456,6 +456,16 @@ class _ColorSwatch(QToolButton):
         super().leaveEvent(event)
 
 
+class _ElidedColorLabel(QLabel):
+    """长颜色状态按可用空间省略，完整文字保留给提示"""
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setPen(self.palette().color(QPalette.ColorRole.WindowText))
+        text = self.fontMetrics().elidedText(self.text(), Qt.TextElideMode.ElideLeft, self.contentsRect().width())
+        painter.drawText(self.contentsRect(), self.alignment(), text)
+
+
 class ColorProperty(QWidget):
     """颜色、实际值及恢复模板默认的紧凑属性行"""
 
@@ -475,10 +485,12 @@ class ColorProperty(QWidget):
         self.swatch = _ColorSwatch()
         bind(self.swatch, '选择颜色', 'setToolTip')
         self.swatch.clicked.connect(self._choose_color)
-        self.value_label = QLabel()
+        self.value_label = _ElidedColorLabel()
         self.value_label.setObjectName('colorPropertyValue')
-        self.value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.value_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        self.value_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.value_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.value_label.setMinimumWidth(72)
+        self.value_label.setMaximumWidth(180)
         self.reset_button = QToolButton()
         self.reset_button.setObjectName('propertyReset')
         self.reset_button.setText('↶')
@@ -486,7 +498,7 @@ class ColorProperty(QWidget):
         self.reset_button.clicked.connect(self.reset_requested)
         row.addWidget(self.label, 1)
         row.addWidget(self.swatch)
-        row.addWidget(self.value_label)
+        row.addWidget(self.value_label, 1)
         row.addWidget(self.reset_button)
         translator.language_changed.connect(self._update_display)
         self._update_display()

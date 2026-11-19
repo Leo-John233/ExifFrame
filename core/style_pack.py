@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import os
@@ -14,7 +16,7 @@ from io import BytesIO
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-from PIL import Image, ImageColor
+from PIL import Image, ImageColor, PngImagePlugin
 
 from core.runtime_paths import config_path
 
@@ -23,6 +25,8 @@ _MAX_ASSET_BYTES = 64 * 1024 * 1024
 _MAX_ASSET_PIXELS = 100_000_000
 _MAX_PACK_BYTES = 256 * 1024 * 1024
 _MAX_MANIFEST_BYTES = 4 * 1024 * 1024
+_MAX_CARD_PACK_BYTES = 40 * 1024 * 1024
+_CARD_KEY = 'ExifFramePreset'
 _ASSET_NAME = re.compile(r'assets/([0-9a-f]{64})\.(png|jpg)\Z')
 _ASSET_FIELD = re.compile(
     r'("(?:left_logo|right_logo|center_logo|path)"\s*:\s*)("(?:\\.|[^"\\])*")', re.S)
@@ -50,7 +54,12 @@ def _image_bytes(data):
 
 
 def _read_asset(path):
-    with Path(path).expanduser().open('rb') as stream:
+    path = Path(path).expanduser()
+    if not path.is_file():
+        # 旧模板中的内置 DJI.jpg 映射到透明 PNG，外部同名文件不受影响
+        from processor.logo_layer import resolve_logo_path
+        path = resolve_logo_path(path)
+    with path.open('rb') as stream:
         data = stream.read(_MAX_ASSET_BYTES + 1)
     return data, _image_bytes(data)
 
@@ -167,7 +176,7 @@ def _checked_style(values):
     return result
 
 
-def _prepare(source, settings):
+def _prepare(source, settings, *, asset_root=None):
     """收集实际引用的图像并替换为包内名称"""
     from core.desktop_service import validate_template
 
@@ -177,7 +186,12 @@ def _prepare(source, settings):
 
     def collect(value):
         try:
-            data, extension = _read_asset(value)
+            path = Path(value).expanduser()
+            if asset_root is not None and not path.is_absolute():
+                candidate = Path(asset_root) / path
+                if candidate.is_file():
+                    path = candidate
+            data, extension = _read_asset(path)
         except OSError as exc:
             raise ValueError(f'所选样式引用的素材不存在：{value}') from exc
         name = f'assets/{hashlib.sha256(data).hexdigest()}.{extension}'
@@ -307,6 +321,79 @@ def export_style_pack(path, name, source, settings, *, overwrite=False):
             temporary.unlink(missing_ok=True)
 
 
+def _write_export(path, writer, *, overwrite=False):
+    """完整写入同目录临时文件后发布"""
+    target = Path(path).expanduser()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with NamedTemporaryFile(dir=target.parent, prefix='.preset-', suffix='.tmp', delete=False) as stream:
+            temporary = Path(stream.name)
+            writer(stream)
+        if overwrite:
+            os.replace(temporary, target)
+        elif os.name == 'nt':
+            os.rename(temporary, target)
+        else:
+            os.link(temporary, target)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _archive_bytes(name, source, style, assets):
+    manifest = {'format': 'exifframe-style', 'version': 1, 'name': name,
+                'template': source, 'style': style, 'assets': sorted(assets)}
+    content = json.dumps(manifest, ensure_ascii=False, indent=2).encode('utf-8')
+    if len(content) > _MAX_MANIFEST_BYTES:
+        raise ValueError('样式包格式无效')
+    stream = BytesIO()
+    with zipfile.ZipFile(stream, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr('manifest.json', content)
+        for entry, data in assets.items():
+            archive.writestr(entry, data)
+    return stream.getvalue()
+
+
+def export_style_png(path, name, source, settings, preview, *, overwrite=False):
+    """以 PNG 预览图保存校验过的完整样式和内嵌素材"""
+    from core.desktop_service import _template_path
+
+    _template_path(name)
+    if not isinstance(preview, Image.Image) or preview.width <= 0 or preview.height <= 0:
+        raise ValueError('模板卡片预览无效')
+    source, style, assets = _prepare(source, settings)
+    archive = _archive_bytes(name, source, style, assets)
+    if len(archive) > _MAX_CARD_PACK_BYTES:
+        raise ValueError('模板卡片素材过大，请使用 ZIP 样式包')
+    data = {'format': 'exifframe-preset', 'version': 1, 'encoding': 'base64-zip',
+            'sha256': hashlib.sha256(archive).hexdigest(),
+            'payload': base64.b64encode(archive).decode('ascii')}
+    metadata = PngImagePlugin.PngInfo()
+    payload = json.dumps(data, ensure_ascii=True, separators=(',', ':'))
+    # 大素材已在归档中压缩；避免再次压缩导致常见图片库的文本解压上限报错
+    metadata.add_itxt(_CARD_KEY, payload, zip=len(payload) <= PngImagePlugin.MAX_TEXT_CHUNK)
+    image = preview.copy()
+    image.thumbnail((1200, 1200), Image.Resampling.LANCZOS)
+    if image.mode not in ('RGB', 'RGBA', 'L', 'LA'):
+        image = image.convert('RGBA')
+    _write_export(path, lambda stream: image.save(stream, format='PNG', pnginfo=metadata), overwrite=overwrite)
+
+
+def export_style_json(path, name, source, settings, *, overwrite=False):
+    """保存可读配置，图片引用仍指向原有素材"""
+    from core.desktop_service import _template_path, validate_template
+
+    _template_path(name)
+    validate_template(source)
+    style = _checked_style({key: getattr(settings, key) for key in _STYLE_FIELDS})
+    content = json.dumps({'format': 'exifframe-preset-json', 'version': 1, 'name': name,
+                          'template': source, 'style': style}, ensure_ascii=False, indent=2).encode('utf-8')
+    if len(content) > _MAX_MANIFEST_BYTES:
+        raise ValueError('样式包格式无效')
+    _write_export(path, lambda stream: stream.write(content), overwrite=overwrite)
+
+
 def _read_pack(path):
     """只读取限定名称和大小的包内文件，不解压任意路径"""
     try:
@@ -350,11 +437,101 @@ def _read_pack(path):
         raise ValueError('样式包格式无效') from exc
 
 
+def _read_png_card(path):
+    """校验 PNG 元数据、归档摘要和内部素材"""
+    try:
+        with Image.open(path) as image:
+            if image.format != 'PNG':
+                raise ValueError('模板卡片图片无效或已损坏')
+            payload = image.info.get(_CARD_KEY)
+            if payload is not None:
+                if Path(path).stat().st_size > _MAX_CARD_PACK_BYTES * 2:
+                    raise ValueError('模板卡片素材过大，请使用 ZIP 样式包')
+                if image.width * image.height > _MAX_ASSET_PIXELS:
+                    raise ValueError('模板卡片图片无效或已损坏')
+                image.verify()
+    except (OSError, SyntaxError, EOFError, Image.DecompressionBombError) as exc:
+        raise ValueError('模板卡片图片无效或已损坏') from exc
+    except ValueError as exc:
+        if str(exc) in ('模板卡片素材过大，请使用 ZIP 样式包', '模板卡片图片无效或已损坏'):
+            raise
+        raise ValueError('模板卡片图片无效或已损坏') from exc
+    if payload is None:
+        raise ValueError('该 PNG 不含 ExifFrame 模板配置，如需作为自定义相框贴图请在「画框定制」中导入')
+    try:
+        data = json.loads(payload)
+        if not isinstance(data, dict) or data.get('format') != 'exifframe-preset':
+            raise ValueError
+        if data.get('version') != 1:
+            raise ValueError('样式包版本不受支持')
+        encoded, digest = data.get('payload'), data.get('sha256')
+        if (data.get('encoding') != 'base64-zip' or not isinstance(encoded, str)
+                or len(encoded) > ((_MAX_CARD_PACK_BYTES + 2) // 3) * 4
+                or not isinstance(digest, str) or not re.fullmatch(r'[0-9a-f]{64}', digest)):
+            raise ValueError
+        archive = base64.b64decode(encoded, validate=True)
+        if len(archive) > _MAX_CARD_PACK_BYTES or hashlib.sha256(archive).hexdigest() != digest:
+            raise ValueError('模板卡片数据校验失败')
+        return _read_pack(BytesIO(archive))
+    except (binascii.Error, UnicodeError, json.JSONDecodeError, TypeError, KeyError) as exc:
+        raise ValueError('模板卡片数据无效或已损坏') from exc
+    except ValueError as exc:
+        if str(exc) in ('样式包版本不受支持', '模板卡片数据校验失败'):
+            raise
+        raise ValueError('模板卡片数据无效或已损坏') from exc
+
+
+def _read_json_config(path):
+    """接受完整 JSON 配置或原有的 Jinja 模板源码"""
+    from core.desktop_service import WatermarkSettings
+
+    path = Path(path)
+    with path.open('rb') as stream:
+        data = stream.read(_MAX_MANIFEST_BYTES + 1)
+    if len(data) > _MAX_MANIFEST_BYTES:
+        raise ValueError('样式包格式无效')
+    try:
+        source = data.decode('utf-8-sig')
+    except UnicodeError as exc:
+        raise ValueError('样式包格式无效') from exc
+    try:
+        document = json.loads(source)
+    except json.JSONDecodeError:
+        # Jinja 控制语句可以出现在 JSON 结构之外
+        document = None
+    if isinstance(document, dict):
+        if document.get('format') != 'exifframe-preset-json':
+            raise ValueError('样式包格式无效')
+        if document.get('version') != 1:
+            raise ValueError('样式包版本不受支持')
+        name, source = document.get('name'), document.get('template')
+        style = _checked_style(document.get('style'))
+        if not isinstance(name, str) or not isinstance(source, str):
+            raise ValueError('样式包格式无效')
+    elif document is None or isinstance(document, list):
+        name = path.stem
+        defaults = WatermarkSettings()
+        style = _checked_style({key: getattr(defaults, key) for key in _STYLE_FIELDS})
+    else:
+        raise ValueError('样式包格式无效')
+    settings = WatermarkSettings(template_name=name, **style)
+    source, style, assets = _prepare(source, settings, asset_root=path.parent)
+    return name, source, style, assets
+
+
 def import_style_pack(path):
-    """同名时自动编号，失败不覆盖已有模板"""
+    """自动识别 PNG、JSON 和旧样式包，同名时不覆盖已有模板"""
     from core.desktop_service import _template_path, validate_template
 
-    name, source, style, assets = _read_pack(path)
+    path = Path(path).expanduser()
+    with path.open('rb') as stream:
+        signature = stream.read(8)
+    if signature == b'\x89PNG\r\n\x1a\n' or path.suffix.casefold() == '.png':
+        name, source, style, assets = _read_png_card(path)
+    elif zipfile.is_zipfile(path) or path.suffix.casefold() in ('.zip', '.efstyle'):
+        name, source, style, assets = _read_pack(path)
+    else:
+        name, source, style, assets = _read_json_config(path)
     _template_path(name)
     validate_template(source)
     for index in range(1, 10000):
