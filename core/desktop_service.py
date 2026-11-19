@@ -16,7 +16,7 @@ from PIL import Image, ImageColor, ImageOps
 from core.brand_glyphs import validate_policy
 from core.configs import logos_dir, templates_dir
 from core import CONFIG_PATH
-from core.image_cache import check_cancelled, photo_dimensions, photo_proxy, resized_logo
+from core.image_cache import check_cancelled, photo_dimensions, photo_draft, photo_proxy, resized_logo
 from core.runtime_paths import config_path, resource_path
 from core.jinja2renders import auto_logo, vh, vw
 from core.util import find_exiftool, get_exif
@@ -440,7 +440,7 @@ def _legacy_auto_colors(node, background=None):
 
 
 def _configure_nodes(nodes, image, settings, metadata, source, preview=False, source_scale=1.0,
-                     preview_inputs=None):
+                     preview_inputs=None, interactive=False):
     """为现有处理器注入尺寸与样式，同时复用内存中的预览图"""
     title = '' if settings.use_template_styles else settings.title
     subtitle = '' if settings.use_template_styles else settings.subtitle
@@ -508,6 +508,8 @@ def _configure_nodes(nodes, image, settings, metadata, source, preview=False, so
             node.setdefault('exif', metadata)
             if preview:
                 node['save_buffer'] = False
+                if interactive:
+                    node['_interactive_preview'] = True
                 if kind in {'rich_text', 'multi_rich_text'} and not in_watermark and 'height' not in node:
                     node['height'] = max(1, round(100 * source_scale))
         if settings.use_template_styles:
@@ -653,7 +655,7 @@ def _preview_input_paths(nodes):
     return result
 
 
-def _preview_inputs(nodes, source, image, original_size, info, cancelled):
+def _preview_inputs(nodes, source, image, original_size, info, cancelled, *, interactive=False):
     """所有输入使用共同缩放比例，避免多照片布局失配"""
     paths = list(dict.fromkeys(_preview_input_paths(nodes)))
     sizes = {source: original_size}
@@ -661,26 +663,29 @@ def _preview_inputs(nodes, source, image, original_size, info, cancelled):
         if path not in sizes:
             sizes[path] = photo_dimensions(path, cancelled=cancelled)[0]
     max_edge = max(max(size) for size in sizes.values())
-    scale = min(1.0, 1800 / max_edge)
+    max_side = 900 if interactive else 1800
+    load_proxy = photo_draft if interactive else photo_proxy
+    quality = 'draft' if interactive else 'proxy'
+    scale = min(1.0, max_side / max_edge)
     source_limit = max(1, round(max(original_size) * scale))
     if source_limit < max(image.size):
-        image, _, _ = photo_proxy(source, max_side=source_limit, cancelled=cancelled)
+        image, _, _ = load_proxy(source, max_side=source_limit, cancelled=cancelled)
     # 像素取整可能让极小主图的实际比例偏大，始终遵循共同上限
     source_scale = min(scale, image.width / original_size[0], image.height / original_size[1])
-    source_key = ('source', str(source), info.st_mtime_ns, info.st_size, image.size, image.mode, 'proxy', source_limit)
+    source_key = ('source', str(source), info.st_mtime_ns, info.st_size, image.size, image.mode, quality, source_limit)
     inputs = {source: (image, source_key)}
     for path in paths:
         if path in inputs:
             continue
         check_cancelled(cancelled)
         before = path.stat()
-        limit = min(1800, max(1, round(max(sizes[path]) * source_scale)))
-        other, actual_size, _ = photo_proxy(path, max_side=limit, cancelled=cancelled)
+        limit = min(max_side, max(1, round(max(sizes[path]) * source_scale)))
+        other, actual_size, _ = load_proxy(path, max_side=limit, cancelled=cancelled)
         after = path.stat()
         if (actual_size != sizes[path] or
                 (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size)):
             raise OSError('照片在预览期间发生变化，请重试')
-        key = ('source', str(path), before.st_mtime_ns, before.st_size, other.size, other.mode, 'proxy', limit)
+        key = ('source', str(path), before.st_mtime_ns, before.st_size, other.size, other.mode, quality, limit)
         inputs[path] = (other, key)
     return image, source_key, inputs, source_scale
 
@@ -718,7 +723,7 @@ def _rendered_rows(nodes):
 
 
 def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True, *,
-                 full_resolution: bool = False, cancelled=None) -> Image.Image:
+                 full_resolution: bool = False, cancelled=None, interactive: bool = False) -> Image.Image:
     """代理预览与原尺寸导出共用水印流水线"""
     check_cancelled(cancelled)
     _validate(settings)
@@ -727,7 +732,8 @@ def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True, 
         raise ValueError('请选择存在的 JPG、PNG 或 HEIC 照片')
     info = source.stat()
     if preview and not full_resolution:
-        image, original_size, encoded_size = photo_proxy(source, cancelled=cancelled)
+        load_proxy = photo_draft if interactive else photo_proxy
+        image, original_size, encoded_size = load_proxy(source, cancelled=cancelled)
     else:
         with Image.open(source) as opened:
             encoded_size = opened.size
@@ -765,7 +771,7 @@ def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True, 
     source_scale = 1.0
     if preview and not full_resolution:
         image, source_key, preview_inputs, source_scale = _preview_inputs(
-            nodes, source, image, original_size, info, cancelled)
+            nodes, source, image, original_size, info, cancelled, interactive=interactive)
         current = source.stat()
         if (current.st_mtime_ns, current.st_size) != (info.st_mtime_ns, info.st_size):
             raise OSError('照片在预览期间发生变化，请重试')
@@ -799,7 +805,7 @@ def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True, 
     if image.size != original_size:
         _scale_nodes(nodes, source_scale)
     _configure_nodes(nodes, image, settings, metadata, source, preview=preview, source_scale=source_scale,
-                     preview_inputs=preview_inputs)
+                     preview_inputs=preview_inputs, interactive=interactive and preview and not full_resolution)
     if frame_geometry_node is not None:
         from processor.frame_layers import frame_geometry
         if not settings.use_template_styles and settings.border_override:
@@ -824,7 +830,9 @@ def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True, 
             full_size = result.size
         result = _output_rgb(result, settings)
         if not full_resolution:
-            result.thumbnail((1800, 1800), Image.Resampling.LANCZOS)
+            max_side = 900 if interactive else 1800
+            sampling = Image.Resampling.BILINEAR if interactive else Image.Resampling.LANCZOS
+            result.thumbnail((max_side, max_side), sampling)
         result.info['preview_full_size'] = full_size
         result.info['preview_source_size'] = original_size
         result.info['preview_rendered_rows'] = rendered_rows

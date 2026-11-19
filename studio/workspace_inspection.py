@@ -50,6 +50,8 @@ class WorkspaceInspection:
         panel.template_selected.connect(self._select_template)
         panel.use_as_default_requested.connect(self._use_as_default)
         panel.style_changed.connect(self._edit_style)
+        panel.interaction_started.connect(self._begin_live_interaction)
+        panel.interaction_finished.connect(self._end_live_interaction)
         panel.metadata_changed.connect(self._edit_field)
         panel.metadata_apply_requested.connect(self._apply_fields)
         panel.apply_current_requested.connect(self._apply_current_style)
@@ -195,6 +197,14 @@ class WorkspaceInspection:
         self._style_preview_changed()
 
     def _edit_style(self, key, value):
+        self._interaction_applying = self._interaction_active
+        self._interaction_style_key = key
+        try:
+            self._apply_style_edit(key, value)
+        finally:
+            self._interaction_applying = False
+
+    def _apply_style_edit(self, key, value):
         path = self._editable_photo()
         if self._locked or self._exporting or self._current_kind == 'output':
             return
@@ -244,6 +254,13 @@ class WorkspaceInspection:
             self._sync_template_context()
 
     def _style_preview_changed(self):
+        if self._interaction_applying:
+            if self._interaction_style_key in ('title', 'subtitle'):
+                self.inspector.inline_footer.set_rendered_rows({})
+                self._rendered_rows_context = None
+            self._context_pending = True
+            self._schedule_live_preview()
+            return
         self._show_effective_style()
         self._context_pending = True
         self._schedule_preview()

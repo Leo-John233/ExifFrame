@@ -179,11 +179,12 @@ class ImageTask(QRunnable):
     """每项任务拥有取消标记且只在安全的单张边界停止"""
 
     def __init__(self, kind: str, token: int, *, paths=(), settings=None, output=None, full_resolution=False,
-                 batch_size=1, pause=None, io_lock=None, export_snapshot=None):
+                 batch_size=1, pause=None, io_lock=None, export_snapshot=None, interactive=False):
         super().__init__()
         self.kind, self.token = kind, token
         self.paths, self.settings, self.output = tuple(paths), settings, output
         self.full_resolution = full_resolution
+        self.interactive = interactive
         self.cancel = Event()
         self.pause = pause if pause is not None else Event()
         self.io_lock = io_lock
@@ -212,7 +213,8 @@ class ImageTask(QRunnable):
                     source_size = image_size(result)
                 else:
                     photo = render_photo(self.paths[0], self.settings, preview=True,
-                                         full_resolution=self.full_resolution, cancelled=self.cancel.is_set)
+                                         full_resolution=self.full_resolution, cancelled=self.cancel.is_set,
+                                         interactive=self.interactive)
                     source_size = photo.info.get('preview_source_size')
                     result = qt_image(photo)
                 info = source.stat()

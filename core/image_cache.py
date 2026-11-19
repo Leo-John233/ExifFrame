@@ -234,6 +234,27 @@ def photo_proxy(path: Path, max_side=1800, cancelled=None):
     return image, full_size, encoded_size
 
 
+def photo_draft(path: Path, max_side=900, cancelled=None):
+    """从共享代理生成交互草图，避免再次解码原片"""
+    if max_side <= 0 or max_side > 1800:
+        raise ValueError('草图尺寸必须在 1 到 1800 之间')
+    check_cancelled(cancelled)
+    source, modified, file_size = _signature(path)
+    key = ('photo-draft', source, modified, file_size, max_side)
+    cached = _preview_cache.get(key)
+    if cached is not None:
+        image, (full_size, encoded_size) = cached
+    else:
+        image, full_size, encoded_size = photo_proxy(source, cancelled=cancelled)
+        image.thumbnail((max_side, max_side), Image.Resampling.BILINEAR)
+        check_cancelled(cancelled)
+        _check_source_version(source, modified, file_size)
+        _preview_cache.put(key, image, (full_size, encoded_size))
+    _check_source_version(source, modified, file_size)
+    check_cancelled(cancelled)
+    return image, full_size, encoded_size
+
+
 def contain_logo(image, bounds):
     """将标识等比放入指定范围，极细的笔画至少占一像素"""
     scale = min(bounds[0] / image.width, bounds[1] / image.height)
