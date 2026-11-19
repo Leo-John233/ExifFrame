@@ -31,6 +31,7 @@ class FileBrowser(QWidget):
     directory_requested = Signal(str, str)
     file_selected = Signal(str, object)
     file_details_changed = Signal(str, object)
+    user_navigated = Signal(str)
     visible_paths_changed = Signal(str, object)
     visible_paths_invalidated = Signal(str)
     selection_changed = Signal()
@@ -55,6 +56,7 @@ class FileBrowser(QWidget):
         self._selected_count = 0
         self._batching = False
         self._viewports = {}
+        self._tree_widgets = {}
         self._checkbox_press = None
         self._selection_timer = QTimer(self)
         self._selection_timer.setSingleShot(True)
@@ -109,6 +111,8 @@ class FileBrowser(QWidget):
             tree.itemCollapsed.connect(lambda item, which=kind: self._invalidate_visible(which))
             tree.viewport().installEventFilter(self)
             self._viewports[tree.viewport()] = kind
+            tree.installEventFilter(self)
+            self._tree_widgets[tree] = kind
             if kind == "import":
                 tree.itemChanged.connect(self._item_changed)
             self.trees[kind] = tree
@@ -415,6 +419,12 @@ class FileBrowser(QWidget):
         return paths
 
     def eventFilter(self, watched, event):
+        tree_kind = self._tree_widgets.get(watched)
+        if tree_kind is not None and event.type() == QEvent.Type.KeyPress:
+            if event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_Left, Qt.Key.Key_Right,
+                               Qt.Key.Key_Home, Qt.Key.Key_End, Qt.Key.Key_PageUp, Qt.Key.Key_PageDown,
+                               Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self.user_navigated.emit(tree_kind)
         kind = self._viewports.get(watched)
         if kind is not None:
             if event.type() in (QEvent.Type.Resize, QEvent.Type.Show):
@@ -443,6 +453,8 @@ class FileBrowser(QWidget):
                             self._checkbox_press = watched
                             item.setCheckState(0, state)
                             return True
+            if event.type() == QEvent.Type.MouseButtonPress:
+                self.user_navigated.emit(kind)
         return super().eventFilter(watched, event)
 
     def _item_changed(self, item, column):
