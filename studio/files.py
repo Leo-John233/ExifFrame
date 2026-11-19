@@ -39,6 +39,7 @@ class FileBrowser(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.items = {"import": {}, "output": {}}
+        self._canonical = {"import": {}, "output": {}}
         self.folders = {"import": {}, "output": {}}
         self.roots = {"import": None, "output": None}
         self.tabs = QTabWidget()
@@ -174,6 +175,7 @@ class FileBrowser(QWidget):
         try:
             self.trees[kind].clear()
             self.items[kind].clear()
+            self._canonical[kind].clear()
             self.folders[kind].clear()
             self.roots[kind] = root
             if kind == 'import':
@@ -194,10 +196,11 @@ class FileBrowser(QWidget):
 
     def add_file(self, kind, data, *, restore_checks=False):
         """添加轻量占位，缩略图稍后由后台按可见行补充"""
-        path, image, width, height = data
+        path, image, width, height = data[:4]
         path = Path(os.path.abspath(os.fspath(path)))
         identity = _identity(path)
-        if identity in self.items[kind]:
+        canonical = _identity(data[4]) if len(data) > 4 and data[4] else identity
+        if identity in self.items[kind] or canonical in self._canonical[kind]:
             return False
         root = self.roots[kind]
         parent = self.trees[kind].invisibleRootItem()
@@ -227,6 +230,7 @@ class FileBrowser(QWidget):
             item.setData(0, Qt.ItemDataRole.UserRole, (path, width, height))
             self._next_item_token += 1
             item.setData(0, Qt.ItemDataRole.UserRole + 4, self._next_item_token)
+            item.setData(0, Qt.ItemDataRole.UserRole + 5, canonical)
             if image is not None and not image.isNull():
                 item.setIcon(0, QIcon(QPixmap.fromImage(image)))
                 item.setData(0, Qt.ItemDataRole.UserRole + 2, True)
@@ -242,6 +246,7 @@ class FileBrowser(QWidget):
                     self._checked.add(identity)
                     self._selected_count += 1
             self.items[kind][identity] = item
+            self._canonical[kind][canonical] = identity
         finally:
             self._changing = False
         if not self._batching:
@@ -486,6 +491,7 @@ class FileBrowser(QWidget):
             if data:
                 identity = _identity(data[0])
                 self.items['import'].pop(identity, None)
+                self._canonical['import'].pop(node.data(0, Qt.ItemDataRole.UserRole + 5), None)
                 self._checked.discard(identity)
                 self._scan_checks['import'].discard(identity)
                 self._order.pop(identity, None)
