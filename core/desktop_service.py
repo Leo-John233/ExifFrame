@@ -15,6 +15,7 @@ from PIL import Image, ImageColor, ImageOps
 
 from core.configs import templates_dir
 from core import CONFIG_PATH
+from core.image_cache import check_cancelled, photo_dimensions, photo_proxy
 from core.runtime_paths import config_path, resource_path
 from core.jinja2renders import auto_logo, vh, vw
 from core.util import find_exiftool, get_exif
@@ -319,7 +320,8 @@ def _cached_metadata(source: str, modified: int, size: int, tool_signature) -> d
     return result
 
 
-def _configure_nodes(nodes, image, settings, metadata, source, preview=False, source_scale=1.0):
+def _configure_nodes(nodes, image, settings, metadata, source, preview=False, source_scale=1.0,
+                     preview_inputs=None):
     """为现有处理器注入尺寸与样式，同时复用内存中的预览图"""
     title = '' if settings.use_template_styles else settings.title
     subtitle = '' if settings.use_template_styles else settings.subtitle
@@ -346,6 +348,18 @@ def _configure_nodes(nodes, image, settings, metadata, source, preview=False, so
             if subtitle and isinstance(segments, list) and segments:
                 segments[-1]['text'] = subtitle
 
+    def use_preview_inputs(node):
+        paths = node.get('buffer_path')
+        if not preview or not isinstance(paths, (list, tuple)) or not paths:
+            return
+        resolved = [Path(path).resolve() for path in paths]
+        if preview_inputs and all(path in preview_inputs for path in resolved):
+            entries = [preview_inputs[path] for path in resolved]
+            node.update(input_buffer=[item[0].copy() for item in entries], buffer_loaded=True,
+                        _preview_input_keys=[item[1] for item in entries])
+        elif len(resolved) == 1 and resolved[0] == source:
+            node.update(input_buffer=[image.copy()], buffer_loaded=True, _preview_source_input=True)
+
     def visit(node, in_watermark=False):
         if isinstance(node, list):
             for child in node:
@@ -362,13 +376,16 @@ def _configure_nodes(nodes, image, settings, metadata, source, preview=False, so
             node.setdefault('exif', metadata)
             if preview:
                 node['save_buffer'] = False
+                if kind in {'rich_text', 'multi_rich_text'} and not in_watermark and 'height' not in node:
+                    node['height'] = max(1, round(100 * source_scale))
         if settings.use_template_styles:
-            for value in list(node.values()):
+            for key, value in list(node.items()):
+                if key in {'exif', 'metadata', 'metadata_overrides'}:
+                    continue
                 if isinstance(value, (dict, list)):
                     visit(value, in_watermark or kind == 'watermark')
-            paths = node.get('buffer_path')
-            if preview and paths and len(paths) == 1 and Path(paths[0]).resolve() == source:
-                node.update(input_buffer=[image.copy()], buffer_loaded=True)
+            if kind:
+                use_preview_inputs(node)
             return
         if kind == 'watermark':
             if settings.border_override:
@@ -405,13 +422,14 @@ def _configure_nodes(nodes, image, settings, metadata, source, preview=False, so
         for key in ('left_logo', 'right_logo', 'center_logo'):
             if key in node and not settings.show_logo:
                 node[key] = None
-        for value in list(node.values()):
+        for key, value in list(node.items()):
+            if key in {'exif', 'metadata', 'metadata_overrides'}:
+                continue
             if isinstance(value, (dict, list)):
                 visit(value, in_watermark or kind == 'watermark')
         # 模糊背景等模板重新读取原图时也使用等比缩小后的图像
-        paths = node.get('buffer_path')
-        if preview and paths and len(paths) == 1 and Path(paths[0]).resolve() == source:
-            node.update(input_buffer=[image.copy()], buffer_loaded=True)
+        if kind:
+            use_preview_inputs(node)
 
     visit(nodes)
 
@@ -426,7 +444,15 @@ def _scale_nodes(value, scale):
         for child in value:
             _scale_nodes(child, scale)
     elif isinstance(value, dict):
+        defaults = {'blur': ('blur_radius', 5), 'rounded_corner': ('border_radius', 10),
+                    'shadow': ('shadow_radius', 30), 'concat': ('spacing', 10)}
+        kind = value.get('processor_name')
+        default = defaults.get(kind) if isinstance(kind, str) else None
+        if default is not None and value.get(default[0]) is None:
+            value[default[0]] = default[1]
         for key, child in list(value.items()):
+            if key in {'exif', 'metadata', 'metadata_overrides'}:
+                continue
             if key in pixels:
                 value[key] = round(float(child) * scale)
             elif key in {'offset', 'offsets'}:
@@ -435,6 +461,56 @@ def _scale_nodes(value, scale):
                 value[key] = json.dumps(resize_offsets(json.loads(child)))
             elif isinstance(child, (dict, list)):
                 _scale_nodes(child, scale)
+
+
+def _preview_input_paths(nodes):
+    """收集处理器显式引用的照片，不读取元数据字典"""
+    result = []
+
+    def visit(value):
+        if isinstance(value, list):
+            for child in value:
+                visit(child)
+        elif isinstance(value, dict):
+            paths = value.get('buffer_path') if value.get('processor_name') else None
+            if isinstance(paths, (list, tuple)):
+                result.extend(Path(path).resolve() for path in paths)
+            for key, child in value.items():
+                if key not in {'exif', 'metadata', 'metadata_overrides'} and isinstance(child, (dict, list)):
+                    visit(child)
+
+    visit(nodes)
+    return result
+
+
+def _preview_inputs(nodes, source, image, original_size, info, cancelled):
+    """所有输入使用共同缩放比例，避免多照片布局失配"""
+    paths = list(dict.fromkeys(_preview_input_paths(nodes)))
+    sizes = {source: original_size}
+    for path in paths:
+        if path not in sizes:
+            sizes[path] = photo_dimensions(path, cancelled=cancelled)[0]
+    max_edge = max(max(size) for size in sizes.values())
+    scale = min(1.0, 1800 / max_edge)
+    source_limit = max(1, round(max(original_size) * scale))
+    if source_limit < max(image.size):
+        image, _, _ = photo_proxy(source, max_side=source_limit, cancelled=cancelled)
+    source_scale = image.width / original_size[0]
+    source_key = ('source', str(source), info.st_mtime_ns, info.st_size, image.size, image.mode)
+    inputs = {source: (image, source_key)}
+    for path in paths:
+        if path in inputs:
+            continue
+        check_cancelled(cancelled)
+        before = path.stat()
+        limit = max(1, round(max(sizes[path]) * source_scale))
+        other, _, _ = photo_proxy(path, max_side=limit, cancelled=cancelled)
+        after = path.stat()
+        if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
+            raise OSError('照片在预览期间发生变化，请重试')
+        key = ('source', str(path), before.st_mtime_ns, before.st_size, other.size, other.mode)
+        inputs[path] = (other, key)
+    return image, source_key, inputs
 
 
 def _preview_file_signature(template_source, files):
@@ -451,17 +527,6 @@ def _preview_file_signature(template_source, files):
     return tuple(result)
 
 
-@lru_cache(maxsize=2)
-def _original_preview(source, modified, size, template_name, template_source, files, tool_signature, overrides, dependencies):
-    """原样预览从完整结果缩略，避免默认像素参数改变版式"""
-    settings = WatermarkSettings(template_name=template_name, template_source=template_source,
-                                 input_files=files, use_template_styles=True,
-                                 metadata_overrides={metadata_key(Path(source)): dict(overrides)} if overrides else {})
-    result = render_photo(Path(source), settings, preview=False).convert('RGB')
-    result.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
-    return result
-
-
 def _output_rgb(image, settings):
     """预览和导出共享透明度转换"""
     if settings.use_template_styles or not settings.background_override:
@@ -471,30 +536,29 @@ def _output_rgb(image, settings):
     return canvas
 
 
-def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True) -> Image.Image:
-    """让实时预览和原始分辨率导出走相同的水印流水线"""
+def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True, *,
+                 full_resolution: bool = False, cancelled=None) -> Image.Image:
+    """代理预览与原尺寸导出共用水印流水线"""
+    check_cancelled(cancelled)
     _validate(settings)
     source = Path(path).resolve()
     if source.suffix.lower() not in SUPPORTED_SUFFIXES or not source.is_file():
         raise ValueError('请选择存在的 JPG、PNG 或 HEIC 照片')
-    if preview and settings.use_template_styles:
-        tool = find_exiftool()
-        signature = (str(tool), tool.stat().st_mtime_ns, tool.stat().st_size) if tool else None
-        template_source = settings.template_source or read_template(settings.template_name)
-        info = source.stat()
-        return _original_preview(str(source), info.st_mtime_ns, info.st_size, settings.template_name,
-                                 template_source,
-                                 tuple(settings.input_files), signature,
-                                 tuple(sorted(settings.metadata_overrides.get(metadata_key(source), {}).items())),
-                                 _preview_file_signature(template_source, settings.input_files)).copy()
-    with Image.open(source) as opened:
-        encoded_size = opened.size
-        image = ImageOps.exif_transpose(opened).copy()
-        profile = opened.info.get('icc_profile')
-    original_size = image.size
+    info = source.stat()
+    if preview and not full_resolution:
+        image, original_size, encoded_size = photo_proxy(source, cancelled=cancelled)
+    else:
+        with Image.open(source) as opened:
+            encoded_size = opened.size
+            image = ImageOps.exif_transpose(opened).copy()
+        original_size = image.size
+    check_cancelled(cancelled)
     if preview:
-        image.thumbnail((1400, 1400), Image.Resampling.LANCZOS)
-    metadata = dict(_metadata(str(source), source.stat().st_mtime_ns))
+        current = source.stat()
+        if (current.st_mtime_ns, current.st_size) != (info.st_mtime_ns, info.st_size):
+            raise OSError('照片在预览期间发生变化，请重试')
+    profile = image.info.get('icc_profile')
+    metadata = dict(_metadata(str(source), info.st_mtime_ns))
     changes = settings.metadata_overrides.get(metadata_key(source), {})
     if changes:
         metadata = merge_overrides(metadata, changes)
@@ -512,16 +576,40 @@ def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True) 
     nodes = json.loads(rendered)
     if not isinstance(nodes, list) or not nodes:
         raise ValueError('水印模板需要至少一个处理步骤')
+    preview_inputs = None
+    source_key = None
+    if preview and not full_resolution:
+        image, source_key, preview_inputs = _preview_inputs(nodes, source, image, original_size, info, cancelled)
+        current = source.stat()
+        if (current.st_mtime_ns, current.st_size) != (info.st_mtime_ns, info.st_size):
+            raise OSError('照片在预览期间发生变化，请重试')
+    elif preview:
+        source_key = ('source', str(source), info.st_mtime_ns, info.st_size, image.size, image.mode)
+        preview_inputs = {source: (image, source_key)}
     source_scale = image.width / original_size[0]
+    full_size = None
+    if preview and not full_resolution and source_scale != 1 and nodes[-1].get('processor_name') == 'crop':
+        width, height = int(nodes[-1].get('width') or 0), int(nodes[-1].get('height') or 0)
+        if width > 0 and height > 0:
+            full_size = (width, height)
     if image.size != original_size:
         _scale_nodes(nodes, source_scale)
-    _configure_nodes(nodes, image, settings, metadata, source, preview=preview, source_scale=source_scale)
-    result = start_process(nodes, initial_buffer=[image])
+    _configure_nodes(nodes, image, settings, metadata, source, preview=preview, source_scale=source_scale,
+                     preview_inputs=preview_inputs)
+    result = start_process(nodes, initial_buffer=[image], preview_source_key=source_key, cancelled=cancelled)
+    check_cancelled(cancelled)
+    if preview:
+        if not full_resolution and source_scale != 1:
+            full_size = full_size or (max(1, round(result.width / source_scale)),
+                                      max(1, round(result.height / source_scale)))
+        else:
+            full_size = result.size
+        result = _output_rgb(result, settings)
+        if not full_resolution:
+            result.thumbnail((1800, 1800), Image.Resampling.LANCZOS)
+        result.info['preview_full_size'] = full_size
     if profile:
         result.info['icc_profile'] = profile
-    if preview:
-        result = _output_rgb(result, settings)
-        result.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
     return result
 
 
