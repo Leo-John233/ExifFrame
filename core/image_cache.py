@@ -276,24 +276,15 @@ def contain_logo(image, bounds):
     """将标识等比放入指定范围，极细的笔画至少占一像素"""
     scale = min(bounds[0] / image.width, bounds[1] / image.height)
     size = max(1, round(image.width * scale)), max(1, round(image.height * scale))
-    return image.resize(size, Image.Resampling.LANCZOS)
+    return image.resize(size, Image.Resampling.HAMMING if scale < 1 else Image.Resampling.BILINEAR)
 
 
 def _logo(source, modified, file_size, bounds, contain):
-    key = ('logo', source, modified, file_size, bounds, contain)
-    cached = _preview_cache.get(key)
-    if cached is not None:
-        return cached[0]
-    with Image.open(source) as opened:
-        image = opened.convert('RGBA')
-    if contain:
-        result = contain_logo(image, bounds)
-    else:
-        result = image.resize(bounds, Image.Resampling.LANCZOS)
-    _preview_cache.put(key, result)
-    return result
+    from processor.logo_layer import layer_logo
+    return layer_logo(source, bounds, adaptive=False, trim=False, contain=contain)
 
 
 def resized_logo(path, bounds, contain=False):
     """缓存标识的最终尺寸，调用方修改不会污染后续渲染"""
-    return _logo(*_signature(path), tuple(bounds), contain)
+    from processor.logo_layer import layer_logo
+    return layer_logo(path, tuple(bounds), adaptive=False, trim=False, contain=contain)

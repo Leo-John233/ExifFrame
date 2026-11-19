@@ -6,13 +6,10 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageOps
 
 from core.image_cache import cached_preview_image, cache_preview_image
+from core.logo_variants import logo_variant_pair, VARIANT_MAP_NAME
 
 
 _LOGO_VERSION = 6
-_VARIANTS = {'sony': ('sony.png', 'sony_dark.png'),
-             'sony_dark': ('sony.png', 'sony_dark.png'),
-             'olympus_blue_gold': ('olympus_blue_gold.png', 'olympus_white_gold.png'),
-             'olympus_white_gold': ('olympus_blue_gold.png', 'olympus_white_gold.png')}
 
 
 def resolve_logo_path(path):
@@ -29,12 +26,14 @@ def resolve_logo_path(path):
 def _variant_path(path, background, adaptive, variant):
     if variant not in {'auto', 'original', 'light', 'dark'}:
         raise ValueError('标识深浅版本无效')
-    pair = _VARIANTS.get(path.stem.casefold())
-    if not pair or variant == 'original' or (variant == 'auto' and (not adaptive or background is None)):
+    if variant == 'original' or (variant == 'auto' and (not adaptive or background is None)):
+        return path
+    pair = logo_variant_pair(path)
+    if not pair:
         return path
     # light/dark 描述标识前景；带 dark 后缀的旧素材用于深色背景
     light = variant == 'light' or (variant == 'auto' and background < 125)
-    candidate = path.with_name(pair[1 if light else 0])
+    candidate = pair[1 if light else 0]
     return candidate if candidate.is_file() else path
 
 
@@ -178,13 +177,13 @@ def adaptive_logo(image, background):
     return result
 
 
-def layer_logo(path, bounds, *, background=None, adaptive=True, matte='auto', variant='auto', trim=True):
+def layer_logo(path, bounds, *, background=None, adaptive=True, matte='auto', variant='auto', trim=True, contain=True):
     """优先选品牌深浅素材，再按前景轮廓等比缩放到目标范围"""
     path = _variant_path(resolve_logo_path(path), background, adaptive, variant)
     info = path.stat()
     tone = round(background) if adaptive and background is not None else None
     bounds = tuple(max(1, int(value)) for value in bounds)
-    key = ('frame_logo', _LOGO_VERSION, str(path), info.st_mtime_ns, info.st_size, bounds, matte, trim, tone)
+    key = ('frame_logo', _LOGO_VERSION, str(path), info.st_mtime_ns, info.st_size, bounds, matte, trim, tone, contain)
     cached = cached_preview_image(key)
     if cached is not None:
         return cached
@@ -193,7 +192,7 @@ def layer_logo(path, bounds, *, background=None, adaptive=True, matte='auto', va
     image = load_logo(path, matte=matte, trim=trim, max_edge=edge)
     if adaptive and background is not None:
         image = adaptive_logo(image, background)
-    result = fit_logo(image, bounds)
+    result = fit_logo(image, bounds) if contain else _resize_logo(image, bounds)
     cache_preview_image(key, result)
     return result
 
@@ -202,9 +201,13 @@ def fit_logo(image, bounds):
     """正权重预乘采样不在透明字腔内生成 Lanczos 振铃"""
     scale = min(bounds[0] / image.width, bounds[1] / image.height)
     size = max(1, round(image.width * scale)), max(1, round(image.height * scale))
+    return _resize_logo(image, size)
+
+
+def _resize_logo(image, size):
     if size == image.size:
         return image.copy()
-    sampling = Image.Resampling.HAMMING if scale < 1 else Image.Resampling.BILINEAR
+    sampling = Image.Resampling.HAMMING if min(size[0] / image.width, size[1] / image.height) < 1 else Image.Resampling.BILINEAR
     result = image.convert('RGBa').resize(size, sampling).convert('RGBA')
     result.info.update(image.info)
     return result
