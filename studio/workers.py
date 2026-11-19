@@ -281,7 +281,7 @@ class ImageTask(QRunnable):
                 if self.cancel.is_set():
                     return stop()
                 added += 1
-                item = (displayed, None, 0, 0)
+                item = (displayed, None, 0, 0, identity) if self.batch_size > 1 else (displayed, None, 0, 0)
                 if added == 1 or self.batch_size == 1:
                     self.signals.item.emit(self.token, item)
                     self.signals.progress.emit(added, 0, displayed.name)
