@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QHBoxLayout, QLabel, QP
 from core.desktop_service import WatermarkSettings, _metadata, _template_path, list_presets, render_photo
 from core.metadata import merge_overrides, metadata_key
 from core.sample_photo import example_photo_path
+from studio.asset_watcher import AssetWatcher
 from studio.canvas import ImageCanvas, is_full_image
 from studio.i18n import bind, localize_error, register_translations, tr, translator
 from studio.workers import original_image, qt_image
@@ -203,6 +204,8 @@ class TemplatePreview(QWidget):
         self._last_metadata = None
         self._status = ('未选择照片', {})
         self._owner = _task_owner()
+        self._asset_watcher = AssetWatcher(self)
+        self._asset_watcher.changed.connect(self._asset_changed)
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
         self.timer.setInterval(80)
@@ -299,6 +302,7 @@ class TemplatePreview(QWidget):
                          'background_override', 'text_color_override', 'logo_choice', 'font_path',
                          'text_alignment', 'text_spacing', 'line_spacing', 'brand_glyph_policy'):
                 setattr(self._settings, name, getattr(settings, name))
+        self._asset_watcher.set_source(self._source, self._settings.logo_choice)
         if self.settings != before:
             self._failed = False
             self._invalidate()
@@ -316,12 +320,20 @@ class TemplatePreview(QWidget):
         if source == self._source and self._valid_source and not self._failed:
             return
         self._source = source
+        self._asset_watcher.set_source(source, self._settings.logo_choice)
         self._valid_source = True
         self._failed = False
         self._invalidate()
         self._request()
         if immediate and self._pending and not self._suspended:
             self.timer.start(0)
+
+    def _asset_changed(self):
+        if self._closed or not self._valid_source:
+            return
+        self._failed = False
+        self._invalidate()
+        self._request()
 
     def invalidate_source(self):
         """输入变化时立即丢弃旧任务并保留上次图像"""

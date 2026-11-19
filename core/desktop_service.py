@@ -4,11 +4,13 @@ import configparser
 import json
 import math
 import re
+from copy import deepcopy
 from dataclasses import asdict, dataclass, fields, field
 from functools import lru_cache
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from threading import Lock
+from types import SimpleNamespace
 
 from jinja2 import Environment, pass_context
 from PIL import Image, ImageColor, ImageOps
@@ -623,7 +625,7 @@ def _scale_nodes(value, scale):
         if default is not None and value.get(default[0]) is None:
             value[default[0]] = default[1]
         for key, child in list(value.items()):
-            if key in {'exif', 'metadata', 'metadata_overrides'}:
+            if key in {'exif', 'metadata', 'metadata_overrides', 'custom_frame'}:
                 continue
             if key in pixels:
                 value[key] = round(float(child) * scale)
@@ -800,15 +802,20 @@ def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True, 
         if node.get('processor_name') in {'watermark', 'watermark_with_timestamp'} and direct and uses_frame_layers(node):
             keys = ('frame_style', 'overlay_mode', 'frame_margin', 'frame_bottom', 'frame_radius',
                     'frame_shadow', 'frame_blur', 'frame_brightness', 'frame_vignette',
-                    'frame_color', 'color', 'bottom_margin')
-            frame_geometry_node = {key: node[key] for key in keys if key in node}
+                    'frame_color', 'color', 'bottom_margin', 'custom_frame')
+            frame_geometry_node = (deepcopy(node) if 'custom_frame' in node else
+                                   {key: node[key] for key in keys if key in node})
     if image.size != original_size:
         _scale_nodes(nodes, source_scale)
     _configure_nodes(nodes, image, settings, metadata, source, preview=preview, source_scale=source_scale,
                      preview_inputs=preview_inputs, interactive=interactive and preview and not full_resolution)
     if frame_geometry_node is not None:
         from processor.frame_layers import frame_geometry
-        if not settings.use_template_styles and settings.border_override:
+        if 'custom_frame' in frame_geometry_node:
+            # 旧版组合的画布依赖完整节点和快捷样式，按原图尺寸注入一次
+            original = SimpleNamespace(height=original_size[1])
+            _configure_nodes([frame_geometry_node], original, settings, metadata, source)
+        elif not settings.use_template_styles and settings.border_override:
             frame_geometry_node['bottom_margin'] = max(1, round(original_size[1] * settings.border_percent / 100))
         full_size = frame_geometry(original_size, frame_geometry_node)['canvas_size']
     check_cancelled(cancelled)

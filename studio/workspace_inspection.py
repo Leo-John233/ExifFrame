@@ -10,6 +10,7 @@ from pathlib import Path
 from core.desktop_service import _template_path, read_template, save_workspace_settings
 from core.footer import text_targets
 from core.metadata import FIELDS, MetadataError, normalize_watermark_changes
+from core.style_pack import read_preset_style
 from .i18n import language, localize_error, tr
 
 
@@ -58,6 +59,8 @@ class WorkspaceInspection:
         panel.sync_style_requested.connect(self._sync_checked_style)
         panel.new_template_requested.connect(self._new_template)
         panel.copy_template_requested.connect(self._copy_template)
+        panel.import_style_requested.connect(self._import_style_pack)
+        panel.export_style_requested.connect(self._export_style_pack)
         panel.advanced_source_requested.connect(self._edit_template)
         panel.footer_editor_requested.connect(self._edit_footer)
         panel.metadata_editor_requested.connect(self._open_advanced_metadata)
@@ -178,10 +181,15 @@ class WorkspaceInspection:
     def _select_template(self, name):
         if not any(preset.name == name for preset in self.presets):
             return
+        try:
+            saved_style = read_preset_style(name)
+        except (OSError, ValueError, TypeError) as exc:
+            self._record_errors('读取模板样式失败', [str(exc)])
+            return
         path = self._editable_photo()
         if path:
             if self._photo_settings().template_name != name:
-                self.state.update_style((path,), {'template_name': name, 'template_source': ''})
+                self.state.update_style((path,), {'template_name': name, 'template_source': '', **saved_style})
         elif self._current_kind == 'import':
             self.state.set_active_template(name)
 
@@ -192,7 +200,12 @@ class WorkspaceInspection:
             self._set_status('默认模板已设为 {name}', name=name)
 
     def _active_template_changed(self, name):
-        self.settings = replace(self.settings, template_name=name, use_template_styles=True)
+        try:
+            saved_style = read_preset_style(name)
+        except (OSError, ValueError, TypeError) as exc:
+            self._record_errors('读取模板样式失败', [str(exc)])
+            saved_style = {}
+        self.settings = replace(self.settings, **{'template_name': name, 'use_template_styles': True, **saved_style})
         self._workspace_changed()
         self._style_preview_changed()
 

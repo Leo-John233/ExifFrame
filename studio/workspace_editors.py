@@ -8,8 +8,9 @@ from pathlib import Path
 from threading import Event
 
 from PySide6.QtCore import QRunnable, Qt, Slot
-from PySide6.QtWidgets import QDialog, QMessageBox
+from PySide6.QtWidgets import QDialog, QFileDialog, QInputDialog, QMessageBox
 from core.desktop_service import list_presets, read_template, write_template
+from core.style_pack import export_style_pack, import_style_pack, save_custom_template
 from .i18n import localize_error, tr
 from .template_editor import TemplateEditor
 from .workers import WorkerSignals
@@ -322,14 +323,60 @@ class WorkspaceEditors:
         self._active_wizard = None
         wizard.deleteLater()
 
+    def _effective_template_source(self, settings):
+        path = self._editable_photo()
+        local_source = self.state.style_for(path).get('template_source') if path else ''
+        editor = next((item for item in self._editors if item.name == settings.template_name
+                       and item.isVisible() and getattr(item, 'source_photo', None) in (None, path)
+                       and (not local_source or getattr(item, 'source_photo', None) == path)), None)
+        return editor.source() if editor is not None else settings.template_source or read_template(settings.template_name)
+
     def _copy_template(self):
-        name = self._photo_settings().template_name
+        settings = self._photo_settings()
+        name, accepted = QInputDialog.getText(self, tr('另存我的模板'), tr('请输入模板名称'),
+                                               text=settings.template_name + tr('_副本'))
+        if not accepted or not name.strip():
+            return
         try:
-            active = next((editor for editor in self._editors if editor.name == name), None)
-            source = active.source() if active else self._photo_settings().template_source or read_template(name)
-            self._open_editor(name + tr("_副本"), source, True)
+            source = self._effective_template_source(settings)
+            name = save_custom_template(name.strip(), source, settings)
+            self._template_saved(name)
+            self.inspector.show_my_templates()
+            self._set_status('模板已保存到我的模板：{name}', name=name)
         except Exception as exc:
-            self._record_errors("读取模板失败", [str(exc)])
+            self._record_errors('无法保存模板', [str(exc)])
+            QMessageBox.warning(self, tr('无法保存模板'), localize_error(exc))
+
+    def _export_style_pack(self):
+        settings = self._photo_settings()
+        selected, _ = QFileDialog.getSaveFileName(
+            self, tr('导出样式包'), settings.template_name + '.efstyle', tr('样式包 (*.efstyle)'))
+        if not selected:
+            return
+        path = Path(selected)
+        if path.suffix.casefold() != '.efstyle':
+            path = path.with_name(path.name + '.efstyle')
+        try:
+            overwrite = path == Path(selected) and path.is_file()
+            export_style_pack(path, settings.template_name, self._effective_template_source(settings), settings,
+                              overwrite=overwrite)
+            self._set_status('样式包已导出：{path}', path=str(path))
+        except Exception as exc:
+            self._record_errors('无法导出样式包', [str(exc)])
+            QMessageBox.warning(self, tr('无法导出样式包'), localize_error(exc))
+
+    def _import_style_pack(self):
+        selected, _ = QFileDialog.getOpenFileName(self, tr('导入样式包'), '', tr('样式包 (*.efstyle)'))
+        if not selected:
+            return
+        try:
+            name = import_style_pack(selected)
+            self._template_saved(name)
+            self.inspector.show_my_templates()
+            self._set_status('样式包已导入：{name}', name=name)
+        except Exception as exc:
+            self._record_errors('无法导入样式包', [str(exc)])
+            QMessageBox.warning(self, tr('无法导入样式包'), localize_error(exc))
 
     def _edit_template(self):
         name = self._photo_settings().template_name

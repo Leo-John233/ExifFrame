@@ -10,6 +10,8 @@ from dataclasses import replace
 
 from PySide6.QtCore import QThreadPool, QTimer, Qt, Slot
 from core.desktop_service import read_template
+from core.style_pack import asset_signature
+from .asset_watcher import AssetWatcher
 from .canvas import image_size, is_full_image, set_image_size
 from .preview import _task_owner
 from .state import STYLE_FIELDS
@@ -41,6 +43,8 @@ class WorkspacePreview:
         self._preview_source, self._preview_values, self._preview_error = '未选择照片', {}, ''
         self._priority = _task_owner()
         self._priority.background_ready.connect(self._start_visible_thumbnails)
+        self._asset_watcher = AssetWatcher(self)
+        self._asset_watcher.changed.connect(self._schedule_preview)
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(2)
         self.timer = QTimer(self)
@@ -90,7 +94,8 @@ class WorkspacePreview:
         else:
             dependencies = _preview_file_signature(source, selected or ((str(path),) if path else ()))
         style = tuple(getattr(settings, name) for name in STYLE_FIELDS)
-        return path, style, settings.metadata_overrides, selected, version, source, dependencies
+        assets = asset_signature(source, settings.logo_choice)
+        return path, style, settings.metadata_overrides, selected, version, assets, source, dependencies
 
     def _current_footer_image(self):
         """只复用当前照片与当前设置对应的水印结果，原图另行对照"""
@@ -301,6 +306,8 @@ class WorkspacePreview:
         # 与实际导出共用勾选文件快照，支持模板中的跨照片处理
         selected = tuple(str(item) for item in self.state.checked_paths)
         self._render_signature = deepcopy(self._preview_signature(reuse=self._draft_signature if interactive else None))
+        self._asset_watcher.set_source(self._render_signature[-2], self._photo_settings().logo_choice,
+                                      signature=self._render_signature[-3])
         if interactive:
             self._draft_signature = self._render_signature
         if kind == 'preview':
@@ -366,7 +373,7 @@ class WorkspacePreview:
                 return
             signature = self._preview_signature(reuse=task.preview_signature)
             old = task.preview_signature
-            if (signature[0] != old[0] or signature[2:5] != old[2:5] or signature[6] != old[6]
+            if (signature[0] != old[0] or signature[2:6] != old[2:6] or signature[-1] != old[-1]
                     or task.settings.template_name != self._photo_settings().template_name):
                 self._schedule_preview()
                 return
