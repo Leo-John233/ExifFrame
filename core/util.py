@@ -11,7 +11,7 @@ from PIL import Image
 from jinja2 import Template
 
 from core.configs import templates_dir
-from core.exiftool_process import run_exiftool
+from core.exiftool_process import read_exiftool
 from core.jinja2renders import vh, vw, auto_logo
 from core.logger import logger
 from core.runtime_paths import application_root, is_onefile, resource_path
@@ -40,12 +40,8 @@ def get_exif(path) -> dict:
         logger.warning('未找到 ExifTool，将使用照片自带的 EXIF 信息')
         return {}
     try:
-        # 路径通过 UTF-8 参数流传入，结束输入后带 -k 的程序也不会等待按键
-        result = run_exiftool(
-            [str(tool), '-j', '-l', '-lang', 'en', '-charset', 'filename=UTF8',
-             '-d', '%Y-%m-%d %H:%M:%S%3f%z', '-@', '-'],
-            input=(str(Path(path).resolve()) + '\n').encode('utf-8'), timeout=20,
-        )
+        # UTF-8 参数流复用后台进程，带 -k 的工具也可正常结束
+        result = read_exiftool(tool, Path(path).resolve(), timeout=20)
         records = json.loads(result.stdout)
         metadata = {}
         for tag, entry in records[0].items():
@@ -59,7 +55,7 @@ def get_exif(path) -> dict:
             metadata[legacy_key] = value
             metadata[tag] = value
         return metadata
-    except (OSError, subprocess.SubprocessError, ValueError, IndexError, TypeError) as error:
+    except (OSError, EOFError, subprocess.SubprocessError, ValueError, IndexError, TypeError) as error:
         logger.error(f'读取 EXIF 失败 {path}: {error}')
         return {}
 

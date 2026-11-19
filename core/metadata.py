@@ -13,7 +13,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from core.util import find_exiftool
-from core.exiftool_process import run_exiftool
+from core.exiftool_process import read_exiftool, run_exiftool
 
 
 @dataclass(frozen=True)
@@ -69,7 +69,7 @@ def metadata_key(path: Path) -> str:
 
 
 def _run_tool(arguments: list[str]) -> subprocess.CompletedProcess:
-    """通过 UTF-8 参数流读写，避免中文路径和隐藏控制台问题"""
+    """通过 UTF-8 参数流写入，避免中文路径和隐藏控制台问题"""
     tool = find_exiftool()
     if tool is None:
         raise MetadataError('tool_missing')
@@ -93,12 +93,19 @@ def read_metadata(path: Path) -> dict[str, str]:
     if not source.is_file():
         raise MetadataError('file_missing')
     arguments = ['-j', '-n', '-lang', 'en', *(f'-{tag}' for tag in _FIELDS),
-                 '-LightSource', '-Orientation', '-GPSAltitudeRef', source.as_posix()]
+                 '-LightSource', '-Orientation', '-GPSAltitudeRef']
     try:
-        records = json.loads(_run_tool(arguments).stdout)
+        tool = find_exiftool()
+        if tool is None:
+            raise MetadataError('tool_missing')
+        result = read_exiftool(tool, source.as_posix(), options=arguments, timeout=60)
+        records = json.loads(result.stdout)
         data = records[0]
-    except (ValueError, IndexError, TypeError) as error:
-        raise MetadataError('write_failed', detail=str(error)) from error
+    except (OSError, EOFError, subprocess.SubprocessError, ValueError, IndexError, TypeError) as error:
+        detail = getattr(error, 'stderr', b'') or str(error)
+        if isinstance(detail, bytes):
+            detail = detail.decode('utf-8', errors='replace')
+        raise MetadataError('write_failed', detail=str(detail)) from error
     values = {key: str(value).replace('\x00', '').strip() for key, value in data.items()
               if key in _FIELDS or key in {'LightSource', 'Orientation', 'GPSAltitudeRef'}}
     if 'WhiteBalance' in values:
