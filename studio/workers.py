@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import hashlib
+import json
 import os
 import re
 import stat
@@ -35,13 +36,30 @@ _BOUNDED_TEMPLATES = {
     '仅标识居中': '4e3281fca43dd727a0d085dcb799d15ac29f79bb48508feeafc8123d1abcba0d',
 }
 
+_RENDERED_ROWS_KEY = 'ExifFrame/RenderedRows'
+
 
 def qt_image(image: Image.Image, full_size=None) -> QImage:
     """复制像素以避免后台对象释放后预览失效"""
     rgba = image.convert("RGBA")
     result = QImage(rgba.tobytes(), rgba.width, rgba.height, rgba.width * 4,
                     QImage.Format.Format_RGBA8888).copy()
-    return set_image_size(result, full_size or image.info.get('preview_full_size') or image.size)
+    result = set_image_size(result, full_size or image.info.get('preview_full_size') or image.size)
+    rows = image.info.get('preview_rendered_rows')
+    if isinstance(rows, dict):
+        result.setText(_RENDERED_ROWS_KEY, json.dumps(rows, ensure_ascii=True))
+    return result
+
+
+def qt_rendered_rows(image: QImage) -> dict[str, str]:
+    """读取与预览图同一代次的实际区域文字"""
+    try:
+        rows = json.loads(image.text(_RENDERED_ROWS_KEY))
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(rows, dict):
+        return {}
+    return {key: value for key, value in rows.items() if isinstance(key, str) and isinstance(value, str)}
 
 
 def original_image(path, *, full_resolution=False, cancelled=None):

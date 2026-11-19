@@ -639,6 +639,15 @@ def _output_rgb(image, settings):
     return canvas
 
 
+def _rendered_rows(nodes):
+    """提取模板渲染及快捷样式应用后的区域文字"""
+    from core.footer import text_targets
+    from processor.generators import rendered_text
+
+    _, targets = text_targets(nodes)
+    return {key: rendered_text(node or {}) for key, _, _, node in targets}
+
+
 def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True, *,
                  full_resolution: bool = False, cancelled=None) -> Image.Image:
     """代理预览与原尺寸导出共用水印流水线"""
@@ -703,6 +712,8 @@ def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True, 
         _scale_nodes(nodes, source_scale)
     _configure_nodes(nodes, image, settings, metadata, source, preview=preview, source_scale=source_scale,
                      preview_inputs=preview_inputs)
+    check_cancelled(cancelled)
+    rendered_rows = _rendered_rows(nodes) if preview else None
     result = start_process(nodes, initial_buffer=[image], preview_source_key=source_key, cancelled=cancelled)
     check_cancelled(cancelled)
     if not settings.use_template_styles and settings.show_logo and settings.logo_choice:
@@ -721,6 +732,7 @@ def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True, 
             result.thumbnail((1800, 1800), Image.Resampling.LANCZOS)
         result.info['preview_full_size'] = full_size
         result.info['preview_source_size'] = original_size
+        result.info['preview_rendered_rows'] = rendered_rows
     if profile:
         result.info['icc_profile'] = profile
     return result
