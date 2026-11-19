@@ -1,0 +1,40 @@
+[
+  {
+    "processor_name": "watermark",
+    "frame_style": "solid_border",
+    "frame_color": "#FAFAF8",
+    "frame_margin": 0.04,
+    "frame_bottom": 0.17,
+    "caption_layout": "columns",
+    "divider": true,
+    "left_top": {
+      "processor_name": "rich_text",
+      "text": "{{ footer_row(exif, [{'field': 'camera_model'}], '  ', 'hide') }}",
+      "font_path": "Roboto-Medium.ttf",
+      "height_ratio": 0.031,
+      "color": "#272727"
+    },
+    "left_bottom": {
+      "processor_name": "rich_text",
+      "text": "{{ footer_row(exif, [{'field': 'lens_model'}], '  ', 'hide') }}",
+      "font_path": "Roboto-Light.ttf",
+      "height_ratio": 0.019,
+      "color": "#737373"
+    },
+    "right_top": {
+      "processor_name": "rich_text",
+      "text": "{{ footer_row(exif, [{'field': 'focal_35'}, {'field': 'aperture'}, {'field': 'shutter'}, {'field': 'iso'}], '  ', 'hide') }}",
+      "font_path": "Roboto-Regular.ttf",
+      "height_ratio": 0.02,
+      "color": "#313131"
+    },
+    "right_bottom": {
+      "processor_name": "rich_text",
+      "text": "{{ footer_row(exif, [{'field': 'date'}], '  ', 'hide') }}",
+      "font_path": "Roboto-Light.ttf",
+      "height_ratio": 0.017,
+      "color": "#858585"
+    },
+    "left_logo": "{{ auto_logo() }}"
+  }
+]

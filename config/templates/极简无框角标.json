@@ -1,0 +1,40 @@
+[
+  {
+    "processor_name": "watermark",
+    "frame_style": "solid_border",
+    "overlay_mode": "inset_overlay",
+    "inset_anchor": "bottom_right",
+    "overlay_opacity": 0.64,
+    "caption_layout": "columns",
+    "adaptive_logo_invert": true,
+    "left_top": {
+      "processor_name": "rich_text",
+      "text": "{{ footer_row(exif, [], '  ', 'hide') }}",
+      "font_path": "Roboto-Light.ttf",
+      "height_ratio": 0.017,
+      "color": "auto"
+    },
+    "left_bottom": {
+      "processor_name": "rich_text",
+      "text": "{{ footer_row(exif, [], '  ', 'hide') }}",
+      "font_path": "Roboto-Light.ttf",
+      "height_ratio": 0.017,
+      "color": "auto"
+    },
+    "right_top": {
+      "processor_name": "rich_text",
+      "text": "{{ footer_row(exif, [{'field': 'camera_model'}], '  ', 'hide') }}",
+      "font_path": "Roboto-Medium.ttf",
+      "height_ratio": 0.031,
+      "color": "auto"
+    },
+    "right_bottom": {
+      "processor_name": "rich_text",
+      "text": "{{ footer_row(exif, [{'field': 'focal_35'}, {'field': 'aperture'}, {'field': 'shutter'}, {'field': 'iso'}], '  ', 'hide') }}",
+      "font_path": "Roboto-Regular.ttf",
+      "height_ratio": 0.02,
+      "color": "auto"
+    },
+    "right_logo": "{{ auto_logo() }}"
+  }
+]

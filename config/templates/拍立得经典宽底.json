@@ -1,0 +1,39 @@
+[
+  {
+    "processor_name": "watermark",
+    "frame_style": "polaroid_bottom",
+    "frame_color": "#F5F1E9",
+    "frame_margin": 0.052,
+    "frame_bottom": 0.31,
+    "caption_layout": "centered",
+    "left_top": {
+      "processor_name": "rich_text",
+      "text": "{{ footer_row(exif, [{'field': 'camera_model'}], '  ', 'hide') }}",
+      "font_path": "Roboto-Medium.ttf",
+      "height_ratio": 0.031,
+      "color": "#27231F"
+    },
+    "left_bottom": {
+      "processor_name": "rich_text",
+      "text": "{{ footer_row(exif, [{'field': 'lens_model'}], '  ', 'hide') }}",
+      "font_path": "Roboto-Light.ttf",
+      "height_ratio": 0.019,
+      "color": "#625C54"
+    },
+    "right_top": {
+      "processor_name": "rich_text",
+      "text": "{{ footer_row(exif, [{'field': 'focal_35'}, {'field': 'aperture'}, {'field': 'shutter'}, {'field': 'iso'}], '  ', 'hide') }}",
+      "font_path": "Roboto-Regular.ttf",
+      "height_ratio": 0.02,
+      "color": "#403A34"
+    },
+    "right_bottom": {
+      "processor_name": "rich_text",
+      "text": "{{ footer_row(exif, [{'field': 'date'}, {'field': 'comment'}], '  ', 'hide') }}",
+      "font_path": "Roboto-Light.ttf",
+      "height_ratio": 0.017,
+      "color": "#777067"
+    },
+    "center_logo": "{{ auto_logo() }}"
+  }
+]

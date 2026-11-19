@@ -1,0 +1,44 @@
+[
+  {
+    "processor_name": "watermark",
+    "frame_style": "blurred_glass",
+    "frame_margin": 0.075,
+    "frame_bottom": 0.21,
+    "frame_radius": 0.025,
+    "frame_shadow": 0.025,
+    "frame_blur": 0.08,
+    "frame_brightness": 0.72,
+    "frame_vignette": 0.2,
+    "caption_layout": "columns",
+    "adaptive_logo_invert": true,
+    "left_top": {
+      "processor_name": "rich_text",
+      "text": "{{ footer_row(exif, [{'field': 'camera_model'}], '  ', 'hide') }}",
+      "font_path": "Roboto-Medium.ttf",
+      "height_ratio": 0.031,
+      "color": "auto"
+    },
+    "left_bottom": {
+      "processor_name": "rich_text",
+      "text": "{{ footer_row(exif, [{'field': 'lens_model'}], '  ', 'hide') }}",
+      "font_path": "Roboto-Light.ttf",
+      "height_ratio": 0.019,
+      "color": "auto"
+    },
+    "right_top": {
+      "processor_name": "rich_text",
+      "text": "{{ footer_row(exif, [{'field': 'focal_35'}, {'field': 'aperture'}, {'field': 'shutter'}, {'field': 'iso'}], '  ', 'hide') }}",
+      "font_path": "Roboto-Regular.ttf",
+      "height_ratio": 0.02,
+      "color": "auto"
+    },
+    "right_bottom": {
+      "processor_name": "rich_text",
+      "text": "{{ footer_row(exif, [{'field': 'date'}], '  ', 'hide') }}",
+      "font_path": "Roboto-Light.ttf",
+      "height_ratio": 0.017,
+      "color": "auto"
+    },
+    "center_logo": "{{ auto_logo() }}"
+  }
+]
