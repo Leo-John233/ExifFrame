@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import math
 from pathlib import Path
 
 from PySide6.QtCore import QSignalBlocker, QSize, QTimer, Qt, Signal
@@ -27,6 +29,15 @@ _COMMON_FIELDS = (
 _ALIASES = {'Model': ('Model', 'CameraModelName'), 'ExposureTime': ('ExposureTime', 'ShutterSpeed')}
 _BRANDS = ('Canon', 'Nikon', 'Sony', 'Fujifilm', 'Panasonic', 'Olympus',
            'Pentax', 'Leica', 'Hasselblad', 'Ricoh', 'DJI', 'Apple')
+_FRAME_OPTIONS = (
+    ('未指定', ''), ('纯色边框', 'solid_border'), ('拍立得宽底', 'polaroid_bottom'),
+    ('毛玻璃卡片', 'blurred_glass'), ('画廊装裱', 'gallery_mat'), ('胶片暗房', 'film_strip'),
+)
+_OVERLAY_OPTIONS = (('默认位置', ''), ('内嵌覆盖', 'inset_overlay'))
+_SWITCH_OPTIONS = (('开启', True), ('停用', False))
+_ANCHOR_OPTIONS = (('左上', 'top_left'), ('右上', 'top_right'), ('左下', 'bottom_left'),
+                   ('右下', 'bottom_right'), ('底部', 'bottom'))
+_FRAME_DEFAULT = '__template_default__'
 
 
 class CollapsibleSection(QWidget):
@@ -154,6 +165,11 @@ class Inspector(QWidget):
         self._selected_template = ''
         self._cards = {}
         self._style_values = {}
+        self._frame_source = ''
+        self._frame_baseline_source = None
+        self._frame_document = None
+        self._frame_index = None
+        self._frame_defaults = {}
         self.metadata_fields = {}
         self.metadata_checks = {}
 
@@ -256,6 +272,39 @@ class Inspector(QWidget):
 
         border = CollapsibleSection('边框与背景')
         form = QFormLayout(border.body)
+        self.frame_combo = self._combo('frameStyle')
+        self.overlay_combo = self._combo('overlayMode')
+        self.palette_combo = self._combo('paletteBar')
+        self.frame_combo.currentIndexChanged.connect(lambda _: self._frame_changed('frame_style', self.frame_combo))
+        self.overlay_combo.currentIndexChanged.connect(lambda _: self._frame_changed('overlay_mode', self.overlay_combo))
+        self.palette_combo.currentIndexChanged.connect(lambda _: self._frame_changed('palette_bar', self.palette_combo))
+        bind(self.overlay_combo, '内嵌覆盖优先于边框样式', 'setToolTip')
+        form.addRow(self._label('边框样式'), self.frame_combo)
+        form.addRow(self._label('文字覆盖方式'), self.overlay_combo)
+        form.addRow(self._label('色卡栏'), self.palette_combo)
+        self.glass_controls = QWidget()
+        glass = QFormLayout(self.glass_controls)
+        glass.setContentsMargins(0, 0, 0, 0)
+        self.frame_brightness = self._percent_spin('frameBrightness', 200)
+        self.frame_vignette = self._percent_spin('frameVignette', 100)
+        self.frame_blur = self._percent_spin('frameBlur', 100)
+        for key, label, spin in (
+                ('frame_brightness', '背景亮度', self.frame_brightness),
+                ('frame_vignette', '暗角强度', self.frame_vignette),
+                ('frame_blur', '模糊强度', self.frame_blur)):
+            spin.valueChanged.connect(lambda value, name=key: self._frame_number_changed(name, value))
+            glass.addRow(self._label(label), spin)
+        form.addRow(self.glass_controls)
+        self.inset_controls = QWidget()
+        inset = QFormLayout(self.inset_controls)
+        inset.setContentsMargins(0, 0, 0, 0)
+        self.inset_anchor = self._combo('insetAnchor')
+        self.inset_anchor.currentIndexChanged.connect(lambda _: self._frame_changed('inset_anchor', self.inset_anchor))
+        self.overlay_opacity = self._percent_spin('overlayOpacity', 100)
+        self.overlay_opacity.valueChanged.connect(lambda value: self._frame_number_changed('overlay_opacity', value))
+        inset.addRow(self._label('角标位置'), self.inset_anchor)
+        inset.addRow(self._label('覆盖不透明度'), self.overlay_opacity)
+        form.addRow(self.inset_controls)
         self.border_slider = self._slider(5, 30, 'borderSlider')
         self.border_value = QLabel()
         row = QHBoxLayout()
@@ -276,8 +325,12 @@ class Inspector(QWidget):
         self.logo_check.toggled.connect(self._logo_enabled)
         self.logo_combo = self._combo('logoChoice')
         self.logo_combo.currentIndexChanged.connect(self._logo_changed)
+        self.logo_invert_combo = self._combo('adaptiveLogoInvert')
+        self.logo_invert_combo.currentIndexChanged.connect(
+            lambda _: self._frame_changed('adaptive_logo_invert', self.logo_invert_combo))
         form.addRow(self.logo_check)
         form.addRow(self._label('标识来源'), self.logo_combo)
+        form.addRow(self._label('自适应反转标识'), self.logo_invert_combo)
         layout.addWidget(logo)
 
         typography = CollapsibleSection('字体与颜色')
@@ -445,6 +498,15 @@ class Inspector(QWidget):
         spin.setObjectName(name)
         spin.setRange(-1, 5000)
         spin.setSuffix(' px')
+        return spin
+
+    @staticmethod
+    def _percent_spin(name, maximum):
+        spin = QSpinBox()
+        spin.setObjectName(name)
+        spin.setRange(-1, maximum)
+        spin.setSuffix(' %')
+        spin.setSpecialValueText(tr('沿用模板'))
         return spin
 
     def _emit_style(self, key, value):
@@ -624,6 +686,114 @@ class Inspector(QWidget):
             blockers.clear()
             self._syncing = False
 
+    @staticmethod
+    def _frame_node(source):
+        try:
+            document = json.loads(source)
+            if isinstance(document, list):
+                for index, node in enumerate(document):
+                    if isinstance(node, dict) and node.get('processor_name') in {'watermark', 'watermark_with_timestamp'}:
+                        return document, index
+        except (TypeError, ValueError):
+            pass
+        return None, None
+
+    def set_frame_source(self, source, *, baseline=None):
+        """读取模板中的边框选项，不改写未经编辑的源码"""
+        baseline = source if baseline is None else baseline
+        if source == self._frame_source and baseline == self._frame_baseline_source:
+            return
+        base_document, base_index = self._frame_node(baseline)
+        base = base_document[base_index] if base_index is not None else {}
+        defaults = {key: base[key] for key in (
+            'frame_style', 'overlay_mode', 'palette_bar', 'adaptive_logo_invert',
+            'frame_brightness', 'frame_vignette', 'frame_blur', 'inset_anchor', 'overlay_opacity')
+                    if key in base}
+        self._frame_source = source
+        self._frame_baseline_source = baseline
+        self._frame_defaults = defaults
+        self._frame_document, self._frame_index = self._frame_node(source)
+        self._update_frame_options()
+
+    def _update_frame_options(self):
+        node = self._frame_document[self._frame_index] if self._frame_index is not None else {}
+        for key, combo, options in (
+                ('frame_style', self.frame_combo, _FRAME_OPTIONS),
+                ('overlay_mode', self.overlay_combo, _OVERLAY_OPTIONS),
+                ('palette_bar', self.palette_combo, _SWITCH_OPTIONS),
+                ('adaptive_logo_invert', self.logo_invert_combo, _SWITCH_OPTIONS),
+                ('inset_anchor', self.inset_anchor, _ANCHOR_OPTIONS)):
+            value = node.get(key)
+            base_value = self._frame_defaults.get(key)
+            blocker = QSignalBlocker(combo)
+            combo.clear()
+            base_label = next((label for label, option in options if option == base_value), None)
+            if base_label is None and base_value is None:
+                base_label = ('未指定' if key == 'frame_style' else '默认位置' if key == 'overlay_mode'
+                              else '右下' if key == 'inset_anchor' else '默认')
+            default_text = (tr('沿用模板（{value}）', value=tr(base_label)) if base_label
+                            else tr('沿用模板'))
+            combo.addItem(default_text, _FRAME_DEFAULT)
+            for label, option in options:
+                combo.addItem(tr(label), option)
+            same_as_default = (key in node) == (key in self._frame_defaults) and value == base_value
+            index = 0 if same_as_default else combo.findData(value)
+            if index < 0 and value is None:
+                fallback = '' if key in ('frame_style', 'overlay_mode') else 'bottom_right' if key == 'inset_anchor' else False
+                index = combo.findData(fallback)
+            if index < 0:
+                combo.addItem(str(value), value)
+                index = combo.count() - 1
+            combo.setCurrentIndex(max(0, index))
+            combo.setEnabled(self._frame_index is not None)
+            del blocker
+        for key, spin in (('frame_brightness', self.frame_brightness), ('frame_vignette', self.frame_vignette),
+                          ('frame_blur', self.frame_blur), ('overlay_opacity', self.overlay_opacity)):
+            value = node.get(key)
+            blocker = QSignalBlocker(spin)
+            spin.setSpecialValueText(tr('沿用模板'))
+            valid = isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+            spin.setValue(round(value * 100) if valid else -1)
+            spin.setEnabled(self._frame_index is not None)
+            del blocker
+        self._update_effect_visibility()
+
+    def _update_effect_visibility(self):
+        node = self._frame_document[self._frame_index] if self._frame_index is not None else {}
+        inset = node.get('overlay_mode') == 'inset_overlay'
+        self.glass_controls.setVisible(not inset and node.get('frame_style') == 'blurred_glass')
+        self.inset_controls.setVisible(inset)
+
+    def _frame_changed(self, key, combo):
+        self._set_frame_value(key, combo.currentData())
+
+    def _frame_number_changed(self, key, value):
+        self._set_frame_value(key, _FRAME_DEFAULT if value < 0 else value / 100)
+
+    def _set_frame_value(self, key, value):
+        if self._syncing or self._frame_index is None:
+            return
+        node = self._frame_document[self._frame_index]
+        if value == _FRAME_DEFAULT:
+            if key in self._frame_defaults:
+                value = self._frame_defaults[key]
+            else:
+                value = None
+        elif key in ('frame_style', 'overlay_mode') and value == '':
+            value = None
+        if value == node.get(key) and (value is not None or key not in node):
+            return
+        if value is None:
+            node.pop(key, None)
+        else:
+            node[key] = value
+        source = json.dumps(self._frame_document, ensure_ascii=False, indent=2) + '\n'
+        self._frame_source = source
+        if key in ('frame_style', 'overlay_mode'):
+            self._update_frame_options()
+        self.inline_footer.adopt_style_source(source)
+        self._emit_style('template_source', source)
+
     def set_photo(self, path, values, *, force=False, read_only=False):
         """只更新未编辑的 EXIF 项，保留正在输入的文本"""
         path = str(path) if path is not None else None
@@ -727,6 +897,7 @@ class Inspector(QWidget):
             del blocker
         self.text_spacing_spin.setSpecialValueText(tr('沿用模板'))
         self.line_spacing_spin.setSpecialValueText(tr('沿用模板'))
+        self._update_frame_options()
         self._update_values()
         self._update_actions()
 

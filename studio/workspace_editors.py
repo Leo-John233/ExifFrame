@@ -370,6 +370,7 @@ class WorkspaceEditors:
             self._set_status("模板草稿已应用，尚未保存到模板文件")
 
     def _template_saved(self, name, owner=None):
+        getattr(self, '_frame_baselines', {}).pop(name, None)
         if self._draft_owners.get(name) in (None, owner):
             self._drafts.pop(name, None)
             self._draft_owners.pop(name, None)

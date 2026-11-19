@@ -97,6 +97,18 @@ class InlineFooter(QWidget):
             self._error = str(exc)
         self._show_regions()
 
+    def adopt_style_source(self, source):
+        """外围样式变化时保留不变的文字和字符选区"""
+        try:
+            model = read_layout(source)
+        except (ValueError, TypeError):
+            self.set_source(source)
+            return
+        if model != self._model:
+            self.set_source(source)
+            return
+        self._source = source
+
     def set_rendered_rows(self, rows):
         """更新当前照片实际文本，空值立即清除旧选区"""
         self._rendered_rows = {str(key): str(value) for key, value in (rows or {}).items() if value is not None}

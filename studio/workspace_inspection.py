@@ -7,7 +7,7 @@ from dataclasses import replace
 from functools import lru_cache
 from pathlib import Path
 
-from core.desktop_service import read_template, save_workspace_settings
+from core.desktop_service import _template_path, read_template, save_workspace_settings
 from core.footer import text_targets
 from core.metadata import FIELDS, MetadataError, normalize_watermark_changes
 from .i18n import language, localize_error, tr
@@ -105,11 +105,21 @@ class WorkspaceInspection:
                     (editor.source_photo is not None and editor.source_photo != self._editable_photo())):
                 editor.hide()
         self.inspector.set_settings(settings)
+        baselines = getattr(self, '_frame_baselines', None)
+        if baselines is None:
+            baselines = self._frame_baselines = {}
         try:
-            source = settings.template_source or read_template(settings.template_name)
+            info = _template_path(settings.template_name).stat()
+            version = info.st_mtime_ns, info.st_size
+            cached = baselines.get(settings.template_name)
+            if cached is None or cached[0] != version:
+                cached = baselines[settings.template_name] = (version, read_template(settings.template_name))
+            baseline = cached[1]
         except (ValueError, OSError):
-            source = ''
+            baseline = ''
+        source = settings.template_source or baseline
         self._invalidate_changed_rows(settings, source)
+        self.inspector.set_frame_source(source, baseline=baseline)
         self.inspector.inline_footer.set_source(source)
 
     def _footer_text_context(self, settings, source):

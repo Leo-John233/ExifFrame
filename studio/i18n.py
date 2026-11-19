@@ -170,6 +170,12 @@ def localize_error(error) -> str:
     if isinstance(error, PermissionError):
         return tr('无法访问文件，请检查权限：{path}', path=error.filename or '')
     text = str(error)
+    if text.startswith('未知画框样式：'):
+        return tr('未知画框样式：{style}', style=text.removeprefix('未知画框样式：'))
+    match = re.fullmatch(r'(frame_margin|frame_bottom|frame_radius|frame_shadow|frame_blur|'
+                         r'frame_brightness|frame_vignette|bottom_margin) 参数超出范围', text)
+    if match:
+        return tr('画框参数超出范围：{name}', name=match.group(1))
     # 文件名属于用户内容，只拆分处理器附加的错误说明
     if "：" in text and not text.startswith("已跳过同名输出："):
         name, detail = text.split("：", 1)
@@ -347,6 +353,7 @@ register_translations({
     '隐藏标识': 'Hide logo',
     '字体与颜色': 'Font and colors',
     '沿用模板': 'Use template setting',
+    '沿用模板（{value}）': 'Use template ({value})',
     '选择字体…': 'Choose font…',
     '文本排版': 'Text layout',
     '左对齐': 'Align left',
@@ -376,6 +383,47 @@ register_translations({
     '极简参数': 'Minimal exposure',
     '旅途与时间': 'Journey and time',
     '品牌居中': 'Centered brand',
+    '极简无框角标': 'Minimal corner overlay',
+    '原图边缘的轻量参数角标': 'A compact information overlay at the photo edge',
+    '拍立得经典宽底': 'Classic instant photo',
+    '暖白宽底，突出照片和拍摄信息': 'A warm white border with a wide caption area',
+    '毛玻璃悬浮卡片': 'Frosted glass card',
+    '模糊背景衬托圆角照片': 'A rounded photo over a blurred background',
+    '美术馆装裱画框': 'Gallery mat',
+    '米白留白营造装裱感': 'A warm off-white gallery-style mat',
+    '35mm胶片暗房印记': '35mm film imprint',
+    '深色胶片边框与拍摄参数': 'A dark film border with exposure details',
+    '主色提取色卡栏': 'Photo palette strip',
+    '从照片提取色彩并排展示': 'Show a strip of colors extracted from the photo',
+    '红标铭牌强调风': 'Red badge',
+    '深色底栏与红色品牌强调': 'A dark footer with a red brand accent',
+    '极简双行分割线': 'Minimal two-line divider',
+    '双列信息与克制分隔线': 'Two columns of information with a subtle divider',
+    '边框样式': 'Frame style',
+    '未指定': 'Not specified',
+    '纯色边框': 'Solid border',
+    '拍立得宽底': 'Instant-photo border',
+    '毛玻璃卡片': 'Frosted glass card',
+    '画廊装裱': 'Gallery mat',
+    '胶片暗房': 'Film strip',
+    '文字覆盖方式': 'Text placement',
+    '默认位置': 'Default position',
+    '内嵌覆盖': 'Inset overlay',
+    '色卡栏': 'Palette strip',
+    '自适应反转标识': 'Adaptively invert logo',
+    '开启': 'On',
+    '停用': 'Off',
+    '默认': 'Default',
+    '内嵌覆盖优先于边框样式': 'Inset overlay takes precedence over the frame style',
+    '未知画框样式：{style}': 'Unknown frame style: {style}',
+    '画框参数超出范围：{name}': 'Frame parameter out of range: {name}',
+    '照片尺寸无效': 'Invalid photo dimensions',
+    '背景亮度': 'Background brightness',
+    '暗角强度': 'Vignette strength',
+    '模糊强度': 'Blur strength',
+    '角标位置': 'Overlay position',
+    '覆盖不透明度': 'Overlay opacity',
+    '底部': 'Bottom',
     '仅应用当前': 'Apply to current',
     '同步样式': 'Sync style',
     '同步勾选字段到照片': 'Sync checked fields',
@@ -440,6 +488,7 @@ register_translations({
 
 
 _ERROR_SOURCES = {
+    '照片尺寸无效',
     '单字样式必须是对象', '单字颜色应使用 #RRGGBB', '单字字体应为字体名称或路径',
     '单字索引应为非负整数', '高亮规则必须是列表', '请输入匹配表达式', '匹配表达式无效',
     "当前模板需要使用高级源码编辑", "模板中没有可组合的文字区域", "底部信息区域无效", "标识位置无效",
