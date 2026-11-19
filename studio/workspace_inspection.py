@@ -70,6 +70,10 @@ class WorkspaceInspection:
 
     def _show_effective_style(self):
         settings = self._photo_settings()
+        for editor in self._editors:
+            if hasattr(editor, 'set_preview') and (editor.name != settings.template_name or
+                    (editor.source_photo is not None and editor.source_photo != self._editable_photo())):
+                editor.hide()
         self.inspector.set_settings(settings)
         try:
             source = settings.template_source or read_template(settings.template_name)
@@ -98,7 +102,7 @@ class WorkspaceInspection:
     def _open_advanced_metadata(self):
         path = self._editable_photo()
         if path:
-            self._open_metadata_editor(tuple(dict.fromkeys((path, *self.state.checked_paths))), path)
+            self._open_metadata_editor((path,), path)
 
     def _select_template(self, name):
         if not any(preset.name == name for preset in self.presets):
@@ -117,9 +121,6 @@ class WorkspaceInspection:
             self._set_status('默认模板已设为 {name}', name=name)
 
     def _active_template_changed(self, name):
-        for editor in self._editors:
-            if hasattr(editor, 'set_preview') and editor.name != name:
-                editor.hide()
         self.settings = replace(self.settings, template_name=name, use_template_styles=True)
         self._workspace_changed()
         self._style_preview_changed()

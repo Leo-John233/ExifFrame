@@ -94,7 +94,7 @@ class MainWindow(
         self.edit_template_action = self._action("高级源码…", self._edit_template, "Ctrl+E", icons.SP_FileDialogDetailedView)
         self.footer_action = self._action("组合底部信息…", self._show_style_tab, "Ctrl+Shift+E", icons.SP_FileDialogContentsView)
         self.metadata_action = self._action("编辑照片信息…", self._show_metadata_tab, "Ctrl+I", icons.SP_FileDialogInfoView)
-        self.metadata_batch_action = self._action("编辑选中照片信息…", self._show_metadata_tab, icon=icons.SP_FileDialogListView)
+        self.metadata_batch_action = self._action("编辑选中照片信息…", self._advanced_checked_metadata, icon=icons.SP_FileDialogListView)
         self.original_action = self._action("对照原图", self._view_changed, "Ctrl+Tab", checkable=True)
         self.lock_action = self._action("锁定设置", self._set_locked, checkable=True)
         self.metadata_action.setToolTip("编辑当前照片的水印信息，原片保持不变（Ctrl+I）")

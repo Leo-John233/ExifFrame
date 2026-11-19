@@ -116,7 +116,7 @@ class WorkspaceExport:
                        self.copy_template_action, self.edit_template_action, self.footer_action, self.lock_action):
             action.setEnabled(not busy)
         self.metadata_action.setEnabled(current and not busy)
-        self.metadata_batch_action.setEnabled(bool(current and selected) and not busy)
+        self.metadata_batch_action.setEnabled(bool(selected) and not busy)
         self.save_action.setEnabled(self._dirty and not busy)
         self.reset_action.setEnabled(self._dirty and not busy)
         self.inspector.set_dirty(self._dirty)

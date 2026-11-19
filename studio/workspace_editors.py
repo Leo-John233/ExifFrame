@@ -99,6 +99,13 @@ class WorkspaceEditors:
         else:
             self._set_status("尚未选择可编辑的照片")
 
+    def _advanced_checked_metadata(self):
+        self._read_checked_paths()
+        paths = self.state.checked_paths
+        if paths:
+            current = self._editable_photo()
+            self._open_metadata_editor(paths, current if current in paths else paths[0])
+
     def _open_metadata_editor(self, paths, current):
         from .metadata_editor import MetadataEditor
         if self._exporting or self._closing:
@@ -106,10 +113,12 @@ class WorkspaceEditors:
         # 同时仅保留一个编辑会话，避免旧的完整映射覆盖较新的修改
         if self._metadata_editors:
             editor = self._metadata_editors[0]
-            editor.show()
-            editor.raise_()
-            editor.activateWindow()
-            return
+            same_scope = tuple(editor.paths) == tuple(paths) and editor.current == current
+            if same_scope or editor._job is not None or not editor.close():
+                editor.show()
+                editor.raise_()
+                editor.activateWindow()
+                return
         editor = MetadataEditor(self, paths=paths, current=current, overrides=self.state.metadata_overrides)
         editor.applied.connect(self._metadata_applied)
         editor.finished.connect(lambda result, window=editor: self._metadata_editor_closed(window))
