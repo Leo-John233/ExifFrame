@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 
 from jinja2 import Environment, nodes, pass_context
+from core.character_styles import validate_character_styles
 from core.geography import format_altitude, format_location
 from core.dates import watermark_date
 
@@ -61,7 +62,8 @@ _FIELDS.update({
 })
 REGION_LABELS = {'left_top': '左上', 'left_bottom': '左下', 'right_top': '右上', 'right_bottom': '右下'}
 _TEXT_TYPES = {'rich_text', 'multi_rich_text', 'watermark_with_timestamp'}
-_STYLE_KEYS = {'font_path', 'color', 'is_bold', 'trim'}
+_STYLE_KEYS = {'font', 'font_path', 'color', 'is_bold', 'trim'}
+_CHARACTER_KEYS = ('char_styles', 'highlight_rules')
 _EMPTY = {'', '-', '—', 'None', '未记录相机', '未记录镜头', '未记录时间'}
 _ALIASES = {
     'CameraModelName': 'camera_model', 'Model': 'camera_model', 'Make': 'camera_make',
@@ -97,13 +99,18 @@ def _load(source):
     return data
 
 
-def _targets(data):
+def text_targets(data):
+    """为原始模板和渲染结果生成一致的区域标识"""
+    footers, overlays = [], []
+    footer_count = 0
     for index, node in enumerate(data):
         if node.get('processor_name') == 'watermark':
-            return 'footer', [(key, index, key, node.get(key, {})) for key in REGION_LABELS]
-    return 'overlay', [(f'text_{number}', index, None, node)
-                       for number, (index, node) in enumerate((i, n) for i, n in enumerate(data)
-                                                             if n.get('processor_name') in _TEXT_TYPES)]
+            footer_count += 1
+            prefix = '' if footer_count == 1 else f'watermark_{footer_count}_'
+            footers.extend((prefix + key, index, key, node.get(key) or {}) for key in REGION_LABELS)
+        elif node.get('processor_name') in _TEXT_TYPES:
+            overlays.append((f'text_{len(overlays)}', index, None, node))
+    return ('footer' if footers else 'overlay'), footers + overlays
 
 
 def _generated_row(text):
@@ -223,6 +230,13 @@ def _read_row(node):
     if generated:
         return generated
     segments = node.get('text_segments')
+    if isinstance(segments, str):
+        try:
+            segments = json.loads(segments)
+        except ValueError:
+            # 用户表达式生成的整组分段，改字色时保留表达式本身
+            return {'items': [{'dynamic_segments': True, 'raw': segments,
+                               'label': '原有文字样式'}], 'separator': ' '}, 'hide'
     if segments is not None and not isinstance(segments, list):
         raise FooterError('当前模板需要使用高级源码编辑')
     if not isinstance(segments, list):
@@ -237,6 +251,10 @@ def _read_row(node):
                             'segments': deepcopy(segments), 'label': '原有文字样式'}], 'separator': ' '}, 'hide'
     items, separator = [], ' '
     for segment, row in zip(segments, parsed):
+        if any(segment.get(key) for key in _CHARACTER_KEYS):
+            # 索引相对整个原分段，组合其他字段时仍将分段作为一个整体保留
+            items.append({'raw': segment.get('text', ''), 'segments': [deepcopy(segment)], 'label': '原有文字样式'})
+            continue
         style = {key: deepcopy(value) for key, value in segment.items() if key in _STYLE_KEYS}
         for item in row['items']:
             item['style'] = style
@@ -251,12 +269,13 @@ def _read_row(node):
 def read_layout(source: str) -> dict:
     """读取所有可编辑文字区，无法识别的内容仍原样保留"""
     data = _load(source)
-    kind, targets = _targets(data)
+    kind, targets = text_targets(data)
     if not targets:
         raise FooterError('模板中没有可组合的文字区域')
     rows, missing = {}, 'hide'
     for key, index, child, node in targets:
         rows[key], mode = _read_row(node)
+        rows[key].update({name: deepcopy(node[name]) for name in _CHARACTER_KEYS if name in node})
         if mode == 'dash':
             missing = mode
     logo = 'keep'
@@ -278,11 +297,13 @@ def normalize_layout(layout: dict) -> dict:
     if result.get('missing', 'hide') not in ('hide', 'dash'):
         raise FooterError('缺失值处理方式无效')
     for region in result['regions']:
-        if not isinstance(region, str) or not re.fullmatch(r'(?:left|right)_(?:top|bottom)|text_\d+', region):
+        if not isinstance(region, str) or not re.fullmatch(
+                r'(?:watermark_\d+_)?(?:left|right)_(?:top|bottom)|text_\d+', region):
             raise FooterError('底部信息区域无效')
         row = result.get('rows', {}).get(region)
         if not isinstance(row, dict) or not isinstance(row.get('items'), list):
             raise FooterError('底部信息区域无效')
+        validate_character_styles(row.get('char_styles', {}), row.get('highlight_rules', []))
         if not isinstance(row.get('separator', ' '), str) or len(row.get('separator', ' ')) > 32:
             raise FooterError('分隔符过长')
         if len(row['items']) > 32:
@@ -324,22 +345,31 @@ def write_layout(source: str, layout: dict) -> str:
     if layout == original:
         return source
     data = _load(source)
-    kind, targets = _targets(data)
+    kind, targets = text_targets(data)
     for key, index, child, node in targets:
-        if layout['rows'][key] == original['rows'][key] and layout['missing'] == original['missing']:
+        row, old_row = layout['rows'][key], original['rows'][key]
+        if row == old_row and layout['missing'] == original['missing']:
             continue
         edited = deepcopy(node)
         if not edited:
             edited = {'processor_name': 'rich_text'}
-        if edited.get('processor_name') in {'multi_rich_text', 'watermark_with_timestamp'}:
-            style = {name: edited[name] for name in _STYLE_KEYS if name in edited}
-            if isinstance(edited.get('text_segments'), list) and edited['text_segments']:
-                style.update({name: value for name, value in edited['text_segments'][0].items() if name in _STYLE_KEYS})
-            edited['text_segments'] = _row_call('footer_segments', layout['rows'][key], layout['missing'], style)
-            edited.pop('text', None)
-        else:
-            edited['text'] = _row_call('footer_row', layout['rows'][key], layout['missing'])
-            edited.pop('text_segments', None)
+        # 单字修改只写样式属性，原始表达式、文字和分段均原样保留
+        for name in _CHARACTER_KEYS:
+            if row.get(name):
+                edited[name] = row[name]
+            else:
+                edited.pop(name, None)
+        if (row['items'] != old_row['items'] or row['separator'] != old_row['separator']
+                or layout['missing'] != original['missing']):
+            if edited.get('processor_name') in {'multi_rich_text', 'watermark_with_timestamp'}:
+                style = {name: edited[name] for name in _STYLE_KEYS if name in edited}
+                if isinstance(edited.get('text_segments'), list) and edited['text_segments']:
+                    style.update({name: value for name, value in edited['text_segments'][0].items() if name in _STYLE_KEYS})
+                edited['text_segments'] = _row_call('footer_segments', row, layout['missing'], style)
+                edited.pop('text', None)
+            else:
+                edited['text'] = _row_call('footer_row', row, layout['missing'])
+                edited.pop('text_segments', None)
         if child:
             data[index][child] = edited
         else:
@@ -374,12 +404,19 @@ def _resolved_style(style, context, values):
 def _item_parts(context, metadata, item, missing, base_style):
     values = dict(context.get_all())
     values['exif'] = metadata
+    if item.get('dynamic_segments'):
+        encoded = _raw_template(context.environment, item['raw']).render(values)
+        segments = json.loads(encoded)
+        if not isinstance(segments, list) or not all(isinstance(part, dict) for part in segments):
+            raise FooterError('底部信息字段无效')
+        return [{**base_style, **part} for part in segments if part.get('text')]
     if 'segments' in item:
         parts = []
         for segment in item['segments']:
             text = _raw_template(context.environment, str(segment.get('text', ''))).render(values)
             if text:
-                style = _resolved_style({key: value for key, value in segment.items() if key in _STYLE_KEYS}, context, values)
+                style = _resolved_style({key: value for key, value in segment.items()
+                                         if key in _STYLE_KEYS or key in _CHARACTER_KEYS}, context, values)
                 parts.append({**base_style, **style, 'text': text})
         if parts:
             parts[0]['text'] = item.get('prefix', '') + parts[0]['text']
@@ -435,7 +472,7 @@ def footer_segments(context, metadata, items, separator=' ', missing='hide', sty
             separator_style = spacing.isspace() and all(
                 last_style.get(key) == base.get(key) for key in ('font_path', 'is_bold', 'trim')
             )
-            if location_pair and same_style and separator_style:
+            if location_pair and same_style and separator_style and not any(last_style.get(key) for key in _CHARACTER_KEYS):
                 output[-1]['text'] += spacing + parts[0]['text']
                 previous_field, previous_single = field, False
                 continue

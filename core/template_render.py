@@ -115,9 +115,34 @@ def _prepare_legacy_altitude(source):
     return source
 
 
+def _protect_rule_patterns(source):
+    """让正则中的字面花括号在 JSON 解码后恢复，不被 Jinja 当作变量"""
+    if '"highlight_rules"' not in source:
+        return source
+    decoder = json.JSONDecoder()
+    output, start = [], 0
+    for match in re.finditer(r'"highlight_rules"\s*:\s*(?=\[)', source):
+        if match.end() < start:
+            continue
+        try:
+            rules, end = decoder.raw_decode(source, match.end())
+        except ValueError:
+            continue
+        if not any(isinstance(rule, dict) and isinstance(rule.get('pattern'), str)
+                   and ('{' in rule['pattern'] or '}' in rule['pattern']) for rule in rules):
+            continue
+        # 只处理 pattern 的字符串值，规则中的其他模板变量仍可照常渲染
+        literal = re.sub(r'("pattern"\s*:\s*)("(?:[^"\\]|\\.)*")',
+                         lambda m: m[1] + m[2].replace('{', r'\u007b').replace('}', r'\u007d'),
+                         source[match.end():end])
+        output.extend((source[start:match.end()], literal))
+        start = end
+    return ''.join(output) + source[start:] if output else source
+
+
 def _prepare_footer_calls(source):
     """先解开新组合函数的 JSON 编码，避免引号进入 Jinja 代码位置"""
-    source = _prepare_legacy_altitude(source)
+    source = _prepare_legacy_altitude(_protect_rule_patterns(source))
     if 'footer_row' not in source and 'footer_segments' not in source:
         return source
     def prepare(match):
