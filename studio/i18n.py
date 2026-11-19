@@ -180,6 +180,8 @@ def localize_error(error) -> str:
     if isinstance(error, PermissionError):
         return tr('无法访问文件，请检查权限：{path}', path=error.filename or '')
     text = str(error)
+    if text.startswith('所选样式引用的素材不存在：'):
+        return tr('所选样式引用的素材不存在：{path}', path=text.removeprefix('所选样式引用的素材不存在：'))
     if text.startswith('未知画框样式：'):
         return tr('未知画框样式：{style}', style=text.removeprefix('未知画框样式：'))
     match = re.fullmatch(r'(frame_margin|frame_bottom|frame_radius|frame_shadow|frame_blur|'
@@ -498,6 +500,9 @@ register_translations({
 
 
 _ERROR_SOURCES = {
+    '样式包格式无效', '样式包版本不受支持', '样式包素材过大', '样式包素材无效或已损坏',
+    '素材图片无效或已损坏', '素材图片大小无效', '素材需要 PNG 或 JPEG 图片',
+    '素材文件已存在且内容不同', '模板已存在，请换一个名称',
     '品牌符号策略无效',
     '照片尺寸无效',
     '单字样式必须是对象', '单字颜色应使用 #RRGGBB', '单字字体应为字体名称或路径',
@@ -617,4 +622,76 @@ register_translations({
     "不能覆盖输入目录中的照片，请选择独立的输出目录": "Source photos cannot be overwritten; choose a separate output folder",
     "不能覆盖已导入的原照片，请选择独立的输出目录": "Imported source photos cannot be overwritten; choose a separate output folder",
     "已跳过同名输出：": "Skipped existing output: ",
+})
+
+register_translations({
+    '内置模板': 'Built-in templates',
+    '我的模板': 'My templates',
+    '另存我的模板': 'Save template',
+    '导入样式包': 'Import style pack',
+    '导出样式包': 'Export style pack',
+    '样式包 (*.efstyle)': 'Style packs (*.efstyle)',
+    '模板名称': 'Template name',
+    '请输入模板名称': 'Enter a template name',
+    '模板已保存到我的模板：{name}': 'Saved to my templates: {name}',
+    '样式包已导入：{name}': 'Style pack imported: {name}',
+    '样式包已导出：{path}': 'Style pack exported: {path}',
+    '无法保存模板': 'Unable to save template',
+    '无法导入样式包': 'Unable to import style pack',
+    '无法导出样式包': 'Unable to export style pack',
+    '样式包格式无效': 'Invalid style pack',
+    '样式包版本不受支持': 'Unsupported style pack version',
+    '样式包素材无效或已损坏': 'Style pack asset is invalid or damaged',
+    '样式包素材过大': 'Style pack assets are too large',
+    '素材图片无效或已损坏': 'Asset image is invalid or damaged',
+    '素材图片大小无效': 'Invalid asset image size',
+    '素材需要 PNG 或 JPEG 图片': 'An asset must be a PNG or JPEG image',
+    '素材文件已存在且内容不同': 'An existing asset has different contents',
+    '模板已存在，请换一个名称': 'A template with this name already exists',
+    '所选样式引用的素材不存在：{path}': 'A referenced asset is missing: {path}',
+})
+
+register_translations({
+    '添加': 'Add',
+    '当前模板无法在此编辑画框，请使用高级源码': 'This template cannot be edited here; use advanced source',
+    '画框定制': 'Frame design', '当前画框请在画框定制中调整': 'Adjust this frame under Frame design',
+    '调整后生成当前照片的画框草稿': 'Edits create a frame draft for this photo',
+    '画框距离和尺寸按照片短边的百分比计算': 'Frame distances and sizes use the photo’s short edge',
+    '恢复模板画框': 'Restore template frame', '画幅与边距': 'Canvas and margins',
+    '画幅模式': 'Canvas mode', '扩展边距': 'Expand margins', '固定比例': 'Fixed aspect ratio',
+    '画幅比例': 'Aspect ratio', '水平偏移': 'Horizontal offset', '垂直偏移': 'Vertical offset',
+    '锁定四边比例': 'Lock margin proportions', '上边距': 'Top margin', '下边距': 'Bottom margin',
+    '左边距': 'Left margin', '右边距': 'Right margin',
+    '画框背景与材质': 'Frame background and texture', '背景类型': 'Background type',
+    '纯色': 'Solid color', '渐变色': 'Gradient', '自动主色': 'Dominant color',
+    '照片模糊': 'Blurred photo', '自定义背景图': 'Custom background', '画框颜色': 'Frame color',
+    '渐变起始色': 'Gradient start', '渐变结束色': 'Gradient end', '渐变方式': 'Gradient type',
+    '线性': 'Linear', '径向': 'Radial', '渐变角度': 'Gradient angle', '模糊半径': 'Blur radius',
+    '背景饱和度': 'Background saturation', '背景图片': 'Background image', '背景图片适配': 'Image fit',
+    '铺满裁切': 'Fill and crop', '拉伸': 'Stretch', '完整包含': 'Fit inside',
+    '表面纹理': 'Texture', '无纹理': 'None', '纸张': 'Paper', '颗粒': 'Grain',
+    '纹理强度': 'Texture strength', '纹理缩放': 'Texture scale', '纹理种子': 'Texture seed',
+    '照片外观': 'Photo appearance', '照片圆角': 'Photo corner radius', '照片描边宽度': 'Photo outline width',
+    '照片描边颜色': 'Photo outline color', '照片描边不透明度': 'Photo outline opacity',
+    '阴影模糊': 'Shadow blur', '阴影水平偏移': 'Shadow horizontal offset', '阴影垂直偏移': 'Shadow vertical offset',
+    '阴影扩散': 'Shadow spread', '阴影不透明度': 'Shadow opacity', '阴影颜色': 'Shadow color',
+    '画框装饰': 'Frame decorations', '边框线条': 'Border line', '胶片齿孔': 'Film sprockets',
+    '主色色卡': 'Color palette', '取景框': 'Viewfinder marks', 'PNG 画框': 'PNG frame',
+    '启用当前装饰': 'Enable selected decoration', '双线边框': 'Double border', '线条内缩': 'Line inset',
+    '线条宽度': 'Line width', '双线间距': 'Line spacing', '线条圆角': 'Line radius', '线条颜色': 'Line color',
+    '齿孔位置': 'Sprocket edges', '上下边': 'Top and bottom', '左右边': 'Left and right', '四边': 'All edges',
+    '齿孔宽度': 'Sprocket width', '齿孔高度': 'Sprocket height', '齿孔间隔': 'Sprocket spacing',
+    '齿孔内缩': 'Sprocket inset', '齿孔颜色': 'Sprocket color', '胶片边缘文字': 'Film edge text',
+    '边缘文字颜色': 'Edge text color', '色块数量': 'Number of colors', '色块形状': 'Swatch shape',
+    '方形': 'Square', '圆形': 'Circle', '胶囊': 'Capsule', '色卡位置': 'Palette position',
+    '底部居中': 'Bottom center', '顶部居中': 'Top center', '色卡宽度': 'Palette width',
+    '色卡高度': 'Palette height', '色卡内缩': 'Palette inset', '色块间距': 'Swatch gap',
+    '取景标记': 'Viewfinder style', '四角': 'Corners', '十字': 'Crosshair', '标记内缩': 'Mark inset',
+    '标记长度': 'Mark length', '标记宽度': 'Mark width', '标记颜色': 'Mark color',
+    'PNG 图片': 'PNG image', '图片适配': 'Image fit', '九宫格': 'Nine-slice',
+    '图片不透明度': 'Image opacity', '九宫格上边': 'Top slice', '九宫格下边': 'Bottom slice',
+    '九宫格左边': 'Left slice', '九宫格右边': 'Right slice', '选择图片': 'Choose image',
+    'PNG 图片 (*.png)': 'PNG images (*.png)', '背景图片 (*.png *.jpg *.jpeg)': 'Background images (*.png *.jpg *.jpeg)',
+    '图片导入失败': 'Unable to import image', '全部模板': 'All templates',
+    '读取模板样式失败': 'Unable to read template style',
 })

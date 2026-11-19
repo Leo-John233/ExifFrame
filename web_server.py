@@ -167,7 +167,11 @@ def get_file():
 @log_rt
 def handle_process():
     # 获取模板
-    template = get_template(config.get('render', 'template_name'))
+    template_name = config.get('render', 'template_name')
+    template = get_template(template_name)
+    from core.style_pack import read_preset_style
+    saved_style = read_preset_style(template_name)
+    saved_source = get_template_content(template_name) if saved_style else None
 
     data = request.get_json()
     input_files = data['selectedItems']
@@ -199,15 +203,24 @@ def handle_process():
 
             _input_path = Path(input_path)
             # 开始处理
-            context = {
-                'exif': get_exif(input_path),
-                'filename': _input_path.stem,
-                'file_dir': str(_input_path.parent.absolute()).replace('\\', '/'),
-                'file_path': str(_input_path).replace('\\', '/'),
-                'files': input_files
-            }
-            final_template = template.render(context)
-            start_process(json.loads(final_template), input_path, output_path=output_path)
+            if saved_style:
+                # 与桌面共用另存模板的快捷样式及自定义标识
+                from core.desktop_service import WatermarkSettings, _output_rgb, render_photo
+                settings = WatermarkSettings(template_name=template_name, template_source=saved_source,
+                                             input_files=tuple(input_files), **saved_style)
+                image = render_photo(_input_path, settings, preview=False)
+                _output_rgb(image, settings).save(output_path, quality=config.getint('DEFAULT', 'quality'),
+                                                  subsampling=config.getint('DEFAULT', 'subsampling'))
+            else:
+                context = {
+                    'exif': get_exif(input_path),
+                    'filename': _input_path.stem,
+                    'file_dir': str(_input_path.parent.absolute()).replace('\\', '/'),
+                    'file_path': str(_input_path).replace('\\', '/'),
+                    'files': input_files
+                }
+                final_template = template.render(context)
+                start_process(json.loads(final_template), input_path, output_path=output_path)
             return True, False, None
 
         except Exception as e:
