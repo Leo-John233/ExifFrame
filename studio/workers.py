@@ -152,6 +152,10 @@ class WorkerSignals(QObject):
     summary = Signal(object)
 
 
+class _ThumbnailPaused(Exception):
+    """中断当前缩略图并在空闲后重试"""
+
+
 class ImageTask(QRunnable):
     """每项任务拥有取消标记且只在安全的单张边界停止"""
 
@@ -299,30 +303,46 @@ class ImageTask(QRunnable):
     def _thumbnails(self):
         """仅解码当前可见的照片并返回文件版本"""
         errors = []
-        for path in self.paths:
-            if not self._acquire_io():
-                return errors
-            try:
-                source = Path(os.path.abspath(path))
-                info = source.stat()
-                signature = info.st_mtime_ns, info.st_size
-                photo, width, height = photo_thumbnail(source, cancelled=self.cancel.is_set)
-                info = source.stat()
-                if signature != (info.st_mtime_ns, info.st_size):
-                    raise OSError('照片在读取期间发生变化，请重试')
-            except CancelledError:
-                return errors
-            except (OSError, ValueError) as exc:
-                errors.append(f"{Path(path).name}：{exc}")
-                continue
-            finally:
-                self._release_io()
-            if not self._ready():
-                return errors
-            image = qt_image(photo)
+
+        def interrupted():
             if self.cancel.is_set():
-                return errors
-            self.signals.item.emit(self.token, (source, image, width, height, signature))
+                return True
+            if self.pause.is_set():
+                raise _ThumbnailPaused()
+            return False
+
+        for path in self.paths:
+            while True:
+                if not self._acquire_io():
+                    return errors
+                try:
+                    source = Path(os.path.abspath(path))
+                    info = source.stat()
+                    signature = info.st_mtime_ns, info.st_size
+                    photo, width, height = photo_thumbnail(source, cancelled=interrupted)
+                    info = source.stat()
+                    if signature != (info.st_mtime_ns, info.st_size):
+                        raise OSError('照片在读取期间发生变化，请重试')
+                except _ThumbnailPaused:
+                    continue
+                except CancelledError:
+                    return errors
+                except (OSError, ValueError) as exc:
+                    errors.append(f"{Path(path).name}：{exc}")
+                    break
+                finally:
+                    self._release_io()
+                if self.cancel.is_set():
+                    return errors
+                if self.pause.is_set():
+                    continue
+                image = qt_image(photo)
+                if self.cancel.is_set():
+                    return errors
+                if self.pause.is_set():
+                    continue
+                self.signals.item.emit(self.token, (source, image, width, height, signature))
+                break
         return errors
 
     def _walk(self, root):
