@@ -10,6 +10,7 @@ from core.util import get_exif
 from core.image_cache import resized_logo
 from processor.core import ImageProcessor, PipelineContext, start_process, get_processor
 from processor.types import Alignment
+from processor.render_slots import crop_slots, tag_logo, transfer_slots
 
 
 class FilterProcessor(ImageProcessor, ABC):
@@ -100,7 +101,7 @@ class TrimFilter(FilterProcessor):
                                             trim_right=ctx.get("trim_right", True),
                                             trim_top=ctx.get("trim_top", True),
                                             trim_bottom=ctx.get("trim_bottom", True))
-            buffer.append(image.crop(bbox))
+            buffer.append(crop_slots(image, bbox))
         ctx.update_buffer(buffer).save_buffer(self.name()).success()
 
     def name(self) -> str:
@@ -227,6 +228,7 @@ class MarginFilter(FilterProcessor):
 
             # 将原图粘贴到新画布上
             new_img.paste(img, (offset_x, offset_y))
+            transfer_slots(img, new_img, (offset_x, offset_y))
             buffer.append(new_img)
 
         ctx.update_buffer(buffer).save_buffer(self.name()).success()
@@ -323,6 +325,7 @@ def draw_pixel_footer(ctx, img, scale):
         left_logo = resized_logo(left_logo, (logo_size, logo_size))
         logo_y = footer_start_y if scale == 1 else footer_start_y + (bottom_margin - logo_size) // 2
         canvas.paste(left_logo, (left_margin, logo_y), mask=left_logo if left_logo.mode == 'RGBA' else None)
+        transfer_slots(tag_logo(left_logo, ctx, 'left_logo'), canvas, (left_margin, logo_y))
         left_logo_width = logo_size
 
     if center_logo and bottom_margin > 0:
@@ -339,6 +342,7 @@ def draw_pixel_footer(ctx, img, scale):
         center_x = (canvas.width - center_logo.width) // 2
         center_y = footer_start_y + ((canvas.height - footer_start_y) - center_logo.height) // 2
         canvas.paste(center_logo, (center_x, center_y), mask=center_logo if center_logo.mode == 'RGBA' else None)
+        transfer_slots(tag_logo(center_logo, ctx, 'center_logo'), canvas, (center_x, center_y))
 
     if ctx.get('fit_center_columns', False) and isinstance(center_logo, Image.Image):
         # 两侧信息限定在独立栏内，长名称和竖图不会侵入中间标识
@@ -393,6 +397,9 @@ def draw_pixel_footer(ctx, img, scale):
     canvas.paste(left_bottom, (l_x, lb_y), mask=left_bottom if left_bottom.mode == 'RGBA' else None)
     canvas.paste(right_top, (rt_x, rt_y), mask=right_top if right_top.mode == 'RGBA' else None)
     canvas.paste(right_bottom, (rb_x, rb_y), mask=right_bottom if right_bottom.mode == 'RGBA' else None)
+    for text, position in ((left_top, (l_x, lt_y)), (left_bottom, (l_x, lb_y)),
+                           (right_top, (rt_x, rt_y)), (right_bottom, (rb_x, rb_y))):
+        transfer_slots(text, canvas, position)
 
     # 右图标处理 (逻辑类推：放置在右边距内侧)
     if right_logo:
@@ -409,6 +416,7 @@ def draw_pixel_footer(ctx, img, scale):
         right_logo_y = footer_start_y + elem_margin
         canvas.paste(right_logo, (right_logo_x, right_logo_y),
                      mask=right_logo if right_logo.mode == 'RGBA' else None)
+        transfer_slots(tag_logo(right_logo, ctx, 'right_logo'), canvas, (right_logo_x, right_logo_y))
 
     # 7. 返回结果
     return canvas
@@ -465,6 +473,7 @@ class RoundedCornerFilter(FilterProcessor):
             output = Image.new('RGBA', (width, height), (0, 0, 0, 0))
             output.paste(img, (0, 0))
             output.putalpha(mask)
+            transfer_slots(img, output)
 
             buffer.append(output)
         ctx.update_buffer(buffer).save_buffer(self.name()).success()
@@ -507,6 +516,7 @@ class ShadowFilter(FilterProcessor):
             shadow_blurred = self._apply_alpha_falloff(shadow_blurred, falloff)
             # 4. 合成原图
             shadow_blurred.paste(original_img, (padding, padding), mask=original_img)
+            transfer_slots(original_img, shadow_blurred, (padding, padding))
             buffer.append(shadow_blurred)
         ctx.update_buffer(buffer).save_buffer(self.name()).success()
 
@@ -559,6 +569,7 @@ class ShadowFilter(FilterProcessor):
             shadow_in_process.putalpha(a)
             # 组合原图
             shadow_in_process.paste(original_img, (padding, padding), mask=original_img)
+            transfer_slots(original_img, shadow_in_process, (padding, padding))
 
             # (可选) 如果你不希望图片尺寸暴增，可以在这里 crop 回去，
             # 但既然要阴影，通常就需要保留扩大的尺寸。
@@ -624,7 +635,7 @@ class CropFilter(FilterProcessor):
             bottom = top + height
 
             # 执行裁剪
-            cropped_img = img.crop((left, top, right, bottom))
+            cropped_img = crop_slots(img, (left, top, right, bottom))
             buffer.append(cropped_img)
 
         ctx.update_buffer(buffer).save_buffer(self.name()).success()

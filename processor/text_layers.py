@@ -95,6 +95,13 @@ def _segment_image(segment):
 
 @node_glyph_policy
 def render_text_row(node):
+    """保留实际行框及槽位元数据，隐藏文字仍占据原有位置"""
+    from processor.render_slots import effective_text, tag_text
+    node = effective_text(node)
+    return tag_text(_render_text_row(node), node)
+
+
+def _render_text_row(node):
     """按连续字形和共同基线生成一行透明文字"""
     styled = render_character_node(node, watermark=True)
     if styled is not None:

@@ -153,6 +153,12 @@ class ImageProcessor(ABC):
         @functools.wraps(original_process)
         def wrapper(self, ctx: PipelineContext):
             start_time = time.perf_counter()  # 使用高精度计时
+            original_ctx = ctx
+            text = self.name() in {'rich_text', 'multi_rich_text'}
+            if text:
+                from processor.render_slots import effective_text, tag_text
+                if ctx.get('slot_style'):
+                    ctx = PipelineContext(effective_text(ctx))
             try:
                 policy = ctx.get('brand_glyph_policy')
                 if policy is not None:
@@ -161,6 +167,9 @@ class ImageProcessor(ABC):
                 # 执行原本的业务逻辑
                 return original_process(self, ctx)
             finally:
+                if text and ctx.get('success'):
+                    images = [tag_text(image, ctx) for image in ctx.get_buffer()]
+                    original_ctx.update_buffer(images).success()
                 end_time = time.perf_counter()
                 cost_ms = (end_time - start_time) * 1000
                 # 打印日志
@@ -302,7 +311,7 @@ def _clear_identities(buffers, identities, changed):
 
 
 def start_process(data: List[dict], input_path: str = None, output_path: str = None, initial_buffer: List = None,
-                  *, preview_source_key=None, cancelled=None, image_id=None):
+                  *, preview_source_key=None, cancelled=None, image_id=None, collect_metadata=False):
     """
     执行处理管道
 
@@ -313,6 +322,9 @@ def start_process(data: List[dict], input_path: str = None, output_path: str = N
         initial_buffer: 初始图像缓冲区（可选，用于不从文件加载的情况）
     """
     check_cancelled(cancelled)
+    if collect_metadata:
+        from processor.render_slots import prepare_slots
+        prepare_slots(data)
     nodes = [PipelineContext(datum) for datum in data]
 
     # 设置初始 buffer

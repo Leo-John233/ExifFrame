@@ -6,6 +6,7 @@ from PIL import Image
 
 from processor.core import ImageProcessor, Direction, PipelineContext
 from processor.types import Alignment
+from processor.render_slots import transfer_slots
 
 
 def _calc_offset(size: int, max_size: int, alignment: Alignment) -> int:
@@ -66,6 +67,7 @@ class AlignmentMerger(Merger):
             paste_img = img if img.mode == 'RGBA' else img.convert('RGBA')
             # 粘贴图片到画布（使用 alpha 通道作为蒙版）
             canvas.paste(paste_img, (img_x, img_y), paste_img)
+            transfer_slots(img, canvas, (img_x, img_y))
         ctx.update_buffer([canvas]).save_buffer(self.name()).success()
 
     def name(self) -> str:
@@ -103,11 +105,13 @@ class ConcatMerger(Merger):
                 # 计算 y 偏移（垂直对齐）
                 y_offset = _calc_offset(img.height, max_height, alignment)
                 canvas.paste(img, (current_pos, y_offset), img)
+                transfer_slots(img, canvas, (current_pos, y_offset))
                 current_pos += img.width + spacing
             else:  # VERTICAL
                 # 计算 x 偏移（水平对齐）
                 x_offset = _calc_offset(img.width, max_width, alignment)
                 canvas.paste(img, (x_offset, current_pos), img)
+                transfer_slots(img, canvas, (x_offset, current_pos))
                 current_pos += img.height + spacing
         ctx.update_buffer([canvas]).save_buffer(self.name()).success()
 

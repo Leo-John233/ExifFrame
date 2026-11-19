@@ -398,7 +398,7 @@ def _uses_logo(nodes, logo):
     return False
 
 
-def _overlay_logo(image, logo):
+def _overlay_logo(image, logo, *, collect_metadata=False):
     """为无标识槽位的版式添加右上角小标识"""
     bounds = (max(1, round(image.width * .08)), max(1, round(image.height * .08)))
     badge = resized_logo(logo, bounds, contain=True)
@@ -406,6 +406,10 @@ def _overlay_logo(image, logo):
     canvas = image.convert('RGBA')
     canvas.alpha_composite(badge, (max(0, image.width - badge.width - margin), margin))
     canvas.info.update(image.info)
+    if collect_metadata:
+        from processor.render_slots import tag_logo, transfer_slots
+        tag_logo(badge, {'_logo_slot_keys': {'right_logo': 'right_logo'}, 'right_logo': logo}, 'right_logo')
+        transfer_slots(badge, canvas, (max(0, image.width - badge.width - margin), margin))
     return canvas
 
 
@@ -918,12 +922,12 @@ def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True, 
     rendered_rows = _rendered_rows(nodes) if preview else None
     image_id = ('file', str(source), info.st_mtime_ns, info.st_size)
     result = start_process(nodes, initial_buffer=[image], preview_source_key=source_key,
-                           cancelled=cancelled, image_id=image_id)
+                           cancelled=cancelled, image_id=image_id, collect_metadata=preview)
     check_cancelled(cancelled)
     if not settings.use_template_styles and settings.show_logo and settings.logo_choice:
         logo = _selected_logo(settings.logo_choice, metadata)
         if logo and not _uses_logo(nodes, logo):
-            result = _overlay_logo(result, logo)
+            result = _overlay_logo(result, logo, collect_metadata=preview)
             check_cancelled(cancelled)
     if preview:
         if not full_resolution and source_scale != 1:
@@ -933,6 +937,9 @@ def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True, 
                 full_size = _nearest_frame_ratio(full_size, nodes[-1])
         else:
             full_size = result.size
+        from processor.render_slots import complete_slots, finish_slots
+        complete_slots(nodes, result)
+        rendered_slots = finish_slots(result, full_size)
         result = _output_rgb(result, settings)
         if not full_resolution:
             max_side = 900 if interactive else 1800
@@ -941,6 +948,7 @@ def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True, 
         result.info['preview_full_size'] = full_size
         result.info['preview_source_size'] = original_size
         result.info['preview_rendered_rows'] = rendered_rows
+        result.info['preview_rendered_slots'] = rendered_slots
     if profile:
         result.info['icc_profile'] = profile
     return result

@@ -10,6 +10,7 @@ from core.image_cache import dominant_palette
 from processor.core import get_processor
 from processor.logo_layer import adaptive_logo, layer_logo
 from processor.text_layers import render_text_row, watermark_scale
+from processor.render_slots import crop_slots, effective_text, tag_logo, transfer_slots
 
 
 @dataclass(frozen=True)
@@ -50,16 +51,23 @@ def _text_bitmap(node, ink):
     prepared, adaptable = _ink_node(node, ink)
     image = render_text_row(prepared)
     bounds = image.getchannel('A').getbbox()
-    return (image.crop(bounds) if bounds else None), adaptable
+    if not bounds:
+        return None, adaptable
+    image = crop_slots(image, bounds)
+    for item in image.info.get('_render_slots', []):
+        item['_font_ratio'] = 1.0
+    return image, adaptable
 
 
 def _text_layer(node, unit, default_height, scale):
     if not node:
         return None
+    node = effective_text(node)
     image, adaptable = _text_bitmap(node, '#202124')
     if image is None:
         return None
-    height = unit * float(node.get('height_ratio', default_height)) * scale
+    height = (float(node['height']) if (node.get('slot_style') or {}).get('height') is not None else
+              unit * float(node.get('height_ratio', default_height))) * scale
     if height <= 0:
         return None
     width = height * image.width / image.height
@@ -175,6 +183,8 @@ def plan_overlay(ctx, layout):
     logos = {}
     for slot in ('left', 'center', 'right'):
         logo = _logo_layer(ctx.get(slot + '_logo'), unit, scale)
+        if logo:
+            tag_logo(logo.bitmap, ctx, slot + '_logo')
         logos[slot] = [logo] if logo else []
     if ctx.get('caption_layout') == 'centered':
         column = _stack(list(lines.values()), .5, line_gap)
@@ -240,6 +250,8 @@ def _stamp(canvas, stamp, box, opacity, shadow, sampling):
     if opacity < 1:
         stamp = stamp.copy()
         stamp.putalpha(stamp.getchannel('A').point(lambda a: round(a * opacity)))
+        if opacity <= 0:
+            stamp.info['_render_slots'] = [{**item, 'bbox': None} for item in stamp.info.get('_render_slots', [])]
     if shadow > 0:
         pad = max(1, round(shadow * 3))
         mask = Image.new('L', (stamp.width + pad*2, stamp.height + pad*2))
@@ -248,6 +260,7 @@ def _stamp(canvas, stamp, box, opacity, shadow, sampling):
         shade.putalpha(mask.filter(ImageFilter.GaussianBlur(shadow)).point(lambda a: a * .44))
         canvas.alpha_composite(shade, (x - pad, y - pad + round(shadow)))
     canvas.alpha_composite(stamp, (x, y))
+    transfer_slots(stamp, canvas, (x, y))
 
 
 def draw_overlay(canvas, source, ctx, layout, image_id):
@@ -282,6 +295,11 @@ def draw_overlay(canvas, source, ctx, layout, image_id):
             if layer.text_node is not None and _luma(canvas, box) < 128:
                 stamp, _ = _text_bitmap(layer.text_node, '#FAFAF8')
             if stamp is not None:
+                if stamp.info.get('_render_slots'):
+                    ink = '#FAFAF8' if _luma(canvas, box) < 128 else '#202124'
+                    stamp.info['_render_slots'] = [
+                        {**item, 'base_color': item.get('base_color', item.get('color', ink)).replace('auto', ink)}
+                        for item in stamp.info['_render_slots']]
                 _stamp(canvas, stamp, box, opacity, shadow, sampling)
     return canvas
 
@@ -297,4 +315,5 @@ def draw_timestamp(source, ctx):
     text = ctx.get_buffer()[0]
     position = int(source.width * .93) - text.width, int(source.height * .95)
     source.paste(text, position, mask=text)
+    transfer_slots(text, source, position)
     return source

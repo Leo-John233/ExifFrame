@@ -8,6 +8,7 @@ from PIL import Image, ImageOps
 from core.image_cache import cached_preview_image, cache_preview_image
 from processor.text_layers import _font_at_size, _segment_image, render_text_row as _row_image, watermark_scale
 from processor.types import Alignment
+from processor.render_slots import tag_logo, transfer_slots
 
 
 _NORMAL_HEIGHT = 1000
@@ -20,6 +21,7 @@ def _padding(image, amount, location='tb'):
     bottom = amount if 'b' in location else 0
     result = Image.new('RGBA', (image.width + left + right, image.height + top + bottom), (0, 0, 0, 0))
     result.paste(image, (left, top))
+    transfer_slots(image, result, (left, top))
     return result
 
 
@@ -27,8 +29,10 @@ def _column(top, bottom, background, align_right=False):
     width = max(10, top.width, bottom.width)
     result = Image.new('RGBA', (width, top.height + 100 + bottom.height), (0, 0, 0, 0))
     result.paste(top, (width - top.width if align_right else 0, 0))
+    transfer_slots(top, result, (width - top.width if align_right else 0, 0))
     result.paste(Image.new('RGBA', (10, 100), background), (0, top.height))
     result.paste(bottom, (width - bottom.width if align_right else 0, top.height + 100))
+    transfer_slots(bottom, result, (width - bottom.width if align_right else 0, top.height + 100))
     return result
 
 
@@ -59,6 +63,7 @@ def _draft_column(top, bottom, margin, ratio, height, align_right):
         size = max(1, round(row.width * ratio)), max(1, round(row.height * ratio))
         stamp = row.resize(size, Image.Resampling.BILINEAR)
         result.paste(stamp, (width - stamp.width if align_right else 0, round(y * ratio)))
+        transfer_slots(stamp, result, (width - stamp.width if align_right else 0, round(y * ratio)))
     return result
 
 
@@ -125,20 +130,25 @@ def render_watermark(ctx, image, scale):
             max_width = max(1, round(watermark.width * .18))
         center = ImageOps.contain(center, (max_width, height), sampling)
         center_x = (watermark.width - center.width) // 2
+        tag_logo(center, ctx, 'center_logo')
         watermark.paste(center, (center_x, (height - center.height) // 2))
+        transfer_slots(center, watermark, (center_x, (height - center.height) // 2))
     x = 0 if left_logo else gap
     if left_logo:
         x += round(.02 * height) + gap
         logo = _read_logo(left_logo, padding)
         if draft:
             logo = _normalize(logo, height, sampling)
+        tag_logo(logo, ctx, 'left_logo')
         watermark.paste(logo, (x, 0))
+        transfer_slots(logo, watermark, (x, 0))
         x += logo.width + gap
     if center and ctx.get('fit_center_columns', False):
         available = max(1, center_x - x - gap)
         if left.width > available:
             left = ImageOps.contain(left, (available, height), sampling)
     watermark.paste(left, (x, (height - left.height) // 2))
+    transfer_slots(left, watermark, (x, (height - left.height) // 2))
 
     x = watermark.width
     right_end = x - gap
@@ -149,6 +159,7 @@ def render_watermark(ctx, image, scale):
         line, logo = _normalize(line, height, sampling), _read_logo(right_logo, padding)
         if draft:
             logo = _normalize(logo, height, sampling)
+        tag_logo(logo, ctx, 'right_logo')
     if center and ctx.get('fit_center_columns', False):
         occupied = (line.width + logo.width + 2 * gap) if right_logo else 0
         available = max(1, right_end - occupied - center_x - center.width - gap)
@@ -158,10 +169,12 @@ def render_watermark(ctx, image, scale):
     for part in parts:
         x -= part.width + gap
         watermark.paste(part, (x, (height - part.height) // 2))
+        transfer_slots(part, watermark, (x, (height - part.height) // 2))
 
     footer = watermark if draft else watermark.resize((image.width, footer_height), sampling)
     left_margin = ctx.getint('left_margin', 0)
     top_margin = ctx.getint('top_margin', 0)
     canvas = legacy_base(image, ctx, footer_height, ctx.get('_frame_image_id'))
     canvas.alpha_composite(footer, (left_margin, top_margin + image.height))
+    transfer_slots(footer, canvas, (left_margin, top_margin + image.height))
     return canvas

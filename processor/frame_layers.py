@@ -9,6 +9,7 @@ from PIL import Image, ImageChops, ImageColor, ImageDraw, ImageEnhance, ImageFil
 
 from core.image_cache import cache_preview_image, cached_preview_image, valid_file_image_id
 from processor.filters import blur_sample_factor, fast_gaussian_blur
+from processor.render_slots import transfer_slots
 
 
 _DEFAULTS = {
@@ -215,12 +216,12 @@ def legacy_base(source, ctx, footer_height, image_id=None):
     key = ('legacy_frame_base', identity, source.size, source.mode, size, left, top, _rgba(color)) if identity else None
     cached = cached_preview_image(key) if key is not None else None
     if cached is not None and _cache_identity(ctx, image_id) == identity:
-        return cached
+        return transfer_slots(source, cached, (left, top), replace=True)
     canvas = Image.new('RGBA', size, color)
     canvas.paste(source, (left, top), mask=source if source.mode == 'RGBA' else None)
     if key is not None and _cache_identity(ctx, image_id) == identity:
         cache_preview_image(key, canvas)
-    return canvas
+    return transfer_slots(source, canvas, (left, top), replace=True)
 
 
 def frame_base(source, ctx, image_id=None):
@@ -261,6 +262,17 @@ def frame_base(source, ctx, image_id=None):
 def render_frame(source, ctx, image_id=None):
     """统一调度声明式和旧版画框，并共享底板缓存"""
     from processor.core import uses_frame_layers
+    from processor.core import PipelineContext
+    from processor.render_slots import effective_text
+    prepared = dict(ctx)
+    for name in ('left_top', 'left_bottom', 'right_top', 'right_bottom'):
+        if isinstance(ctx.get(name), dict):
+            prepared[name] = effective_text(ctx[name])
+    for name, style in (ctx.get('logo_styles') or {}).items():
+        if name in {'left_logo', 'center_logo', 'right_logo'} and isinstance(style, dict):
+            if style.get('visible') is False:
+                prepared[name] = None
+    ctx = PipelineContext(prepared)
     if 'custom_frame' in ctx:
         return _render_custom_frame(source, ctx, image_id)
     if not uses_frame_layers(ctx):
@@ -275,11 +287,13 @@ def render_frame(source, ctx, image_id=None):
         return draw_pixel_footer(ctx, source, scale)
     from processor.frame_overlay import draw_overlay
     canvas, layout = frame_base(source, ctx, image_id)
+    box = layout['photo_box']
+    transfer_slots(source, canvas, box[:2], (box[2] - box[0], box[3] - box[1]), replace=True)
     if ctx.get('processor_name') == 'watermark_with_timestamp':
         context = dict(ctx)
         row = {name: ctx[name] for name in ('text_segments', 'text', 'font_path', 'font', 'color',
                                             'is_bold', 'trim', 'text_spacing', 'text_alignment',
-                                            'char_styles', 'highlight_rules') if name in ctx}
+                                            'char_styles', 'highlight_rules', '_slot_key', 'slot_style', 'visible') if name in ctx}
         row['processor_name'] = 'multi_rich_text' if 'text_segments' in row else 'rich_text'
         if ctx.get('height_ratio') is not None:
             row['height_ratio'] = ctx['height_ratio']
@@ -345,12 +359,14 @@ def _render_custom_frame(source, ctx, image_id):
             if (decorated_key and plan.current(cache_ctx, cache_id)
                     and decoration_asset_versions(decorations) == versions):
                 cache_preview_image(decorated_key, canvas)
+    box = layout['photo_box']
+    transfer_slots(working, canvas, box[:2], (box[2] - box[0], box[3] - box[1]), replace=True)
     if legacy:
         return canvas
     if ctx.get('processor_name') == 'watermark_with_timestamp':
         row = {name: ctx[name] for name in ('text_segments', 'text', 'font_path', 'font', 'color',
                                             'is_bold', 'trim', 'text_spacing', 'text_alignment',
-                                            'char_styles', 'highlight_rules') if name in ctx}
+                                            'char_styles', 'highlight_rules', '_slot_key', 'slot_style', 'visible') if name in ctx}
         row['processor_name'] = 'multi_rich_text' if 'text_segments' in row else 'rich_text'
         if ctx.get('height_ratio') is not None:
             row['height_ratio'] = ctx['height_ratio']

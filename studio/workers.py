@@ -37,6 +37,7 @@ _BOUNDED_TEMPLATES = {
 }
 
 _RENDERED_ROWS_KEY = 'ExifFrame/RenderedRows'
+_RENDERED_SLOTS_KEY = 'ExifFrame/RenderedSlots'
 
 
 def qt_image(image: Image.Image, full_size=None) -> QImage:
@@ -48,6 +49,9 @@ def qt_image(image: Image.Image, full_size=None) -> QImage:
     rows = image.info.get('preview_rendered_rows')
     if isinstance(rows, dict):
         result.setText(_RENDERED_ROWS_KEY, json.dumps(rows, ensure_ascii=True))
+    slots = image.info.get('preview_rendered_slots')
+    if isinstance(slots, list):
+        result.setText(_RENDERED_SLOTS_KEY, json.dumps(slots, ensure_ascii=True))
     return result
 
 
@@ -60,6 +64,17 @@ def qt_rendered_rows(image: QImage) -> dict[str, str]:
     if not isinstance(rows, dict):
         return {}
     return {key: value for key, value in rows.items() if isinstance(key, str) and isinstance(value, str)}
+
+
+def qt_rendered_slots(image: QImage) -> list[dict]:
+    """槽位信息与脱离后台内存的预览像素共享同一代次"""
+    try:
+        slots = json.loads(image.text(_RENDERED_SLOTS_KEY))
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(slots, list):
+        return []
+    return [item for item in slots if isinstance(item, dict) and isinstance(item.get('key'), str)]
 
 
 def original_image(path, *, full_resolution=False, cancelled=None):
