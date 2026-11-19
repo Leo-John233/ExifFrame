@@ -178,6 +178,9 @@ class ImageTask(QRunnable):
             elif self.kind == "export":
                 result = self._export()
             else:
+                source = Path(os.path.abspath(self.paths[0]))
+                info = source.stat()
+                version = info.st_mtime_ns, info.st_size
                 source_size = None
                 if self.kind in ("original", "comparison"):
                     result = original_image(self.paths[0], full_resolution=self.full_resolution,
@@ -188,8 +191,11 @@ class ImageTask(QRunnable):
                                          full_resolution=self.full_resolution, cancelled=self.cancel.is_set)
                     source_size = photo.info.get('preview_source_size')
                     result = qt_image(photo)
+                info = source.stat()
+                if version != (info.st_mtime_ns, info.st_size):
+                    raise OSError('照片在预览期间发生变化，请重试')
                 if source_size and not self.cancel.is_set():
-                    self.signals.dimensions.emit(self.kind, self.token, (Path(self.paths[0]).resolve(), *source_size))
+                    self.signals.dimensions.emit(self.kind, self.token, (source, *source_size))
             if not self.cancel.is_set() or self.kind == "export":
                 self.signals.result.emit(self.kind, self.token, result)
         except CancelledError:
@@ -251,7 +257,7 @@ class ImageTask(QRunnable):
             while True:
                 if not self._acquire_io():
                     return stop()
-                path, resolved = None, None
+                path, displayed = None, None
                 try:
                     try:
                         path = next(candidates)
@@ -259,7 +265,8 @@ class ImageTask(QRunnable):
                         break
                     if path.suffix.lower() not in SUPPORTED_SUFFIXES:
                         continue
-                    resolved = path.resolve(strict=True)
+                    displayed = Path(os.path.abspath(path))
+                    resolved = displayed.resolve(strict=True)
                     if not stat.S_ISREG(resolved.stat().st_mode):
                         continue
                     identity = os.path.normcase(str(resolved))
@@ -274,10 +281,10 @@ class ImageTask(QRunnable):
                 if self.cancel.is_set():
                     return stop()
                 added += 1
-                item = (resolved, None, 0, 0)
+                item = (displayed, None, 0, 0)
                 if added == 1 or self.batch_size == 1:
                     self.signals.item.emit(self.token, item)
-                    self.signals.progress.emit(added, 0, resolved.name)
+                    self.signals.progress.emit(added, 0, displayed.name)
                 else:
                     pending.append(item)
                     if len(pending) >= self.batch_size:
@@ -296,7 +303,7 @@ class ImageTask(QRunnable):
             if not self._acquire_io():
                 return errors
             try:
-                source = Path(path).resolve(strict=True)
+                source = Path(os.path.abspath(path))
                 info = source.stat()
                 signature = info.st_mtime_ns, info.st_size
                 photo, width, height = photo_thumbnail(source, cancelled=self.cancel.is_set)
@@ -321,9 +328,15 @@ class ImageTask(QRunnable):
     def _walk(self, root):
         # 输入扫描排除位于其下的输出目录以免循环处理导出结果
         excluded = None
+        root = Path(os.path.abspath(root))
         if self.kind == "import" and self.settings and self.settings.output_dir:
-            excluded = os.path.normcase(str(Path(self.settings.output_dir).resolve()))
-        pending = [Path(root).resolve()]
+            output = Path(self.settings.output_dir).resolve()
+            try:
+                output = root / output.relative_to(root.resolve())
+            except ValueError:
+                pass
+            excluded = os.path.normcase(os.path.abspath(output))
+        pending = [root]
         while pending and not self.cancel.is_set():
             folder = pending.pop()
             # 空目录也要给调用方留出暂停和取消的机会
@@ -334,7 +347,8 @@ class ImageTask(QRunnable):
                         if self.cancel.is_set():
                             return
                         try:
-                            if entry.is_dir(follow_symlinks=False):
+                            if (entry.is_dir(follow_symlinks=False)
+                                    and not getattr(entry, 'is_junction', lambda: False)()):
                                 key = os.path.normcase(os.path.abspath(entry.path))
                                 if key != excluded:
                                     pending.append(Path(entry.path))
