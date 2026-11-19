@@ -20,6 +20,7 @@ from .inspector import Inspector
 from .workspace_actions import WorkspaceActions
 from .state import StudioState
 from .workspace_inspection import WorkspaceInspection
+from .preset_management import WorkspacePresetManagement
 from .workspace_library import WorkspaceLibrary
 from .workspace_preview import WorkspacePreview
 from .workspace_export import WorkspaceExport
@@ -37,7 +38,7 @@ class PhotoView(ImageCanvas):
 
 
 class MainWindow(
-    WorkspaceActions, WorkspaceInspection, WorkspaceLibrary, WorkspacePreview, WorkspaceExport, WorkspaceEditors, QMainWindow,
+    WorkspaceActions, WorkspacePresetManagement, WorkspaceInspection, WorkspaceLibrary, WorkspacePreview, WorkspaceExport, WorkspaceEditors, QMainWindow,
 ):
     """桌面工作区的布局与信号装配"""
 

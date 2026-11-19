@@ -10,12 +10,13 @@ from PySide6.QtCore import QPoint, QRect, QSignalBlocker, QSize, QTimer, Qt, Sig
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox, QColorDialog, QComboBox, QFileDialog, QFormLayout, QFrame, QGridLayout,
-    QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea, QSizePolicy,
+    QHBoxLayout, QLabel, QLineEdit, QMenu, QPushButton, QScrollArea, QSizePolicy,
     QStackedWidget, QTabWidget, QToolButton, QVBoxLayout, QWidget,
 )
 
 from core.configs import fonts_dir
 from core.metadata import FIELDS
+from core.preset_management import is_builtin_preset
 from core.footer import read_layout
 from .controls import CameraRawSlider, CollapsibleSection, ColorProperty
 from .custom_frame_panel import CustomFramePanel
@@ -41,6 +42,7 @@ _FRAME_OPTIONS = (
 )
 _OVERLAY_OPTIONS = (('默认位置', ''), ('内嵌覆盖', 'inset_overlay'))
 _SWITCH_OPTIONS = (('开启', True), ('停用', False))
+_LOGO_MATTE_OPTIONS = (('自动清理', 'auto'), ('保留原图', 'none'), ('清理白底', 'white'), ('清理黑底', 'black'))
 _ANCHOR_OPTIONS = (('左上', 'top_left'), ('右上', 'top_right'), ('左下', 'bottom_left'),
                    ('右下', 'bottom_right'), ('底部', 'bottom'))
 _FRAME_DEFAULT = '__template_default__'
@@ -50,6 +52,7 @@ class TemplateCard(QFrame):
     """保持图片比例的可点击模板卡片"""
 
     selected = Signal(str)
+    action_requested = Signal(str, str)
 
     def __init__(self, preset, parent=None):
         super().__init__(parent)
@@ -57,6 +60,8 @@ class TemplateCard(QFrame):
         self.setObjectName('inspectorTemplateCard')
         self.setProperty('selected', False)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         theme_notifier.theme_changed.connect(self._update_theme)
         self._update_theme()
@@ -114,12 +119,49 @@ class TemplateCard(QFrame):
         self.style().polish(self)
         self.update()
 
+    def context_menu(self):
+        """菜单操作始终作用于发起右键的卡片"""
+        menu = QMenu(self)
+        builtin = is_builtin_preset(self.preset.name)
+        entries = [('应用模板', 'apply')]
+        if builtin:
+            entries.append(('复制为我的模板', 'copy'))
+        else:
+            entries.extend((('用当前调整覆盖保存', 'overwrite'), ('重命名', 'rename'), ('复制副本', 'copy')))
+        entries.extend((('导出模板卡片 (.png)', 'export_png'), ('导出纯配置 (.json)', 'export_json'),
+                        ('在文件管理器中显示', 'reveal')))
+        for label, action in entries:
+            item = menu.addAction(tr(label))
+            item.setObjectName('presetAction_' + action)
+            item.triggered.connect(lambda checked=False, key=action: self._request_action(key))
+        if not builtin:
+            menu.addSeparator()
+            item = menu.addAction(tr('删除模板'))
+            item.setObjectName('presetAction_delete')
+            item.triggered.connect(lambda: self._request_action('delete'))
+        return menu
+
+    def _show_context_menu(self, position):
+        menu = self.context_menu()
+        menu.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        menu.popup(self.mapToGlobal(position))
+
+    def _request_action(self, action):
+        if action == 'apply':
+            self.selected.emit(self.preset.name)
+        else:
+            self.action_requested.emit(action, self.preset.name)
+
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton and self.rect().contains(event.position().toPoint()):
             self.selected.emit(self.preset.name)
         super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Delete and self.property('selected'):
+            self._request_action('delete')
+            event.accept()
+            return
         if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
             self.selected.emit(self.preset.name)
             event.accept()
@@ -131,6 +173,13 @@ class Inspector(QWidget):
     """集中管理当前照片的模板、样式和 EXIF 操作"""
 
     template_selected = Signal(str)
+    copy_preset_requested = Signal(str)
+    overwrite_preset_requested = Signal(str)
+    rename_preset_requested = Signal(str)
+    delete_preset_requested = Signal(str)
+    reveal_preset_requested = Signal(str)
+    export_preset_requested = Signal(str)
+    export_preset_json_requested = Signal(str)
     slot_selected = Signal(str)
     style_changed = Signal(str, object)
     interaction_started = Signal(str)
@@ -311,6 +360,8 @@ class Inspector(QWidget):
     def _build_templates(self):
         scroll, body, layout = self._scroll()
         self._template_body = body
+        self._preset_message_source = ''
+        self._preset_message_values = {}
         self._template_scroll = scroll
         self._thumbnail_timer = QTimer(self)
         self._thumbnail_timer.setSingleShot(True)
@@ -332,9 +383,18 @@ class Inspector(QWidget):
         layout.addLayout(row)
         row = QHBoxLayout()
         row.setSpacing(5)
-        row.addWidget(self._button('导入预设包', self.import_style_requested.emit))
-        row.addWidget(self._button('导出预设包', self.export_style_requested.emit))
+        row.addWidget(self._button('导入模板', self.import_style_requested.emit))
+        row.addWidget(self._button('导出模板', self.export_style_requested.emit))
         layout.addLayout(row)
+        self.preset_message = QLabel()
+        self.preset_message.setObjectName('secondaryText')
+        self.preset_message.setWordWrap(True)
+        self.preset_message.hide()
+        self._preset_message_timer = QTimer(self)
+        self._preset_message_timer.setSingleShot(True)
+        self._preset_message_timer.setInterval(5000)
+        self._preset_message_timer.timeout.connect(self.preset_message.hide)
+        layout.addWidget(self.preset_message)
         self._preset_category = self._combo('templateCategory')
         self._categories = (('全部', 'all'), ('留白', 'white'), ('毛玻璃', 'glass'),
                             ('胶片', 'film'), ('无框', 'frameless'), ('我的模板', 'mine'))
@@ -351,7 +411,7 @@ class Inspector(QWidget):
             bind(button, label)
             button.clicked.connect(lambda checked=False, key=value: self._select_category(key))
             self._category_buttons[value] = button
-            categories.addWidget(button, index // 3, index % 3)
+            categories.addWidget(button, index // 2, index % 2)
         self._preset_category.currentIndexChanged.connect(self._rebuild_template_cards)
         self._category_buttons['all'].setChecked(True)
         self._preset_category.hide()
@@ -533,12 +593,15 @@ class Inspector(QWidget):
         self.logo_combo.currentIndexChanged.connect(self._logo_changed)
         self.logo_invert_combo = self._combo('adaptiveLogoInvert')
         self.logo_invert_combo.currentIndexChanged.connect(lambda _: self._frame_changed('adaptive_logo_invert', self.logo_invert_combo))
+        self.logo_matte_combo = self._combo('logoMatte')
+        self.logo_matte_combo.currentIndexChanged.connect(lambda _: self._frame_changed('logo_matte', self.logo_matte_combo))
         self.logo_position = self._combo('logoPosition')
         self.logo_position.currentIndexChanged.connect(self._logo_position_changed)
         form.addRow(self.logo_check)
         form.addRow(self._label('标识来源'), self.logo_combo)
         form.addRow(self._label('品牌标识位置'), self.logo_position)
         form.addRow(self._label('自适应反转标识'), self.logo_invert_combo)
+        form.addRow(self._label('标识底色'), self.logo_matte_combo)
         self.slot_editor.logo_layout.addWidget(logo)
         self.slot_editor.logo_layout.addStretch()
         return scroll
@@ -672,7 +735,7 @@ class Inspector(QWidget):
             if not self.glyph_combo.currentData() and self._rendered_style.get('brand_glyph_policy'):
                 self._inherited_general['brand_glyph_policy'] = self._rendered_style['brand_glyph_policy']
             node = self._frame_document[self._frame_index] if self._frame_index is not None else {}
-            for key in ('frame_style', 'overlay_mode', 'palette_bar', 'adaptive_logo_invert', 'inset_anchor'):
+            for key in ('frame_style', 'overlay_mode', 'palette_bar', 'adaptive_logo_invert', 'inset_anchor', 'logo_matte'):
                 if ((key in node) == (key in self._frame_defaults) and node.get(key) == self._frame_defaults.get(key)
                         and key in self._rendered_style):
                     self._inherited_general[key] = self._rendered_style[key]
@@ -761,6 +824,7 @@ class Inspector(QWidget):
         self._set_combo_value(self.logo_combo, '')
         self._emit_style('logo_choice', '')
         self._set_frame_value('adaptive_logo_invert', _FRAME_DEFAULT)
+        self._set_frame_value('logo_matte', _FRAME_DEFAULT)
         try:
             position = read_layout(self._frame_baseline_source)['logo']
         except (ValueError, TypeError):
@@ -937,6 +1001,30 @@ class Inspector(QWidget):
         self._selected_template = selected or self._selected_template
         self._rebuild_template_cards()
 
+    def show_preset_message(self, source, **values):
+        self._preset_message_source, self._preset_message_values = source, values
+        self.preset_message.setText(tr(source, **values))
+        self.preset_message.show()
+        self._preset_message_timer.start()
+
+    def _update_category_counts(self):
+        counts = {key: 0 for _, key in self._categories}
+        counts['all'] = len(self._presets)
+        for preset in self._presets:
+            counts[self._preset_group(preset)] += 1
+        for label, key in self._categories:
+            title = tr('{label} ({count})', label=tr(label), count=counts[key])
+            self._category_buttons[key].setText(title)
+            self._category_buttons[key].setToolTip(title)
+
+    def _preset_action(self, action, name):
+        signal = {'copy': self.copy_preset_requested, 'overwrite': self.overwrite_preset_requested,
+                  'rename': self.rename_preset_requested, 'delete': self.delete_preset_requested,
+                  'reveal': self.reveal_preset_requested, 'export_png': self.export_preset_requested,
+                  'export_json': self.export_preset_json_requested}.get(action)
+        if signal is not None:
+            signal.emit(name)
+
     def _select_category(self, key):
         index = self._preset_category.findData(key)
         if index >= 0:
@@ -962,6 +1050,7 @@ class Inspector(QWidget):
             if item.widget() is not None:
                 item.widget().deleteLater()
         self._cards.clear()
+        self._update_category_counts()
         category = self._preset_category.currentData()
         for key, button in self._category_buttons.items():
             button.setChecked(key == category)
@@ -970,6 +1059,7 @@ class Inspector(QWidget):
         for index, preset in enumerate(presets):
             card = TemplateCard(preset)
             card.selected.connect(self.template_selected.emit)
+            card.action_requested.connect(self._preset_action)
             self._cards[preset.name] = card
             self._card_layout.addWidget(card, index // 2, index % 2)
         self.set_selected_template(self._selected_template)
@@ -1057,7 +1147,7 @@ class Inspector(QWidget):
         base_document, base_index = self._frame_node(baseline)
         base = base_document[base_index] if base_index is not None else {}
         defaults = {key: base[key] for key in (
-            'frame_style', 'overlay_mode', 'palette_bar', 'adaptive_logo_invert',
+            'frame_style', 'overlay_mode', 'palette_bar', 'adaptive_logo_invert', 'logo_matte',
             'frame_brightness', 'frame_vignette', 'frame_blur', 'inset_anchor', 'overlay_opacity')
                     if key in base}
         self._frame_source = source
@@ -1078,6 +1168,7 @@ class Inspector(QWidget):
                 ('overlay_mode', self.overlay_combo, _OVERLAY_OPTIONS),
                 ('palette_bar', self.palette_combo, _SWITCH_OPTIONS),
                 ('adaptive_logo_invert', self.logo_invert_combo, _SWITCH_OPTIONS),
+                ('logo_matte', self.logo_matte_combo, _LOGO_MATTE_OPTIONS),
                 ('inset_anchor', self.inset_anchor, _ANCHOR_OPTIONS)):
             value = node.get(key)
             base_value = self._frame_defaults.get(key)
@@ -1086,6 +1177,8 @@ class Inspector(QWidget):
             resolved = self._inherited_general.get(key)
             if resolved is None and (key in node) == (key in self._frame_defaults) and value == base_value:
                 resolved = self._rendered_style.get(key)
+            if resolved is None and key == 'logo_matte' and base_value is None:
+                resolved = 'auto'
             if resolved is None and not (isinstance(base_value, str) and ('{{' in base_value or '{%' in base_value)):
                 resolved = base_value
             base_label = next((label for label, option in options if option == resolved), None)
@@ -1098,7 +1191,8 @@ class Inspector(QWidget):
             same_as_default = (key in node) == (key in self._frame_defaults) and value == base_value
             index = 0 if same_as_default else combo.findData(value)
             if index < 0 and value is None:
-                fallback = '' if key in ('frame_style', 'overlay_mode') else 'bottom_right' if key == 'inset_anchor' else False
+                fallback = ('auto' if key == 'logo_matte' else '' if key in ('frame_style', 'overlay_mode')
+                            else 'bottom_right' if key == 'inset_anchor' else False)
                 index = combo.findData(fallback)
             if index < 0:
                 combo.addItem(str(value), value)
@@ -1170,7 +1264,7 @@ class Inspector(QWidget):
             node[key] = value
         source = json.dumps(self._frame_document, ensure_ascii=False, indent=2) + '\n'
         self._frame_source = source
-        if key in ('frame_style', 'overlay_mode'):
+        if key in ('frame_style', 'overlay_mode', 'adaptive_logo_invert', 'logo_matte'):
             self._update_frame_options()
         self.slot_editor.set_source(source, baseline=self._frame_baseline_source)
         self.custom_frame.set_source(source, baseline=self._frame_baseline_source)
@@ -1264,6 +1358,9 @@ class Inspector(QWidget):
         self.lock_button.setText(tr('编辑设置' if self._locked else '锁定设置'))
         for index, (label, _) in enumerate(self._categories):
             self._preset_category.setItemText(index, tr(label))
+        self._update_category_counts()
+        if self._preset_message_source:
+            self.preset_message.setText(tr(self._preset_message_source, **self._preset_message_values))
         for card in self._cards.values():
             card.retranslate()
         for combo, first, choices, last in (

@@ -805,3 +805,34 @@ register_translations({
     '模板已导入：{name}': 'Preset imported: {name}',
     '无法导出模板': 'Unable to export preset', '无法导入模板': 'Unable to import preset',
 })
+
+# 预设卡片菜单和管理反馈
+register_translations({
+    '应用模板': 'Apply preset', '用当前调整覆盖保存': 'Replace with current adjustments',
+    '重命名': 'Rename', '复制副本': 'Duplicate', '复制为我的模板': 'Copy to My presets',
+    '导出模板卡片 (.png)': 'Export preset card (.png)',
+    '导出纯配置 (.json)': 'Export configuration (.json)',
+    '在文件管理器中显示': 'Show in file manager', '删除模板': 'Delete preset',
+    '复制模板': 'Duplicate preset', '重命名模板': 'Rename preset', '覆盖模板': 'Replace preset',
+    '用当前照片的调整覆盖模板“{name}”？此操作会替换已保存的模板。': 'Replace “{name}” with the current photo adjustments? The saved preset will be replaced.',
+    '删除模板“{name}”？不再使用的模板素材也将被删除。': 'Delete “{name}”? Its unused managed assets will also be removed.',
+    '当前状态无法管理模板': 'Presets cannot be managed in the current state',
+    '模板文件不存在': 'Preset file does not exist',
+    '内置模板不可修改，请先复制为我的模板': 'Built-in presets cannot be changed; copy one to My presets first',
+    '不能修改链接形式的模板文件': 'Preset files that are links cannot be modified',
+    '模板名称已存在': 'A preset with that name already exists',
+    '模板在保存期间发生变化，请重试': 'The preset changed while saving; please try again',
+    '模板操作失败': 'Preset action failed', '模板操作失败：{error}': 'Preset action failed: {error}',
+    '已复制模板：{name}': 'Preset copied: {name}', '已覆盖模板：{name}': 'Preset replaced: {name}',
+    '已重命名模板：{name}': 'Preset renamed: {name}', '已删除模板：{name}': 'Preset deleted: {name}',
+    '无法打开模板文件夹': 'Could not open the preset folder',
+    '{label} ({count})': '{label} ({count})',
+})
+register_translations({
+    '标识底色': 'Logo background', '自动清理': 'Automatic cleanup', '保留原图': 'Keep original',
+    '清理白底': 'Remove white background', '清理黑底': 'Remove black background',
+})
+register_translations({'无法读取已保存的默认模板': 'Could not read the saved default preset',
+                       '不能修改链接形式的设置文件': 'Settings files that are links cannot be modified',
+                       '设置在更新期间发生变化，请重试': 'Settings changed while updating; please try again'})
+register_translations({'已在文件管理器中显示：{name}': 'Shown in file manager: {name}'})

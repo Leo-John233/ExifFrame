@@ -105,6 +105,7 @@ class _ThumbnailManager(QObject):
         self.pending = deque()
         self.queued = set()
         self.active = None
+        self.invalidated = set()
         self.signals = _Signals(self)
         self.signals.done.connect(self._done)
         self.timer = QTimer(self)
@@ -134,11 +135,19 @@ class _ThumbnailManager(QObject):
         if key in self.cache:
             self.cache.move_to_end(key)
             return key, self.cache[key]
-        if key != self.active and key not in self.queued:
+        if (key != self.active or key in self.invalidated) and key not in self.queued:
             self.queued.add(key)
             self.pending.append(key)
             self._schedule()
         return key, None
+
+    def invalidate(self, name):
+        """丢弃同名模板的缓存及已排队任务"""
+        self.cache = OrderedDict((key, value) for key, value in self.cache.items() if key[0] != name)
+        self.pending = deque(key for key in self.pending if key[0] != name)
+        self.queued = set(self.pending)
+        if self.active is not None and self.active[0] == name:
+            self.invalidated.add(self.active)
 
     def _schedule(self):
         if self.pending and self.active is None and not self.stopped.is_set():
@@ -157,6 +166,10 @@ class _ThumbnailManager(QObject):
         if key != self.active:
             return
         self.active = None
+        if key in self.invalidated:
+            self.invalidated.discard(key)
+            self._schedule()
+            return
         if interrupted and not self.stopped.is_set():
             self.pending.appendleft(key)
             self.queued.add(key)
