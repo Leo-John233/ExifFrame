@@ -5,8 +5,8 @@ from __future__ import annotations
 from decimal import Decimal
 import math
 
-from PySide6.QtCore import QEvent, QObject, QPointF, QSignalBlocker, Qt, Signal
-from PySide6.QtGui import QWheelEvent
+from PySide6.QtCore import QEvent, QObject, QPointF, QRect, QRectF, QSignalBlocker, Qt, Signal
+from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPen, QPolygonF, QWheelEvent
 from PySide6.QtWidgets import (
     QAbstractSlider, QAbstractSpinBox, QApplication, QComboBox, QDateTimeEdit,
     QHBoxLayout, QLabel, QLineEdit, QScrollArea, QSizePolicy, QSlider, QStyle,
@@ -60,6 +60,7 @@ class _SliderTrack(QSlider):
 
     def __init__(self, parent):
         super().__init__(Qt.Orientation.Horizontal, parent)
+        self.setFixedHeight(18)
         self._drag_offset = 0
         self._dragging = False
         self._moved = False
@@ -70,16 +71,36 @@ class _SliderTrack(QSlider):
         return option
 
     def _handle(self, option):
-        return self.style().subControlRect(
-            QStyle.ComplexControl.CC_Slider, option, QStyle.SubControl.SC_SliderHandle, self)
+        width = min(17, self.width())
+        start = QStyle.sliderPositionFromValue(self.minimum(), self.maximum(), self.sliderPosition(),
+                                              self.width() - width, option.upsideDown)
+        return QRect(start, 2, width, 14)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        rail = QRectF(0, 6, self.width(), 4)
+        gradient = QLinearGradient(rail.topLeft(), rail.topRight())
+        gradient.setColorAt(0, QColor('#505153'))
+        gradient.setColorAt(1, QColor('#E4E4E4'))
+        if not self.isEnabled():
+            painter.setOpacity(.45)
+        painter.fillRect(rail, gradient)
+        handle = self._handle(self._option())
+        x0, x1 = handle.left() + .5, handle.right() + .5
+        top, base = handle.top() + .5, handle.bottom() + .5
+        shoulder = top + 8
+        pointer = QPolygonF([QPointF((x0 + x1) / 2, top), QPointF(x1, shoulder), QPointF(x1, base),
+                             QPointF(x0, base), QPointF(x0, shoulder)])
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor('#F4F4F4' if self.hasFocus() else '#3C3C3C'), 1))
+        painter.setBrush(QColor('#D2D2D2'))
+        painter.drawPolygon(pointer)
 
     def _set_from_x(self, x):
         option = self._option()
-        groove = self.style().subControlRect(
-            QStyle.ComplexControl.CC_Slider, option, QStyle.SubControl.SC_SliderGroove, self)
         handle = self._handle(option)
-        span = max(1, groove.width() - handle.width())
-        position = round(x - self._drag_offset - groove.x() - handle.width() / 2)
+        span = max(1, self.width() - handle.width())
+        position = round(x - self._drag_offset - (handle.width() - 1) / 2)
         value = QStyle.sliderValueFromPosition(
             self.minimum(), self.maximum(), max(0, min(span, position)), span, option.upsideDown)
         if value != self.maximum():
@@ -292,19 +313,28 @@ class CameraRawSlider(QWidget):
                 self.committedValueChanged.emit(self.value())
             self.interaction_finished.emit()
 
+    def _entered_value(self, text):
+        value = float(text.strip()) if self._decimals else int(text.strip())
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError
+        return max(self.minimum(), min(self.maximum(), value))
+
     def _edit_changed(self, text):
         self._begin()
         self._editing = True
         try:
-            value = float(text.strip()) if self._decimals else int(text.strip())
+            value = self._entered_value(text)
         except ValueError:
             return
-        if math.isfinite(value):
-            value = max(self.minimum(), min(self.maximum(), value))
-            self.track.setValue(self._encode(value))
+        self.track.setValue(self._encode(value))
 
     def _finish_edit(self):
         if not self._editing:
+            return
+        try:
+            self._entered_value(self.edit.text())
+        except ValueError:
+            self._cancel_edit()
             return
         self._editing = False
         self._sync_text()

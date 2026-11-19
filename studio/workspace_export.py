@@ -155,6 +155,7 @@ class WorkspaceExport:
         if not self.settings.output_dir and not self._choose_output():
             return
         self._last_output = Path(self.settings.output_dir)
+        self._abort_live_interaction()
         self._set_exporting(True)
         self._errors = []
         self.error_button.setEnabled(False)

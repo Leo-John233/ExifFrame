@@ -289,9 +289,9 @@ class Inspector(QWidget):
         self.glass_controls = QWidget()
         glass = QFormLayout(self.glass_controls)
         glass.setContentsMargins(0, 0, 0, 0)
-        self.frame_brightness = self._number('背景亮度', -1, 200, -1, 'frameBrightness', ' %')
-        self.frame_vignette = self._number('暗角强度', -1, 100, -1, 'frameVignette', ' %')
-        self.frame_blur = self._number('模糊强度', -1, 100, -1, 'frameBlur', ' %')
+        self.frame_brightness = self._number('背景亮度', -1, 200, -1, 'frameBrightness')
+        self.frame_vignette = self._number('暗角强度', -1, 100, -1, 'frameVignette')
+        self.frame_blur = self._number('模糊强度', -1, 100, -1, 'frameBlur')
         for key, spin in (
                 ('frame_brightness', self.frame_brightness),
                 ('frame_vignette', self.frame_vignette),
@@ -304,12 +304,12 @@ class Inspector(QWidget):
         inset.setContentsMargins(0, 0, 0, 0)
         self.inset_anchor = self._combo('insetAnchor')
         self.inset_anchor.currentIndexChanged.connect(lambda _: self._frame_changed('inset_anchor', self.inset_anchor))
-        self.overlay_opacity = self._number('覆盖不透明度', -1, 100, -1, 'overlayOpacity', ' %')
+        self.overlay_opacity = self._number('覆盖不透明度', -1, 100, -1, 'overlayOpacity')
         self.overlay_opacity.valueChanged.connect(lambda value: self._frame_number_changed('overlay_opacity', value))
         inset.addRow(self._label('角标位置'), self.inset_anchor)
         inset.addRow(self.overlay_opacity)
         form.addRow(self.inset_controls)
-        self.border_slider = self._number('底部留白', 5, 30, 5, 'borderSlider', ' %')
+        self.border_slider = self._number('底部留白', 5, 30, 5, 'borderSlider')
         form.addRow(self.border_slider)
         self.border_slider.valueChanged.connect(self._border_changed)
         self.background_button = self._button('底色', lambda: self._choose_color('background'))
@@ -342,7 +342,7 @@ class Inspector(QWidget):
         self.glyph_combo.currentIndexChanged.connect(
             lambda _: self._emit_style('brand_glyph_policy', self.glyph_combo.currentData()))
         form.addRow(self._label('尼康 ℤ 符号'), self.glyph_combo)
-        self.font_slider = self._number('水印缩放', 50, 200, 100, 'fontScaleSlider', ' %')
+        self.font_slider = self._number('水印缩放', 50, 200, 100, 'fontScaleSlider')
         form.addRow(self.font_slider)
         self.font_slider.valueChanged.connect(self._font_scale_changed)
         self.text_button = self._button('文字颜色', lambda: self._choose_color('text_color'))
@@ -389,7 +389,7 @@ class Inspector(QWidget):
 
         export = CollapsibleSection('输出设置', expanded=False)
         form = QFormLayout(export.body)
-        self.quality_spin = self._number('JPEG 质量', 1, 100, 95, 'qualitySpin', ' %')
+        self.quality_spin = self._number('JPEG 质量', 1, 100, 95, 'qualitySpin')
         self.quality_spin.valueChanged.connect(lambda value: self._emit_export('quality', value))
         form.addRow(self.quality_spin)
         self.output_input = QLineEdit()
@@ -474,7 +474,7 @@ class Inspector(QWidget):
         bind(label, text)
         return label
 
-    def _number(self, label, low, high, default, name, suffix):
+    def _number(self, label, low, high, default, name, suffix=''):
         slider = CameraRawSlider(low, high, default, suffix=suffix)
         slider.setObjectName(name)
         slider.setMinimumWidth(0)
@@ -657,7 +657,8 @@ class Inspector(QWidget):
                 ('logo_choice', ''), ('font_path', ''), ('background', '#FFFFFF'), ('text_color', '#20252C'))}
             self._set_combo_value(self.logo_combo, self._style_values['logo_choice'])
             self._set_combo_value(self.font_combo, self._style_values['font_path'])
-            self._set_combo_value(self.glyph_combo, getattr(settings, 'brand_glyph_policy', ''))
+            policy = '' if self.template_styles_check.isChecked() else getattr(settings, 'brand_glyph_policy', '')
+            self._set_combo_value(self.glyph_combo, policy)
             self.font_slider.setValue(round(getattr(settings, 'font_scale', 1.0) * 100))
             border = getattr(settings, 'border_percent', 12) if getattr(settings, 'border_override', False) else 5
             self.border_slider.setValue(border)

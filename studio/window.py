@@ -251,6 +251,7 @@ class MainWindow(
                 save_settings(replace(self._saved, template_source=""))
             except Exception:
                 pass
+        self._abort_live_interaction()
         self.timer.stop()
         self._idle_check.stop()
         self._priority.release(self)
