@@ -36,6 +36,8 @@ python main.py
 
 「仅应用到当前照片」会固定这一张的模板和样式。要让一组照片共用版式，勾选它们并点「同步样式到全部已勾选」，每张照片仍使用自己的拍摄信息。Logo 默认按相机品牌识别，也可指定品牌或图片。要让新加入的照片沿用某个模板，在预设页点「设为默认模板」，点「保存设置」可在下次启动时继续使用
 
+画框可以在「样式与文本 → 边框与背景」里调整。毛玻璃提供亮度、暗角和模糊强度，内嵌角标可选位置和不透明度。打开色卡栏可在底部显示照片的五个主色。拍摄信息、单字强调色和品牌 Logo 沿用同一套编辑方式
+
 查看细节时，把鼠标放在照片上滚动，可在 10% 到 400% 之间缩放。按住左键拖动画面，双击在适应窗口和 1:1 之间切换，也可以直接点击画布角落的按钮。点击预览画布后按住空格可对照原图，松开即回到水印预览。画布超过 100% 时会在后台加载原分辨率细节，浏览倍率不会改变导出尺寸
 
 ### 编辑模板
@@ -103,6 +105,14 @@ python build_support/build_windows.py
 重复运行同一版本时，会保留已有发布说明和程序附件，只补全缺失内容。默认分支运行也方便后续标签构建复用缓存，缓存作用域见[GitHub 说明](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#restrictions-for-accessing-a-cache)；其他分支的工作流文件与默认分支不同时，自动发布可能受 [GitHub 权限规则](https://docs.github.com/en/rest/releases/releases#create-a-release)限制
 
 ## 模板示例
+
+| [极简无框角标](config/templates/极简无框角标.json) | [拍立得经典宽底](config/templates/拍立得经典宽底.json) | [毛玻璃悬浮卡片](config/templates/毛玻璃悬浮卡片.json) | [美术馆装裱画框](config/templates/美术馆装裱画框.json) |
+| --- | --- | --- | --- |
+| ![极简无框角标](static/preset_inset_corner.jpeg) | ![拍立得经典宽底](static/preset_polaroid.jpeg) | ![毛玻璃悬浮卡片](static/preset_glass.jpeg) | ![美术馆装裱画框](static/preset_gallery.jpeg) |
+
+| [35mm胶片暗房印记](config/templates/35mm胶片暗房印记.json) | [主色提取色卡栏](config/templates/主色提取色卡栏.json) | [红标铭牌强调风](config/templates/红标铭牌强调风.json) | [极简双行分割线](config/templates/极简双行分割线.json) |
+| --- | --- | --- | --- |
+| ![35mm胶片暗房印记](static/preset_film.jpeg) | ![主色提取色卡栏](static/preset_palette.jpeg) | ![红标铭牌强调风](static/preset_red_label.jpeg) | ![极简双行分割线](static/preset_divider.jpeg) |
 
 | 模板 | 说明 | 效果 |
 | --- | --- | --- |
