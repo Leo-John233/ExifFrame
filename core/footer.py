@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 
 from jinja2 import Environment, nodes, pass_context
+from core.brand_glyphs import POLICIES, validate_policy
 from core.character_styles import validate_character_styles
 from core.geography import format_altitude, format_location
 from core.dates import watermark_date
@@ -62,7 +63,7 @@ _FIELDS.update({
 })
 REGION_LABELS = {'left_top': '左上', 'left_bottom': '左下', 'right_top': '右上', 'right_bottom': '右下'}
 _TEXT_TYPES = {'rich_text', 'multi_rich_text', 'watermark_with_timestamp'}
-_STYLE_KEYS = {'font', 'font_path', 'color', 'is_bold', 'trim'}
+_STYLE_KEYS = {'font', 'font_path', 'color', 'is_bold', 'trim', 'brand_glyph_policy'}
 _CHARACTER_KEYS = ('char_styles', 'highlight_rules')
 _EMPTY = {'', '-', '—', 'None', '未记录相机', '未记录镜头', '未记录时间'}
 _ALIASES = {
@@ -286,8 +287,12 @@ def read_layout(source: str) -> dict:
         footer = data[targets[0][1]]
         positions = [name for name in ('left', 'center', 'right') if footer.get(f'{name}_logo')]
         logo = positions[0] if len(positions) == 1 else 'none' if not positions else 'keep'
+    policies = [node.get('brand_glyph_policy', 'geometric') for node in data
+                if node.get('processor_name') in _TEXT_TYPES or node.get('processor_name') == 'watermark']
+    policy = policies[0] if policies and all(item == policies[0] for item in policies) else ''
     return normalize_layout({'version': 1, 'kind': kind, 'regions': [item[0] for item in targets],
-                             'rows': rows, 'logo': logo, 'missing': missing})
+                             'rows': rows, 'logo': logo, 'missing': missing,
+                             'brand_glyph_policy': policy if policy in POLICIES else ''})
 
 
 def normalize_layout(layout: dict) -> dict:
@@ -391,6 +396,8 @@ def write_layout(source: str, layout: dict) -> str:
     """只重建发生修改的文字区，保留其他滤镜、字体、颜色和自定义步骤"""
     layout = normalize_layout(layout)
     original = read_layout(source)
+    if not layout.get('brand_glyph_policy'):
+        layout['brand_glyph_policy'] = original['brand_glyph_policy']
     if layout['kind'] != original['kind'] or layout['regions'] != original['regions']:
         raise FooterError('文字区必须保留在原有版式内')
     if layout == original:
@@ -433,6 +440,12 @@ def write_layout(source: str, layout: dict) -> str:
             footer[f'{place}_logo'] = path if layout['logo'] == place else None
         if layout['logo'] == 'center':
             footer['fit_center_columns'] = True
+    policy = layout.get('brand_glyph_policy')
+    if policy and policy != original.get('brand_glyph_policy'):
+        validate_policy(policy)
+        for node in data:
+            if node.get('processor_name') in _TEXT_TYPES or node.get('processor_name') == 'watermark':
+                node['brand_glyph_policy'] = policy
     return json.dumps(data, ensure_ascii=False, indent=2) + '\n'
 
 

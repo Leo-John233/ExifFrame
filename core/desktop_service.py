@@ -490,11 +490,11 @@ def _configure_nodes(nodes, image, settings, metadata, source, preview=False, so
         if settings.brand_glyph_policy and not settings.use_template_styles and kind in {
                 'watermark', 'watermark_with_timestamp', 'rich_text', 'multi_rich_text'}:
             node['brand_glyph_policy'] = settings.brand_glyph_policy
-            segments = node.get('text_segments', [])
+            segments = node.get('text_segments') or []
             if isinstance(segments, str):
                 node['text_segments'] = segments = json.loads(segments)
             for segment in segments:
-                if 'brand_glyph_policy' in segment:
+                if isinstance(segment, dict) and 'brand_glyph_policy' in segment:
                     segment['brand_glyph_policy'] = settings.brand_glyph_policy
         if kind == 'watermark':
             frame_requested = uses_frame_layers(node)

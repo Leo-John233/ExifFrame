@@ -46,6 +46,16 @@ def register_translations(mapping: dict[str, str]) -> None:
     _messages.update(mapping)
 
 
+register_translations({
+    '尼康 ℤ 符号': 'Nikon ℤ symbol',
+    '定制几何符号': 'Geometric symbol',
+    '标准 Z': 'Standard Z',
+    '系统字体': 'System font',
+    '保留原有设置': 'Keep original settings',
+    '品牌符号策略无效': 'Invalid brand symbol policy',
+})
+
+
 def language() -> str:
     return _language
 
@@ -488,6 +498,7 @@ register_translations({
 
 
 _ERROR_SOURCES = {
+    '品牌符号策略无效',
     '照片尺寸无效',
     '单字样式必须是对象', '单字颜色应使用 #RRGGBB', '单字字体应为字体名称或路径',
     '单字索引应为非负整数', '高亮规则必须是列表', '请输入匹配表达式', '匹配表达式无效',

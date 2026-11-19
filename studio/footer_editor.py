@@ -143,6 +143,8 @@ class FooterPanel(QWidget):
                   ('竖线 |', ' | '), ('逗号 ,', ', '), ('无分隔', ''), ('自定义…', None))
     LOGOS = (('沿用模板', 'keep'), ('隐藏', 'none'), ('左侧', 'left'), ('居中', 'center'), ('右侧', 'right'))
     MISSING = (('隐藏该字段', 'hide'), ('显示破折号', 'dash'))
+    GLYPH_POLICIES = (('保留原有设置', ''), ('定制几何符号', 'geometric'),
+                      ('标准 Z', 'plain_z'), ('系统字体', 'system'))
 
     def __init__(self, source: str, parent=None, metadata=None, filename='', file_dir='', compact=True,
                  file_path='', files=()):
@@ -311,6 +313,13 @@ class FooterPanel(QWidget):
         self.logo.currentIndexChanged.connect(lambda: self._global_option('logo', self.logo.currentData()))
         options.addWidget(bind(QLabel(), '品牌标识位置'), 3, 0)
         options.addWidget(self.logo, 3, 1)
+        self.brand_policy = QComboBox()
+        for label, value in self.GLYPH_POLICIES:
+            self.brand_policy.addItem(tr(label), value)
+        self.brand_policy.currentIndexChanged.connect(
+            lambda: self._global_option('brand_glyph_policy', self.brand_policy.currentData()))
+        options.addWidget(bind(QLabel(), '尼康 ℤ 符号'), 4, 0)
+        options.addWidget(self.brand_policy, 4, 1)
         options.setColumnStretch(1, 1)
         self.format_body.hide()
         self.format_toggle.toggled.connect(lambda checked: self._fold(self.format_toggle, self.format_body, checked))
@@ -404,6 +413,7 @@ class FooterPanel(QWidget):
             self._region = regions[0] if regions else ''
         self._rebuild_regions()
         self.logo.setCurrentIndex(max(0, self.logo.findData(self._layout.get('logo', 'keep'))))
+        self.brand_policy.setCurrentIndex(max(0, self.brand_policy.findData(self._layout.get('brand_glyph_policy', ''))))
         self.logo.setEnabled(self._layout.get('kind') == 'footer')
         self.missing.setCurrentIndex(max(0, self.missing.findData(self._layout.get('missing', 'hide'))))
         self.missing.setEnabled(bool(regions))
@@ -745,7 +755,8 @@ class FooterPanel(QWidget):
             item.setText(0, tr(field.label))
             item.setToolTip(0, tr('示例：{value}', value=f'{field.prefix}{field.example}{field.suffix}'))
         self._updating = True
-        for combo, choices in ((self.separator, self.SEPARATORS), (self.missing, self.MISSING), (self.logo, self.LOGOS)):
+        for combo, choices in ((self.separator, self.SEPARATORS), (self.missing, self.MISSING),
+                               (self.logo, self.LOGOS), (self.brand_policy, self.GLYPH_POLICIES)):
             for index, (label, value) in enumerate(choices):
                 combo.setItemText(index, tr(label))
         self._updating = False

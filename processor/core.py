@@ -10,6 +10,7 @@ from typing import Dict, Any, Type, List, MutableMapping, Iterator, Optional
 
 from PIL import Image, ImageColor, ImageOps
 
+from core.brand_glyphs import brand_glyph_policy
 from core.configs import load_config
 from core.image_cache import cache_preview_image, cached_preview_image, check_cancelled, file_image_id
 from core.logger import logger
@@ -153,6 +154,10 @@ class ImageProcessor(ABC):
         def wrapper(self, ctx: PipelineContext):
             start_time = time.perf_counter()  # 使用高精度计时
             try:
+                policy = ctx.get('brand_glyph_policy')
+                if policy is not None:
+                    with brand_glyph_policy(policy):
+                        return original_process(self, ctx)
                 # 执行原本的业务逻辑
                 return original_process(self, ctx)
             finally:
