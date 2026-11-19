@@ -8,6 +8,7 @@ from bisect import bisect_left
 from collections import OrderedDict
 from contextlib import contextmanager
 from functools import lru_cache
+from itertools import count
 from pathlib import Path
 from queue import LifoQueue
 from threading import local
@@ -21,6 +22,7 @@ from core.configs import fonts_dir
 
 BASE_FONT_SIZE = 512
 _font_state = local()
+_font_tokens = count()
 _font_pool = LifoQueue(maxsize=2)
 for _slot in range(2):
     _font_pool.put(SimpleNamespace(slot=_slot, variants=OrderedDict(),
@@ -65,10 +67,17 @@ def _load_font(font_path):
         return ImageFont.load_default()
 
 
+def _new_font(font_path):
+    """为字体实例分配不会因文件替换而混淆的缓存标识"""
+    font = _load_font(font_path)
+    font._exifframe_token = next(_font_tokens)
+    return font
+
+
 @lru_cache(maxsize=16)
 def _pooled_font(slot, font_path, candidate, version):
     """按槽位及字体文件版本缓存独立的字体实例"""
-    return _load_font(font_path)
+    return _new_font(font_path)
 
 
 def load_font(font_path: str | None):
@@ -90,7 +99,7 @@ def load_font(font_path: str | None):
     cache = _font_state.fonts
     key = (path, str(candidate), version)
     if key not in cache:
-        cache[key] = _load_font(path)
+        cache[key] = _new_font(path)
         if len(cache) > 8:
             cache.popitem(last=False)
     cache.move_to_end(key)
@@ -98,9 +107,8 @@ def load_font(font_path: str | None):
 
 
 def _font_token(font):
-    """文字缓存记录字体版本，避免延长被淘汰字体的生命周期"""
-    key = _font_key(font)
-    return (key if key is not None else font, getattr(font, 'size', None))
+    """文字缓存记录实例代号，避免延长被淘汰字体的生命周期"""
+    return (getattr(font, '_exifframe_token', font), getattr(font, 'size', None))
 
 
 @lru_cache(maxsize=48)

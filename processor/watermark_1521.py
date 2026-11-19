@@ -28,6 +28,8 @@ def _font_at_size(path, size):
     cache = state.variants
     if key not in cache:
         variant = primary.font_variant(size=size) if hasattr(primary, 'font_variant') else primary
+        if variant is not primary:
+            variant._exifframe_token = ('variant', _font_token(primary), size)
         if isinstance(getattr(primary, 'path', None), (str, Path)):
             variant._exifframe_path = primary.path
         cache[key] = variant
