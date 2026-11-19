@@ -497,7 +497,7 @@ def _preview_inputs(nodes, source, image, original_size, info, cancelled):
         image, _, _ = photo_proxy(source, max_side=source_limit, cancelled=cancelled)
     # 像素取整可能让极小主图的实际比例偏大，始终遵循共同上限
     source_scale = min(scale, image.width / original_size[0], image.height / original_size[1])
-    source_key = ('source', str(source), info.st_mtime_ns, info.st_size, image.size, image.mode)
+    source_key = ('source', str(source), info.st_mtime_ns, info.st_size, image.size, image.mode, 'proxy', source_limit)
     inputs = {source: (image, source_key)}
     for path in paths:
         if path in inputs:
@@ -509,7 +509,7 @@ def _preview_inputs(nodes, source, image, original_size, info, cancelled):
         after = path.stat()
         if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
             raise OSError('照片在预览期间发生变化，请重试')
-        key = ('source', str(path), before.st_mtime_ns, before.st_size, other.size, other.mode)
+        key = ('source', str(path), before.st_mtime_ns, before.st_size, other.size, other.mode, 'proxy', limit)
         inputs[path] = (other, key)
     return image, source_key, inputs, source_scale
 
@@ -560,6 +560,7 @@ def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True, 
             raise OSError('照片在预览期间发生变化，请重试')
     profile = image.info.get('icc_profile')
     metadata = dict(_metadata(str(source), info.st_mtime_ns))
+    check_cancelled(cancelled)
     changes = settings.metadata_overrides.get(metadata_key(source), {})
     if changes:
         metadata = merge_overrides(metadata, changes)
@@ -574,6 +575,7 @@ def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True, 
     rendered = template.render(exif=metadata, filename=source.stem,
                                file_dir=source.parent.as_posix(), file_path=source.as_posix(),
                                files=list(settings.input_files) or [str(source)])
+    check_cancelled(cancelled)
     nodes = json.loads(rendered)
     if not isinstance(nodes, list) or not nodes:
         raise ValueError('水印模板需要至少一个处理步骤')
@@ -587,7 +589,7 @@ def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True, 
         if (current.st_mtime_ns, current.st_size) != (info.st_mtime_ns, info.st_size):
             raise OSError('照片在预览期间发生变化，请重试')
     elif preview:
-        source_key = ('source', str(source), info.st_mtime_ns, info.st_size, image.size, image.mode)
+        source_key = ('source', str(source), info.st_mtime_ns, info.st_size, image.size, image.mode, 'full')
         preview_inputs = {source: (image, source_key)}
     full_size = None
     if preview and not full_resolution and source_scale != 1 and nodes[-1].get('processor_name') == 'crop':
