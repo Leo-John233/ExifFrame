@@ -160,8 +160,11 @@ def _styled_segments(node, segments, whole_rules, whole_chars, *, force_brand=Fa
 @pooled_fonts()
 def render_character_node(node, *, watermark=False):
     """把整行和片段的逐字样式合并为共享基线的文字图"""
-    preserve_brand = bool(node.get('_preserve_brand_advance') and current_policy() == 'geometric'
-                          and 'ℤ' in (node.get('text') or ''))
+    source_text = node.get('text') or ''
+    preserve_brand = bool(current_policy() == 'geometric' and 'ℤ' in source_text and
+                          (node.get('_preserve_brand_advance') or
+                           (node.get('processor_name') == 'rich_text' and
+                            (source_text.startswith('ℤ') or source_text.endswith('ℤ')))))
     if not preserve_brand and not node.get('char_styles') and not node.get('highlight_rules'):
         raw = node.get('text_segments') or []
         if isinstance(raw, str):
@@ -479,6 +482,8 @@ class RichTextGenerator(Generator):
                 "processor_name": "trim",
                 "trim_top": segment.trim,
                 "trim_bottom": segment.trim,
+                "trim_left": not (current_policy() == 'geometric' and text.startswith('ℤ')),
+                "trim_right": not (current_policy() == 'geometric' and text.endswith('ℤ')),
                 "save_buffer": False,
             },
             {
