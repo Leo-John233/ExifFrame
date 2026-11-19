@@ -10,12 +10,12 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from threading import Lock
 
-from jinja2 import Environment
+from jinja2 import Environment, pass_context
 from PIL import Image, ImageColor, ImageOps
 
-from core.configs import templates_dir
+from core.configs import logos_dir, templates_dir
 from core import CONFIG_PATH
-from core.image_cache import check_cancelled, photo_dimensions, photo_proxy
+from core.image_cache import check_cancelled, photo_dimensions, photo_proxy, resized_logo
 from core.runtime_paths import config_path, resource_path
 from core.jinja2renders import auto_logo, vh, vw
 from core.util import find_exiftool, get_exif
@@ -56,6 +56,11 @@ class WatermarkSettings:
     text_color: str = '#20252C'
     background_override: bool = False
     text_color_override: bool = False
+    logo_choice: str = ''
+    font_path: str = ''
+    text_alignment: str = ''
+    text_spacing: int | None = None
+    line_spacing: int | None = None
     quality: int = 95
     subsampling: int = 2
     output_dir: str = ''
@@ -102,7 +107,8 @@ def list_presets() -> list[Preset]:
 
 def _validate(settings: WatermarkSettings) -> None:
     """在进入图像处理前校验模板和可视参数"""
-    for name in ('template_name', 'title', 'subtitle', 'input_dir', 'output_dir', 'template_source'):
+    for name in ('template_name', 'title', 'subtitle', 'input_dir', 'output_dir', 'template_source',
+                 'logo_choice', 'font_path', 'text_alignment'):
         if not isinstance(getattr(settings, name), str):
             raise ValueError('文本设置格式无效，请重新加载配置')
     for name in ('show_logo', 'overwrite_existing', 'preserve_structure', 'use_template_styles', 'border_override',
@@ -119,6 +125,11 @@ def _validate(settings: WatermarkSettings) -> None:
         raise ValueError('导出质量需在 1 到 100 之间')
     if settings.subsampling not in (0, 1, 2):
         raise ValueError('JPEG 色度采样需为 0、1 或 2')
+    if settings.text_alignment not in ('', 'left', 'right'):
+        raise ValueError('文字对齐方式无效')
+    for value in (settings.text_spacing, settings.line_spacing):
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 5000):
+            raise ValueError('文字间距需为非负整数')
     for color in (settings.background, settings.text_color):
         ImageColor.getrgb(color)
 
@@ -320,6 +331,69 @@ def _cached_metadata(source: str, modified: int, size: int, tool_signature) -> d
     return result
 
 
+def _selected_logo(choice, metadata):
+    """将品牌或自定义图片解析为当前照片的标识"""
+    path = Path(choice).expanduser()
+    if path.is_absolute() or path.suffix.lower() in {'.png', '.jpg', '.jpeg'}:
+        if not path.is_file():
+            raise ValueError('所选标识图片不存在')
+        return str(path.resolve()).replace('\\', '/')
+    selected = auto_logo({'exif': metadata}, choice)
+    if selected:
+        return selected
+    brand = choice.casefold().strip()
+    for candidate in sorted(logos_dir.iterdir(), key=lambda item: item.name.casefold()):
+        if (candidate.suffix.lower() in {'.png', '.jpg', '.jpeg'}
+                and candidate.stem.casefold().startswith((brand + '_', brand + '-'))):
+            return str(candidate.absolute()).replace('\\', '/')
+    return None
+
+
+@pass_context
+def _configured_logo(context, brand=None):
+    """在不修改模板的情况下应用照片自己的标识选择"""
+    choice = context.get('_logo_choice', '')
+    metadata = context.get('exif', {})
+    if choice:
+        return _selected_logo(choice, metadata)
+    selected = auto_logo(context, brand)
+    if selected:
+        return selected
+    name = brand or metadata.get('Make', '')
+    first = re.split(r'[\s_-]+', str(name).strip(), maxsplit=1)[0]
+    return _selected_logo(first, metadata) if first else None
+
+
+def _uses_logo(nodes, logo):
+    """识别模板已接入所选标识的路径，避免重复叠加"""
+    needle = str(logo).replace('\\', '/').casefold()
+    if isinstance(nodes, list):
+        return any(_uses_logo(item, logo) for item in nodes)
+    if not isinstance(nodes, dict):
+        return False
+    for key, value in nodes.items():
+        if key in {'exif', 'metadata', 'metadata_overrides'}:
+            continue
+        if key in {'left_logo', 'right_logo', 'center_logo', 'path', 'buffer_path'}:
+            paths = value if isinstance(value, list) else [value]
+            if any(isinstance(path, str) and needle in path.replace('\\', '/').casefold() for path in paths):
+                return True
+        if isinstance(value, (dict, list)) and _uses_logo(value, logo):
+            return True
+    return False
+
+
+def _overlay_logo(image, logo):
+    """为无标识槽位的版式添加右上角小标识"""
+    bounds = (max(1, round(image.width * .08)), max(1, round(image.height * .08)))
+    badge = resized_logo(logo, bounds, contain=True)
+    margin = max(1, round(min(image.size) * .02))
+    canvas = image.convert('RGBA')
+    canvas.alpha_composite(badge, (max(0, image.width - badge.width - margin), margin))
+    canvas.info.update(image.info)
+    return canvas
+
+
 def _configure_nodes(nodes, image, settings, metadata, source, preview=False, source_scale=1.0,
                      preview_inputs=None):
     """为现有处理器注入尺寸与样式，同时复用内存中的预览图"""
@@ -388,6 +462,21 @@ def _configure_nodes(nodes, image, settings, metadata, source, preview=False, so
                 use_preview_inputs(node)
             return
         if kind == 'watermark':
+            if not settings.show_logo:
+                for key in ('left_logo', 'right_logo', 'center_logo'):
+                    if key in node:
+                        node[key] = None
+            elif settings.logo_choice:
+                logo = _selected_logo(settings.logo_choice, metadata)
+                keys = [key for key in ('left_logo', 'right_logo', 'center_logo') if node.get(key)]
+                if not keys:
+                    keys = [next((key for key in ('center_logo', 'right_logo', 'left_logo') if key in node), 'right_logo')]
+                for key in keys:
+                    node[key] = logo
+            if settings.text_alignment:
+                node['right_alignment'] = settings.text_alignment
+            if settings.line_spacing is not None:
+                node['middle_spacing'] = round(settings.line_spacing * source_scale)
             if settings.border_override:
                 node['bottom_margin'] = max(1, round(image.height * settings.border_percent / 100))
             if settings.font_scale != 1:
@@ -402,6 +491,18 @@ def _configure_nodes(nodes, image, settings, metadata, source, preview=False, so
             if settings.subtitle and not node.get('left_bottom', {}).get('text'):
                 node.get('left_bottom', {}).update(text=settings.subtitle)
         if kind in {'rich_text', 'multi_rich_text', 'watermark_with_timestamp'}:
+            if settings.font_path:
+                node['font_path'] = settings.font_path
+                segments = node.get('text_segments', [])
+                if isinstance(segments, str):
+                    segments = json.loads(segments)
+                    node['text_segments'] = segments
+                if isinstance(segments, list):
+                    for segment in segments:
+                        if isinstance(segment, dict):
+                            segment['font_path'] = settings.font_path
+            if kind == 'multi_rich_text' and settings.text_spacing is not None:
+                node['text_spacing'] = round(settings.text_spacing * source_scale)
             if not in_watermark:
                 if 'height' in node and settings.font_scale != 1:
                     node['height'] = max(1, round(float(node['height']) * settings.font_scale))
@@ -572,10 +673,11 @@ def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True, 
         metadata['CameraModelName'] = settings.title
     if settings.subtitle and not settings.use_template_styles:
         metadata['LensModel'] = settings.subtitle
-    template = compiled_template(settings.template_source or read_template(settings.template_name), auto_logo)
+    template = compiled_template(settings.template_source or read_template(settings.template_name), _configured_logo)
     rendered = template.render(exif=metadata, filename=source.stem,
                                file_dir=source.parent.as_posix(), file_path=source.as_posix(),
-                               files=list(settings.input_files) or [str(source)])
+                               files=list(settings.input_files) or [str(source)],
+                               _logo_choice='' if settings.use_template_styles else settings.logo_choice)
     check_cancelled(cancelled)
     nodes = json.loads(rendered)
     if not isinstance(nodes, list) or not nodes:
@@ -603,6 +705,11 @@ def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True, 
                      preview_inputs=preview_inputs)
     result = start_process(nodes, initial_buffer=[image], preview_source_key=source_key, cancelled=cancelled)
     check_cancelled(cancelled)
+    if not settings.use_template_styles and settings.show_logo and settings.logo_choice:
+        logo = _selected_logo(settings.logo_choice, metadata)
+        if logo and not _uses_logo(nodes, logo):
+            result = _overlay_logo(result, logo)
+            check_cancelled(cancelled)
     if preview:
         if not full_resolution and source_scale != 1:
             full_size = full_size or (max(1, round(result.width / source_scale)),
