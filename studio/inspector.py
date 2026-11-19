@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 
 from core.configs import fonts_dir
 from .controls import CameraRawSlider
+from .custom_frame_panel import CustomFramePanel
 from .i18n import bind, tr, translator
 from .inspector_footer import InlineFooter
 from .pixmaps import TemplateThumbnail
@@ -142,6 +143,8 @@ class Inspector(QWidget):
     new_template_requested = Signal()
     use_as_default_requested = Signal()
     copy_template_requested = Signal()
+    import_style_requested = Signal()
+    export_style_requested = Signal()
     advanced_source_requested = Signal()
     footer_editor_requested = Signal()
     metadata_editor_requested = Signal()
@@ -167,6 +170,7 @@ class Inspector(QWidget):
         self._total_count = 0
         self._selected_template = ''
         self._cards = {}
+        self._presets = []
         self._style_values = {}
         self._active_text = None
         self._frame_source = ''
@@ -246,6 +250,26 @@ class Inspector(QWidget):
     def _build_templates(self):
         scroll, body, layout = self._scroll()
         self._template_body = body
+        row = QHBoxLayout()
+        row.setSpacing(5)
+        row.addWidget(self._button('新建', self.new_template_requested.emit))
+        row.addWidget(self._button('高级源码', self.advanced_source_requested.emit))
+        layout.addLayout(row)
+        row = QHBoxLayout()
+        row.setSpacing(5)
+        row.addWidget(self._button('另存我的模板', self.copy_template_requested.emit))
+        row.addWidget(self._button('设为默认模板', self.use_as_default_requested.emit))
+        layout.addLayout(row)
+        row = QHBoxLayout()
+        row.setSpacing(5)
+        row.addWidget(self._button('导入样式包', self.import_style_requested.emit))
+        row.addWidget(self._button('导出样式包', self.export_style_requested.emit))
+        layout.addLayout(row)
+        self._preset_category = self._combo('templateCategory')
+        for label, value in (('全部模板', 'all'), ('内置模板', 'built_in'), ('我的模板', 'mine')):
+            self._preset_category.addItem(tr(label), value)
+        self._preset_category.currentIndexChanged.connect(self._rebuild_template_cards)
+        layout.addWidget(self._preset_category)
         cards = QWidget()
         self._card_layout = QGridLayout(cards)
         self._card_layout.setContentsMargins(0, 0, 0, 0)
@@ -254,13 +278,6 @@ class Inspector(QWidget):
         self._card_layout.setColumnStretch(0, 1)
         self._card_layout.setColumnStretch(1, 1)
         layout.addWidget(cards)
-        layout.addWidget(self._button('设为默认模板', self.use_as_default_requested.emit))
-        row = QHBoxLayout()
-        row.setSpacing(5)
-        row.addWidget(self._button('新建', self.new_template_requested.emit))
-        row.addWidget(self._button('另存为', self.copy_template_requested.emit))
-        row.addWidget(self._button('高级源码', self.advanced_source_requested.emit))
-        layout.addLayout(row)
         layout.addStretch()
         return scroll
 
@@ -276,6 +293,12 @@ class Inspector(QWidget):
 
         border = CollapsibleSection('边框与背景')
         form = QFormLayout(border.body)
+        self._legacy_frame_notice = QLabel()
+        self._legacy_frame_notice.setWordWrap(True)
+        self._legacy_frame_notice.setObjectName('secondaryText')
+        bind(self._legacy_frame_notice, '当前画框请在画框定制中调整')
+        self._legacy_frame_notice.hide()
+        form.addRow(self._legacy_frame_notice)
         self.frame_combo = self._combo('frameStyle')
         self.overlay_combo = self._combo('overlayMode')
         self.palette_combo = self._combo('paletteBar')
@@ -316,6 +339,17 @@ class Inspector(QWidget):
         self.background_button.setObjectName('backgroundColorButton')
         form.addRow(self.background_button)
         layout.addWidget(border)
+
+        custom = CollapsibleSection('画框定制', expanded=False)
+        custom_layout = QVBoxLayout(custom.body)
+        custom_layout.setContentsMargins(0, 0, 0, 0)
+        self.custom_frame = CustomFramePanel()
+        self.custom_frame.source_changed.connect(self._custom_frame_source_changed)
+        self.custom_frame.custom_changed.connect(self._set_custom_active)
+        self.custom_frame.interaction_started.connect(self.interaction_started)
+        self.custom_frame.interaction_finished.connect(self.interaction_finished)
+        custom_layout.addWidget(self.custom_frame)
+        layout.addWidget(custom)
 
         logo = CollapsibleSection('品牌标识')
         form = QFormLayout(logo.body)
@@ -623,17 +657,29 @@ class Inspector(QWidget):
 
     def set_presets(self, presets, selected=None):
         """更新模板卡片并保持当前选择"""
+        self._presets = list(presets)
+        self._selected_template = selected or self._selected_template
+        self._rebuild_template_cards()
+
+    def _rebuild_template_cards(self):
         while self._card_layout.count():
             item = self._card_layout.takeAt(0)
             if item.widget() is not None:
                 item.widget().deleteLater()
         self._cards.clear()
+        category = self._preset_category.currentData()
+        presets = [preset for preset in self._presets
+                   if category == 'all' or (preset.description == '自定义水印模板') == (category == 'mine')]
         for index, preset in enumerate(presets):
             card = TemplateCard(preset)
             card.selected.connect(self.template_selected.emit)
             self._cards[preset.name] = card
             self._card_layout.addWidget(card, index // 2, index % 2)
-        self.set_selected_template(selected or self._selected_template)
+        self.set_selected_template(self._selected_template)
+
+    def show_my_templates(self):
+        self._preset_category.setCurrentIndex(self._preset_category.findData('mine'))
+        self.tabs.setCurrentIndex(0)
 
     def set_selected_template(self, name):
         self._selected_template = name or ''
@@ -709,6 +755,8 @@ class Inspector(QWidget):
         self._frame_defaults = defaults
         self._frame_document, self._frame_index = self._frame_node(source)
         self._update_frame_options()
+        self.custom_frame.set_source(source, baseline=baseline)
+        self._set_custom_active(self.custom_frame.is_custom)
 
     def _update_frame_options(self):
         node = self._frame_document[self._frame_index] if self._frame_index is not None else {}
@@ -752,6 +800,28 @@ class Inspector(QWidget):
             spin.setEnabled(self._frame_index is not None)
             del blocker
         self._update_effect_visibility()
+        self._set_custom_active(self.custom_frame.is_custom)
+
+    def _set_custom_active(self, active):
+        self._legacy_frame_notice.setVisible(active)
+        for widget in (self.frame_combo, self.palette_combo, self.glass_controls,
+                       self.border_slider, self.background_button):
+            widget.setEnabled(not active)
+        # 文字覆盖位置和透明度仍用于定制画框的前景
+        self.overlay_combo.setEnabled(self._frame_index is not None)
+        self.inset_controls.setEnabled(True)
+        if not active:
+            for widget in (self.frame_combo, self.overlay_combo, self.palette_combo):
+                widget.setEnabled(self._frame_index is not None)
+
+    def _custom_frame_source_changed(self, source):
+        previous_index = self._frame_index
+        self._frame_source = source
+        self._frame_document, self._frame_index = self._frame_node(source)
+        self.inline_footer.adopt_style_source(source)
+        if self._frame_index != previous_index:
+            self._update_frame_options()
+        self._emit_style('template_source', source)
 
     def _update_effect_visibility(self):
         node = self._frame_document[self._frame_index] if self._frame_index is not None else {}
@@ -787,6 +857,7 @@ class Inspector(QWidget):
         if key in ('frame_style', 'overlay_mode'):
             self._update_frame_options()
         self.inline_footer.adopt_style_source(source)
+        self.custom_frame.set_source(source, baseline=self._frame_baseline_source)
         self._emit_style('template_source', source)
 
     def set_photo(self, path, values, *, force=False, read_only=False):
@@ -870,6 +941,8 @@ class Inspector(QWidget):
         self.tabs.setTabText(1, tr('样式与文本').replace('&', '&&'))
         self.tabs.setTabText(2, tr('EXIF 信息'))
         self.lock_button.setText(tr('编辑设置' if self._locked else '锁定设置'))
+        for index, label in enumerate(('全部模板', '内置模板', '我的模板')):
+            self._preset_category.setItemText(index, tr(label))
         for card in self._cards.values():
             card.retranslate()
         for combo, first, choices, last in (
