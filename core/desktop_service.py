@@ -6,6 +6,7 @@ import math
 import re
 from copy import deepcopy
 from dataclasses import asdict, dataclass, fields, field
+from fractions import Fraction
 from functools import lru_cache
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -715,6 +716,97 @@ def _output_rgb(image, settings):
     return canvas
 
 
+def _terminal_frame_input_size(nodes, original_size, settings, metadata, source):
+    """计算常见内置多步模板进入末尾画框前的原尺寸"""
+    prefix = nodes[:-1]
+    if not prefix:
+        return original_size
+    last = prefix[-1]
+    if last.get('processor_name') == 'crop':
+        width, height = int(last.get('width') or 0), int(last.get('height') or 0)
+        if width > 0 and height > 0:
+            return width, height
+    if any(node.get('select') is not None or node.get('buffer_path') or node.get('input_buffer')
+           for node in prefix):
+        return None
+    # 内置角标由原图和一行文字对齐合成，只需实际生成小尺寸字图
+    if (len(prefix) == 2 and prefix[0].get('processor_name') in {'rich_text', 'multi_rich_text'}
+            and prefix[1].get('processor_name') == 'alignment'):
+        from processor.core import PipelineContext, get_processor
+
+        configured = deepcopy(prefix)
+        _configure_nodes(configured, SimpleNamespace(height=original_size[1]), settings, metadata, source)
+        configured[0]['save_buffer'] = False
+        context = PipelineContext(configured[0])
+        get_processor(configured[0]['processor_name'])().process(context)
+        images = context.get_buffer()
+        if len(images) == 1:
+            return max(original_size[0], images[0].width), max(original_size[1], images[0].height)
+        return None
+    known = {'rounded_corner', 'blur', 'shadow', 'watermark', 'watermark_with_timestamp', 'margin', 'resize', 'crop'}
+    if any(node.get('processor_name') not in known for node in prefix):
+        return None
+    configured = deepcopy(prefix)
+    _configure_nodes(configured, SimpleNamespace(height=original_size[1]), settings, metadata, source)
+    width, height = original_size
+    for node in configured:
+        kind = node['processor_name']
+        if kind == 'shadow':
+            radius = int(node.get('shadow_radius') or 0) if node.get('shadow_radius') is not None else 30
+            if radius > 0:
+                width, height = width + radius * 4, height + radius * 4
+        elif kind in {'watermark', 'watermark_with_timestamp'}:
+            if uses_frame_layers(node):
+                from processor.frame_layers import frame_geometry
+                width, height = frame_geometry((width, height), node)['canvas_size']
+            else:
+                from processor.custom_frame import legacy_composite_size
+                width, height = legacy_composite_size((width, height), node)
+        elif kind == 'margin':
+            width += int(node.get('left_margin') or 0) + int(node.get('right_margin') or 0)
+            height += int(node.get('top_margin') or 0) + int(node.get('bottom_margin') or 0)
+        elif kind == 'resize':
+            w, h, scale = node.get('width'), node.get('height'), node.get('scale')
+            if w and h:
+                width, height = int(w), int(h)
+            elif w or h or scale:
+                factor = float(w) / width if w else float(h) / height if h else float(scale)
+                width, height = int(width * factor), int(height * factor)
+            else:
+                return None
+        elif kind == 'crop':
+            w, h = int(node.get('width') or 0), int(node.get('height') or 0)
+            width, height = w if w > 0 else width, h if h > 0 else height
+    return width, height
+
+
+def _nearest_frame_ratio(size, node):
+    """未知管线保留近似尺寸，同时对齐声明的固定画幅"""
+    if node.get('processor_name') not in {'watermark', 'watermark_with_timestamp'}:
+        return size
+    frame = node.get('custom_frame')
+    geometry = frame.get('geometry') if isinstance(frame, dict) else None
+    if not isinstance(geometry, dict) or geometry.get('canvas_mode') != 'aspect_ratio':
+        return size
+    value = geometry.get('ratio', '4:5')
+    try:
+        if isinstance(value, str) and ':' in value:
+            left, right = value.split(':', 1)
+            ratio = Fraction(left.strip()) / Fraction(right.strip())
+            if not (left.strip().isdigit() and right.strip().isdigit()):
+                ratio = ratio.limit_denominator(1000)
+        else:
+            ratio = Fraction(str(value)).limit_denominator(1000)
+        if ratio <= 0:
+            return size
+        width_unit, height_unit = ratio.numerator, ratio.denominator
+        divisor = width_unit * width_unit + height_unit * height_unit
+        multiple = max(1, (size[0] * width_unit + size[1] * height_unit + divisor // 2) // divisor)
+        return width_unit * multiple, height_unit * multiple
+    except (ValueError, TypeError, ZeroDivisionError, OverflowError):
+        return size
+
+
 def _rendered_rows(nodes):
     """提取模板渲染及快捷样式应用后的区域文字"""
     from core.footer import text_targets
@@ -786,6 +878,7 @@ def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True, 
         if width > 0 and height > 0:
             full_size = (width, height)
     frame_geometry_node = None
+    frame_input_size = original_size
     if preview and not full_resolution and source_scale != 1:
         node = nodes[-1]
         paths = node.get('buffer_path')
@@ -799,6 +892,9 @@ def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True, 
                     direct = json.loads(node['select']) == [0]
                 except (TypeError, ValueError):
                     pass
+            if not direct and node.get('select') is None and 'custom_frame' in node:
+                frame_input_size = _terminal_frame_input_size(nodes, original_size, settings, metadata, source)
+                direct = frame_input_size is not None
         if node.get('processor_name') in {'watermark', 'watermark_with_timestamp'} and direct and uses_frame_layers(node):
             keys = ('frame_style', 'overlay_mode', 'frame_margin', 'frame_bottom', 'frame_radius',
                     'frame_shadow', 'frame_blur', 'frame_brightness', 'frame_vignette',
@@ -817,7 +913,7 @@ def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True, 
             _configure_nodes([frame_geometry_node], original, settings, metadata, source)
         elif not settings.use_template_styles and settings.border_override:
             frame_geometry_node['bottom_margin'] = max(1, round(original_size[1] * settings.border_percent / 100))
-        full_size = frame_geometry(original_size, frame_geometry_node)['canvas_size']
+        full_size = frame_geometry(frame_input_size, frame_geometry_node)['canvas_size']
     check_cancelled(cancelled)
     rendered_rows = _rendered_rows(nodes) if preview else None
     image_id = ('file', str(source), info.st_mtime_ns, info.st_size)
@@ -831,8 +927,10 @@ def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True, 
             check_cancelled(cancelled)
     if preview:
         if not full_resolution and source_scale != 1:
-            full_size = full_size or (max(1, round(result.width / source_scale)),
-                                      max(1, round(result.height / source_scale)))
+            if full_size is None:
+                full_size = (max(1, round(result.width / source_scale)),
+                             max(1, round(result.height / source_scale)))
+                full_size = _nearest_frame_ratio(full_size, nodes[-1])
         else:
             full_size = result.size
         result = _output_rgb(result, settings)

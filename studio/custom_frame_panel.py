@@ -88,8 +88,12 @@ def _node(source):
     if not isinstance(document, list):
         return None, None
     for index, node in enumerate(document):
-        if isinstance(node, dict) and node.get('processor_name') in {'watermark', 'watermark_with_timestamp'}:
+        if isinstance(node, dict) and isinstance(node.get('custom_frame'), dict):
             return document, index
+    # 外框作用于最后的成品，避免后面的裁切或加边再次改变固定画幅
+    if (document and isinstance(document[-1], dict)
+            and document[-1].get('processor_name') in ('watermark', 'watermark_with_timestamp')):
+        return document, len(document) - 1
     return document, None
 
 
