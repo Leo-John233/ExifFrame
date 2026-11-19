@@ -4,6 +4,7 @@ from collections import OrderedDict
 from concurrent.futures import CancelledError
 from functools import lru_cache
 from pathlib import Path
+import stat
 from threading import RLock
 
 from PIL import Image, ImageOps
@@ -54,6 +55,9 @@ class PreviewImageCache:
 
 
 _preview_cache = PreviewImageCache()
+_palette_cache = OrderedDict()
+_palette_lock = RLock()
+_PALETTE_LIMIT = 128
 
 
 def check_cancelled(cancelled):
@@ -73,11 +77,81 @@ def cache_preview_image(key, image):
     _preview_cache.put(key, image)
 
 
+def _palette_sample(image):
+    """只在最长边不超过160像素的样本上计算主色"""
+    scale = min(1.0, 160 / max(image.size))
+    size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
+    sample = image.resize(size, Image.Resampling.LANCZOS) if size != image.size else image.copy()
+    if 'A' in sample.getbands():
+        background = Image.new('RGBA', sample.size, 'white')
+        background.alpha_composite(sample.convert('RGBA'))
+        sample = background.convert('RGB')
+    else:
+        sample = sample.convert('RGB')
+    quantized = sample.quantize(colors=5, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
+    palette = quantized.getpalette()
+    counts = sorted(quantized.getcolors() or [], key=lambda item: (-item[0], item[1]))
+    colors = [tuple(palette[index * 3:index * 3 + 3]) for _, index in counts]
+    if not colors:
+        colors = [(0, 0, 0)]
+    return tuple((colors + [colors[-1]] * 5)[:5])
+
+
+def dominant_palette(image, image_id=None):
+    """按真实文件版本复用五个主色，来源不明时不共享缓存"""
+    valid = valid_file_image_id(image_id)
+    if valid:
+        path = Path(image_id[1])
+    if valid:
+        with _palette_lock:
+            if image_id in _palette_cache:
+                _palette_cache.move_to_end(image_id)
+                return _palette_cache[image_id]
+        try:
+            with Image.open(path) as opened:
+                opened.draft('RGB', (160, 160))
+                opened.thumbnail((160, 160), Image.Resampling.LANCZOS)
+                result = _palette_sample(opened)
+            info = path.stat()
+            valid = (info.st_mtime_ns, info.st_size) == image_id[2:]
+        except (OSError, ValueError):
+            valid = False
+    if not valid:
+        return _palette_sample(image)
+    with _palette_lock:
+        _palette_cache[image_id] = result
+        _palette_cache.move_to_end(image_id)
+        while len(_palette_cache) > _PALETTE_LIMIT:
+            _palette_cache.popitem(last=False)
+    return result
+
+
 def _signature(path):
     """文件修改后自动失效缓存"""
     source = Path(path).resolve()
     info = source.stat()
     return str(source), info.st_mtime_ns, info.st_size
+
+
+def file_image_id(path):
+    """为完整文件和各级代理生成相同的版本身份"""
+    try:
+        return ('file', *_signature(path))
+    except (OSError, ValueError):
+        return None
+
+
+def valid_file_image_id(image_id):
+    """仅接受仍与磁盘文件版本一致的可信身份"""
+    if not (isinstance(image_id, tuple) and len(image_id) == 4 and image_id[0] == 'file'
+            and isinstance(image_id[1], str) and Path(image_id[1]).is_absolute()
+            and isinstance(image_id[2], int) and isinstance(image_id[3], int)):
+        return False
+    try:
+        info = Path(image_id[1]).stat()
+        return stat.S_ISREG(info.st_mode) and (info.st_mtime_ns, info.st_size) == image_id[2:]
+    except (OSError, ValueError):
+        return False
 
 
 def _check_source_version(source, modified, file_size):
