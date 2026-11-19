@@ -15,6 +15,7 @@ from tempfile import NamedTemporaryFile
 ONEFILE_MARKER = 'exifframe-onefile.marker'
 _SEEDED_MARKER = '.resources-seeded'
 _CONFIG_DIRS = ('templates', 'fonts', 'logos')
+_STYLE_DIRS = ('style_assets', 'style_presets')
 _STYLE_PACK_MARKER = '.style-pack-1-seeded'
 _STYLE_PACK = (
     '极简无框角标', '拍立得经典宽底', '毛玻璃悬浮卡片', '美术馆装裱画框',
@@ -188,14 +189,14 @@ def initialize_user_config(migrate_legacy: bool = True) -> None:
                             elif name == 'desktop.json':
                                 transform = lambda data: _migrate_desktop_json(data, legacy_base)
                             _copy_seed_file(legacy / name, target / name, transform)
-                    for name in _CONFIG_DIRS:
+                    for name in (*_CONFIG_DIRS, *_STYLE_DIRS):
                         folder = legacy / name
                         if folder.is_dir():
                             for item in sorted(folder.rglob('*')):
                                 if item.is_file():
                                     _copy_seed_file(item, target / item.relative_to(legacy))
             _copy_seed_file(required[0], target / 'config.ini')
-            for folder in required[1:]:
+            for folder in (*required[1:], *(source / name for name in _STYLE_DIRS if (source / name).is_dir())):
                 for item in sorted(folder.rglob('*')):
                     if item.is_file():
                         _copy_seed_file(item, target / item.relative_to(source))

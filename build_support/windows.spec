@@ -41,9 +41,11 @@ def resource_files(relative):
 datas = translations[:]
 exiftool_datas = []
 if mode == 'onefile':
+    from build_support.style_resources import bundled_style_files
     for relative in ('config/config.ini', 'config/fonts', 'config/logos', 'config/templates',
                      'static', 'pyproject.toml'):
         datas.extend(resource_files(relative))
+    datas.extend((str(item), str(item.relative_to(root).parent)) for item in bundled_style_files(root))
     # ExifTool 自带完整运行目录，作为普通文件嵌入，避免重复分析其动态库
     exiftool_datas = [(str(Path('exiftool') / item.relative_to(exiftool)), str(item), 'DATA')
                       for item in sorted(exiftool.rglob('*')) if item.is_file()]

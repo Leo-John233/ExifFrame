@@ -16,8 +16,10 @@ from pathlib import Path
 
 if __package__:
     from .build_guard import run as _run_limited
+    from .style_resources import bundled_style_files
 else:
     from build_guard import run as _run_limited
+    from style_resources import bundled_style_files
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -262,6 +264,8 @@ def build(onedir=False, numpy_wheel=None):
                 raise FileNotFoundError('目录版构建未生成程序')
             for relative in ('config/fonts', 'config/logos', 'config/templates', 'static'):
                 _copy_tree(ROOT / relative, package / relative, package)
+            for asset in bundled_style_files(ROOT):
+                _copy_file(asset, package / asset.relative_to(ROOT), package)
             _copy_tree(ROOT / 'exiftool', package / 'exiftool', package)
             for relative in ('config/config.ini', 'pyproject.toml'):
                 _copy_file(ROOT / relative, package / relative, package)
