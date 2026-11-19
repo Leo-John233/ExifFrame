@@ -6,8 +6,9 @@ from collections import OrderedDict
 
 from PIL import Image, ImageDraw
 
-from core.font_fallback import (_font_cache_state, _font_key, _font_token, _native_z, _supports,
-                                _weight, font_at_size, load_font, pooled_fonts, render_with_fallback)
+from core.brand_glyphs import current_policy, node_glyph_policy
+from core.font_fallback import (_font_cache_state, _font_token, _weight, font_at_size, load_font,
+                                pooled_fonts, render_with_fallback)
 from processor.core import _parse_color
 from processor.generators import location_text_font, render_character_node
 
@@ -27,6 +28,7 @@ def _font_at_size(path, size):
     return font_at_size(path, size)
 
 
+@node_glyph_policy
 @pooled_fonts()
 def _segment_image(segment):
     """按旧版字形边界生成单个文字片段"""
@@ -39,7 +41,7 @@ def _segment_image(segment):
     original_font = _font_at_size(None, size) if location else None
     baseline = original_font.getmetrics()[0] if original_font is not None else font.getmetrics()[0]
     color = _parse_color(segment.get('color', 'black'))
-    key = ('watermark_1521', _font_token(font), text, color,
+    key = ('watermark_1521', _font_token(font), text, color, current_policy(),
            _font_token(original_font) if original_font is not None else None,
            original if original_font is not None else None)
     state = _font_cache_state()
@@ -51,21 +53,25 @@ def _segment_image(segment):
         cache.move_to_end(key)
         return cache[key][0].copy(), baseline
 
-    image = render_with_fallback(text, font, lambda fallback: _font_at_size(fallback, size), color)
-    can_cache = image is None
+    drawing = text.replace('ℤ', 'Z') if current_policy() == 'plain_z' else text
+    image = render_with_fallback(drawing, font, lambda fallback: _font_at_size(fallback, size), color)
+    primary_font = image is None
+    can_cache = primary_font or image.info.get('_font_fallback_used') is False
+    if image is not None and original_font is None and current_policy() == 'system' and 'ℤ' in text:
+        baseline = image.info.get('_fallback_baseline', baseline)
     layout = text
-    if 'ℤ' in text and _native_z(font) and not _supports(_font_key(font), ord('ℤ')):
+    if 'ℤ' in text and current_policy() != 'system':
         layout = text.replace('ℤ', 'Z')
     if '\n' in layout:
         probe = ImageDraw.Draw(Image.new('RGBA', (1, 1)))
         bounds = probe.multiline_textbbox((0, 0), layout, font=font)
     else:
         bounds = font.getbbox(layout)
-    if can_cache:
+    if primary_font:
         width = max(1, bounds[2] - bounds[0])
         height = max(1, bounds[3])
         image = Image.new('RGBA', (width, height), (0, 0, 0, 0))
-        ImageDraw.Draw(image).text((0, 0), text, font=font, fill=color)
+        ImageDraw.Draw(image).text((0, 0), drawing, font=font, fill=color)
     else:
         ink = image.getchannel('A').getbbox()
         height = max(1, bounds[3], ink[3] if ink else 0)
@@ -87,6 +93,7 @@ def _segment_image(segment):
     return image, baseline
 
 
+@node_glyph_policy
 def render_text_row(node):
     """按连续字形和共同基线生成一行透明文字"""
     styled = render_character_node(node, watermark=True)
