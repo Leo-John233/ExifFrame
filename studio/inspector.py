@@ -188,6 +188,8 @@ class Inspector(QWidget):
         self.lock_button.toggled.connect(self._lock_changed)
         self.save_button = self._button('保存设置', self.save_settings_requested.emit)
         self.reset_button = self._button('重置设置', self.reset_settings_requested.emit)
+        for button in (self.lock_button, self.save_button, self.reset_button):
+            button.setStyleSheet('padding-left: 2px; padding-right: 2px;')
         controls.addWidget(self.lock_button)
         controls.addWidget(self.save_button)
         controls.addWidget(self.reset_button)
