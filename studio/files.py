@@ -11,13 +11,7 @@ from PySide6.QtWidgets import (
     QFileDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton,
     QSizePolicy, QStyle, QStyleOptionViewItem, QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
-from .i18n import bind_static_texts, register_translations, tr, translator
-
-
-register_translations({
-    '取消全选': 'Uncheck all', '反选': 'Invert selection',
-    '已勾选 {selected} / 共 {total} 张': 'Checked {selected} / Total {total}',
-})
+from .i18n import bind_static_texts, tr, translator
 
 
 def _identity(path):

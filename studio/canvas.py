@@ -9,17 +9,7 @@ from PySide6.QtWidgets import (
     QSizePolicy, QToolButton, QWidget,
 )
 
-from studio.i18n import bind, register_translations, tr, translator
-
-
-register_translations({
-    '滚轮缩放 拖动平移 双击切换适应和100% 按住空格查看原图':
-        'Scroll to zoom, drag to pan, double-click for fit or 100%, hold Space for the original',
-    '原图': 'Original',
-    '适应': 'Fit',
-    '原图读取失败，保留水印预览': 'Could not load the original; watermark preview retained',
-    '{mode} · {width} × {height}': '{mode} · {width} × {height}',
-})
+from studio.i18n import bind, tr, translator
 
 _SIZE_KEY = 'ExifFrame/FullSize'
 
