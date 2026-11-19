@@ -4,13 +4,13 @@ from abc import ABC
 from typing import Tuple
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
 from core.util import get_exif
-from core.image_cache import resized_logo
 from processor.core import ImageProcessor, PipelineContext, start_process, get_processor
 from processor.types import Alignment
 from processor.render_slots import crop_slots, tag_logo, transfer_slots
+from processor.logo_layer import layer_logo, logo_options, background_luma
 
 
 class FilterProcessor(ImageProcessor, ABC):
@@ -24,12 +24,20 @@ def blur_sample_factor(radius):
 
 
 def fast_gaussian_blur(image, radius):
+    original = image
+    if image.mode == 'RGBA':
+        image = image.convert('RGBa')
     factor = blur_sample_factor(radius)
     if factor == 1:
-        return image.filter(ImageFilter.GaussianBlur(radius))
-    sample = image.reduce(factor)
-    softened = sample.filter(ImageFilter.GaussianBlur(radius / factor))
-    return softened.resize(image.size, Image.Resampling.BILINEAR)
+        result = image.filter(ImageFilter.GaussianBlur(radius))
+    else:
+        sample = image.reduce(factor)
+        softened = sample.filter(ImageFilter.GaussianBlur(radius / factor))
+        result = softened.resize(image.size, Image.Resampling.BILINEAR)
+    if result.mode == 'RGBa':
+        result = result.convert('RGBA')
+    result.info.update(original.info)
+    return result
 
 
 class BlurFilter(FilterProcessor):
@@ -43,8 +51,8 @@ class BlurFilter(FilterProcessor):
 
         buffer = []
         for img in ctx.get_buffer():
-            if img.mode != "RGB":
-                img = img.convert("RGB")
+            if img.mode not in {'RGB', 'RGBA'}:
+                img = img.convert('RGBA' if 'transparency' in img.info or 'A' in img.getbands() else 'RGB')
             ret_img = fast_gaussian_blur(img, radius)
             buffer.append(ret_img)
         ctx.update_buffer(buffer).save_buffer(self.name()).success()
@@ -227,7 +235,10 @@ class MarginFilter(FilterProcessor):
             offset_y = top_margin
 
             # 将原图粘贴到新画布上
-            new_img.paste(img, (offset_x, offset_y))
+            if new_img.mode == 'RGBA':
+                new_img.alpha_composite(img.convert('RGBA'), (offset_x, offset_y))
+            else:
+                new_img.paste(img, (offset_x, offset_y))
             transfer_slots(img, new_img, (offset_x, offset_y))
             buffer.append(new_img)
 
@@ -313,6 +324,8 @@ def draw_pixel_footer(ctx, img, scale):
     # 旧版前景共用可缓存的原图底板
     from processor.frame_layers import legacy_base
     canvas = legacy_base(img, ctx, bottom_margin, ctx.get('_frame_image_id'))
+    logo_background = background_luma(canvas, (0, top_margin + img.height, canvas.width, canvas.height))
+    options = logo_options(ctx)
     # 底部区域
     footer_start_y = top_margin + img.height
     # 左图标处理
@@ -322,11 +335,11 @@ def draw_pixel_footer(ctx, img, scale):
         if fixed_footer and scale != 1:
             logo_size = max(1, round(logo_size * scale))
         # 缩放图标以适应底部高度 (正方形)
-        left_logo = resized_logo(left_logo, (logo_size, logo_size))
+        left_logo = layer_logo(left_logo, (logo_size, logo_size), background=logo_background, trim=False, **options)
         logo_y = footer_start_y if scale == 1 else footer_start_y + (bottom_margin - logo_size) // 2
-        canvas.paste(left_logo, (left_margin, logo_y), mask=left_logo if left_logo.mode == 'RGBA' else None)
+        canvas.alpha_composite(left_logo, (left_margin, logo_y))
         transfer_slots(tag_logo(left_logo, ctx, 'left_logo'), canvas, (left_margin, logo_y))
-        left_logo_width = logo_size
+        left_logo_width = left_logo.width
 
     if center_logo and bottom_margin > 0:
         # 四周预留空间并同时限制宽高，完整展示宽标识和底部文字
@@ -338,10 +351,10 @@ def draw_pixel_footer(ctx, img, scale):
         logo_height = min(center_logo_height or available_height, available_height)
         if scale != 1 and (fixed_footer or center_logo_height):
             logo_height = min(available_height, max(1, round(logo_height * scale)))
-        center_logo = resized_logo(center_logo, (available_width, max(1, logo_height)), contain=True)
+        center_logo = layer_logo(center_logo, (available_width, max(1, logo_height)), background=logo_background, trim=False, **options)
         center_x = (canvas.width - center_logo.width) // 2
         center_y = footer_start_y + ((canvas.height - footer_start_y) - center_logo.height) // 2
-        canvas.paste(center_logo, (center_x, center_y), mask=center_logo if center_logo.mode == 'RGBA' else None)
+        canvas.alpha_composite(center_logo, (center_x, center_y))
         transfer_slots(tag_logo(center_logo, ctx, 'center_logo'), canvas, (center_x, center_y))
 
     if ctx.get('fit_center_columns', False) and isinstance(center_logo, Image.Image):
@@ -393,10 +406,10 @@ def draw_pixel_footer(ctx, img, scale):
 
     # 6. 绘制文本元素
     # 使用 mask 确保透明背景的文字能正确叠加
-    canvas.paste(left_top, (l_x, lt_y), mask=left_top if left_top.mode == 'RGBA' else None)
-    canvas.paste(left_bottom, (l_x, lb_y), mask=left_bottom if left_bottom.mode == 'RGBA' else None)
-    canvas.paste(right_top, (rt_x, rt_y), mask=right_top if right_top.mode == 'RGBA' else None)
-    canvas.paste(right_bottom, (rb_x, rb_y), mask=right_bottom if right_bottom.mode == 'RGBA' else None)
+    canvas.alpha_composite(left_top, (l_x, lt_y))
+    canvas.alpha_composite(left_bottom, (l_x, lb_y))
+    canvas.alpha_composite(right_top, (rt_x, rt_y))
+    canvas.alpha_composite(right_bottom, (rb_x, rb_y))
     for text, position in ((left_top, (l_x, lt_y)), (left_bottom, (l_x, lb_y)),
                            (right_top, (rt_x, rt_y)), (right_bottom, (rb_x, rb_y))):
         transfer_slots(text, canvas, position)
@@ -409,13 +422,12 @@ def draw_pixel_footer(ctx, img, scale):
         delimiter_x = canvas_width - right_margin - max(right_top.width,
                                                         right_bottom.width) - 2 * common_spacing - delimiter.width
         delimiter_y = int(footer_start_y + elem_margin - logo_size * .05)
-        canvas.paste(delimiter, (delimiter_x, delimiter_y), mask=delimiter)
+        canvas.alpha_composite(delimiter, (delimiter_x, delimiter_y))
 
-        right_logo = resized_logo(right_logo, (logo_size, logo_size))
+        right_logo = layer_logo(right_logo, (logo_size, logo_size), background=logo_background, trim=False, **options)
         right_logo_x = delimiter_x - common_spacing - logo_size
         right_logo_y = footer_start_y + elem_margin
-        canvas.paste(right_logo, (right_logo_x, right_logo_y),
-                     mask=right_logo if right_logo.mode == 'RGBA' else None)
+        canvas.alpha_composite(right_logo, (right_logo_x, right_logo_y))
         transfer_slots(tag_logo(right_logo, ctx, 'right_logo'), canvas, (right_logo_x, right_logo_y))
 
     # 7. 返回结果
@@ -473,8 +485,8 @@ class RoundedCornerFilter(FilterProcessor):
 
             # 应用蒙版
             output = Image.new('RGBA', (width, height), (0, 0, 0, 0))
-            output.paste(img, (0, 0))
-            output.putalpha(mask)
+            output.alpha_composite(img, (0, 0))
+            output.putalpha(ImageChops.multiply(img.getchannel('A'), mask))
             transfer_slots(img, output)
 
             buffer.append(output)
@@ -510,14 +522,15 @@ class ShadowFilter(FilterProcessor):
             # 1. 生成剪影阴影
             background = Image.new('RGBA', (full_width, full_height), (0, 0, 0, 0))
             shadow_layer = Image.new('RGBA', (w, h), shadow_color)
-            shadow_layer.putalpha(original_img.getchannel('A'))
-            background.paste(shadow_layer, (padding, padding))
+            shadow_layer.putalpha(ImageChops.multiply(original_img.getchannel('A'),
+                                                     Image.new('L', (w, h), shadow_color[3])))
+            background.alpha_composite(shadow_layer, (padding, padding))
             # 2. 高斯模糊
             shadow_blurred = fast_gaussian_blur(background, shadow_radius)
             # 3. 关键：应用透明度衰减曲线，消除边缘残留
             shadow_blurred = self._apply_alpha_falloff(shadow_blurred, falloff)
             # 4. 合成原图
-            shadow_blurred.paste(original_img, (padding, padding), mask=original_img)
+            shadow_blurred.alpha_composite(original_img, (padding, padding))
             transfer_slots(original_img, shadow_blurred, (padding, padding))
             buffer.append(shadow_blurred)
         ctx.update_buffer(buffer).save_buffer(self.name()).success()
@@ -549,10 +562,11 @@ class ShadowFilter(FilterProcessor):
             background = Image.new('RGBA', (full_width, full_height), (0, 0, 0, 0))
             # --- 优化点 2: 制作纯色剪影 ---
             shadow_layer = Image.new('RGBA', (w, h), shadow_color)
-            shadow_layer.putalpha(original_img.getchannel('A'))
+            shadow_layer.putalpha(ImageChops.multiply(original_img.getchannel('A'),
+                                                     Image.new('L', (w, h), shadow_color[3])))
 
             # 将剪影贴入底图中心
-            background.paste(shadow_layer, (padding, padding))
+            background.alpha_composite(shadow_layer, (padding, padding))
             # --- 优化点 3: 高斯模糊 ---
             shadow_in_process = fast_gaussian_blur(background, shadow_radius)
             # --- 优化点 4: Alpha 通道非线性衰减 (缓动关键) ---
@@ -570,7 +584,7 @@ class ShadowFilter(FilterProcessor):
 
             shadow_in_process.putalpha(a)
             # 组合原图
-            shadow_in_process.paste(original_img, (padding, padding), mask=original_img)
+            shadow_in_process.alpha_composite(original_img, (padding, padding))
             transfer_slots(original_img, shadow_in_process, (padding, padding))
 
             # (可选) 如果你不希望图片尺寸暴增，可以在这里 crop 回去，

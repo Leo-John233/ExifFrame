@@ -1,14 +1,13 @@
 """沿用 build1521 的整条底栏比例和缩放方式"""
 
 import json
-from pathlib import Path
-
 from PIL import Image, ImageOps
 
 from core.image_cache import cached_preview_image, cache_preview_image
 from processor.text_layers import _font_at_size, _segment_image, render_text_row as _row_image, watermark_scale
 from processor.types import Alignment
 from processor.render_slots import tag_logo, transfer_slots
+from processor.logo_layer import layer_logo, logo_options, logo_variant_path, fit_logo
 
 
 _NORMAL_HEIGHT = 1000
@@ -20,7 +19,7 @@ def _padding(image, amount, location='tb'):
     top = amount if 't' in location else 0
     bottom = amount if 'b' in location else 0
     result = Image.new('RGBA', (image.width + left + right, image.height + top + bottom), (0, 0, 0, 0))
-    result.paste(image, (left, top))
+    result.alpha_composite(image.convert('RGBA'), (left, top))
     transfer_slots(image, result, (left, top))
     return result
 
@@ -28,10 +27,10 @@ def _padding(image, amount, location='tb'):
 def _column(top, bottom, background, align_right=False):
     width = max(10, top.width, bottom.width)
     result = Image.new('RGBA', (width, top.height + 100 + bottom.height), (0, 0, 0, 0))
-    result.paste(top, (width - top.width if align_right else 0, 0))
+    result.alpha_composite(top, (width - top.width if align_right else 0, 0))
     transfer_slots(top, result, (width - top.width if align_right else 0, 0))
-    result.paste(Image.new('RGBA', (10, 100), background), (0, top.height))
-    result.paste(bottom, (width - bottom.width if align_right else 0, top.height + 100))
+    result.alpha_composite(Image.new('RGBA', (10, 100), background), (0, top.height))
+    result.alpha_composite(bottom, (width - bottom.width if align_right else 0, top.height + 100))
     transfer_slots(bottom, result, (width - bottom.width if align_right else 0, top.height + 100))
     return result
 
@@ -41,16 +40,17 @@ def _normalize(image, height=_NORMAL_HEIGHT, sampling=Image.Resampling.LANCZOS):
     return image.resize((width, height), sampling)
 
 
-def _read_logo(path, padding):
-    path = Path(path).resolve()
+def _read_logo(path, padding, background=None, **options):
+    path = logo_variant_path(path, background, adaptive=options.get('adaptive', True), variant=options.get('variant', 'auto'))
     info = path.stat()
-    key = ('1521_logo', str(path), info.st_mtime_ns, info.st_size, padding)
+    key = ('1521_logo_rgba_v4', str(path), info.st_mtime_ns, info.st_size, padding, background, tuple(sorted(options.items())))
     cached = cached_preview_image(key)
     if cached is not None:
         return cached
-    with Image.open(path) as opened:
-        image = opened.convert('RGBA')
-    logo = _normalize(_padding(image, int(padding * image.height)))
+    image = layer_logo(path, (1000, 1000), background=background, trim=False, **options)
+    padded = _padding(image, int(padding * image.height))
+    logo = fit_logo(padded, (max(1, round(padded.width * _NORMAL_HEIGHT / padded.height)), _NORMAL_HEIGHT))
+    logo.info.update(image.info)
     cache_preview_image(key, logo)
     return logo
 
@@ -62,7 +62,7 @@ def _draft_column(top, bottom, margin, ratio, height, align_right):
     for row, y in ((top, margin), (bottom, margin + top.height + 100)):
         size = max(1, round(row.width * ratio)), max(1, round(row.height * ratio))
         stamp = row.resize(size, Image.Resampling.BILINEAR)
-        result.paste(stamp, (width - stamp.width if align_right else 0, round(y * ratio)))
+        result.alpha_composite(stamp, (width - stamp.width if align_right else 0, round(y * ratio)))
         transfer_slots(stamp, result, (width - stamp.width if align_right else 0, round(y * ratio)))
     return result
 
@@ -103,6 +103,8 @@ def render_watermark(ctx, image, scale):
     sampling = Image.Resampling.BILINEAR if draft else Image.Resampling.LANCZOS
     gap = round(200 * height / _NORMAL_HEIGHT)
     background = ctx.get('color', 'white')
+    luma = Image.new('RGBA', (1, 1), background).convert('L').getpixel((0, 0))
+    options = logo_options(ctx)
     watermark = Image.new('RGBA', (image.width if draft else virtual_width, height), background)
     left_top, left_bottom, right_top, right_bottom = (
         _row_image(ctx.get(key)) for key in ('left_top', 'left_bottom', 'right_top', 'right_bottom'))
@@ -123,31 +125,31 @@ def render_watermark(ctx, image, scale):
     left_logo = ctx.get('left_logo')
     right_logo = ctx.get('right_logo')
     center_logo = ctx.get('center_logo')
-    center = _read_logo(center_logo, padding) if center_logo else None
+    center = _read_logo(center_logo, padding, luma, **options) if center_logo else None
     if center:
         max_width = watermark.width
         if ctx.get('fit_center_columns', False):
             max_width = max(1, round(watermark.width * .18))
-        center = ImageOps.contain(center, (max_width, height), sampling)
+        center = fit_logo(center, (max_width, height))
         center_x = (watermark.width - center.width) // 2
         tag_logo(center, ctx, 'center_logo')
-        watermark.paste(center, (center_x, (height - center.height) // 2))
+        watermark.alpha_composite(center, (center_x, (height - center.height) // 2))
         transfer_slots(center, watermark, (center_x, (height - center.height) // 2))
     x = 0 if left_logo else gap
     if left_logo:
         x += round(.02 * height) + gap
-        logo = _read_logo(left_logo, padding)
+        logo = _read_logo(left_logo, padding, luma, **options)
         if draft:
-            logo = _normalize(logo, height, sampling)
+            logo = fit_logo(logo, (max(1, round(logo.width * height / logo.height)), height))
         tag_logo(logo, ctx, 'left_logo')
-        watermark.paste(logo, (x, 0))
+        watermark.alpha_composite(logo, (x, 0))
         transfer_slots(logo, watermark, (x, 0))
         x += logo.width + gap
     if center and ctx.get('fit_center_columns', False):
         available = max(1, center_x - x - gap)
         if left.width > available:
             left = ImageOps.contain(left, (available, height), sampling)
-    watermark.paste(left, (x, (height - left.height) // 2))
+    watermark.alpha_composite(left, (x, (height - left.height) // 2))
     transfer_slots(left, watermark, (x, (height - left.height) // 2))
 
     x = watermark.width
@@ -156,9 +158,9 @@ def render_watermark(ctx, image, scale):
     if right_logo:
         line = _padding(Image.new('RGBA', (20, _NORMAL_HEIGHT), ctx.get('delimiter_color', 'black')),
                         int(padding * _NORMAL_HEIGHT * .8))
-        line, logo = _normalize(line, height, sampling), _read_logo(right_logo, padding)
+        line, logo = _normalize(line, height, sampling), _read_logo(right_logo, padding, luma, **options)
         if draft:
-            logo = _normalize(logo, height, sampling)
+            logo = fit_logo(logo, (max(1, round(logo.width * height / logo.height)), height))
         tag_logo(logo, ctx, 'right_logo')
     if center and ctx.get('fit_center_columns', False):
         occupied = (line.width + logo.width + 2 * gap) if right_logo else 0
@@ -168,10 +170,10 @@ def render_watermark(ctx, image, scale):
     parts = [right] + ([line, logo] if right_logo else [])
     for part in parts:
         x -= part.width + gap
-        watermark.paste(part, (x, (height - part.height) // 2))
+        watermark.alpha_composite(part, (x, (height - part.height) // 2))
         transfer_slots(part, watermark, (x, (height - part.height) // 2))
 
-    footer = watermark if draft else watermark.resize((image.width, footer_height), sampling)
+    footer = watermark if draft else watermark.resize((image.width, footer_height), Image.Resampling.HAMMING)
     left_margin = ctx.getint('left_margin', 0)
     top_margin = ctx.getint('top_margin', 0)
     canvas = legacy_base(image, ctx, footer_height, ctx.get('_frame_image_id'))

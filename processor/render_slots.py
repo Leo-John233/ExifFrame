@@ -106,7 +106,8 @@ def tag_logo(image, ctx, slot):
     key = (ctx.get('_logo_slot_keys') or {}).get(slot)
     if key:
         bounds = image.getchannel('A').getbbox() if 'A' in image.getbands() else (0, 0, *image.size)
-        image.info[SLOTS_KEY] = [{'key': key, 'kind': 'logo', 'visible': True, 'logo': ctx.get(slot),
+        image.info[SLOTS_KEY] = [{'key': key, 'kind': 'logo', 'visible': True,
+                                 'logo': image.info.get('_logo_path') or ctx.get(slot),
                                  'bbox': ([bounds[0] / image.width, bounds[1] / image.height,
                                            bounds[2] / image.width, bounds[3] / image.height] if bounds else None)}]
     return image
@@ -216,7 +217,9 @@ def resolved_style(nodes, source_scale=1.0):
             'brand_glyph_policy': policy,
             'logo': next((frame.get(key) for key in ('left_logo', 'center_logo', 'right_logo') if frame.get(key)), None),
             'palette_bar': bool(frame.get('palette_bar', False)),
-            'adaptive_logo_invert': bool(frame.get('adaptive_logo_invert', False)),
+            'adaptive_logo_invert': bool(frame.get('adaptive_logo_invert', True)),
+            'logo_matte': frame.get('logo_matte', 'auto'),
+            'logo_variant': frame.get('logo_variant', 'auto'),
             'inset_anchor': frame.get('inset_anchor', 'bottom_right'),
             'frame_brightness': frame.get('frame_brightness', .72),
             'frame_vignette': frame.get('frame_vignette', .25),

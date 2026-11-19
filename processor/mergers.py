@@ -65,8 +65,8 @@ class AlignmentMerger(Merger):
             img_y += offset_y
             # 确保图片是 RGBA 模式以正确处理透明度
             paste_img = img if img.mode == 'RGBA' else img.convert('RGBA')
-            # 粘贴图片到画布（使用 alpha 通道作为蒙版）
-            canvas.paste(paste_img, (img_x, img_y), paste_img)
+            # 按覆盖率合成，不能把前景 alpha 再次当作蒙版相乘
+            canvas.alpha_composite(paste_img, (img_x, img_y))
             transfer_slots(img, canvas, (img_x, img_y))
         ctx.update_buffer([canvas]).save_buffer(self.name()).success()
 
@@ -104,13 +104,13 @@ class ConcatMerger(Merger):
             if direction == Direction.HORIZONTAL:
                 # 计算 y 偏移（垂直对齐）
                 y_offset = _calc_offset(img.height, max_height, alignment)
-                canvas.paste(img, (current_pos, y_offset), img)
+                canvas.alpha_composite(img.convert('RGBA'), (current_pos, y_offset))
                 transfer_slots(img, canvas, (current_pos, y_offset))
                 current_pos += img.width + spacing
             else:  # VERTICAL
                 # 计算 x 偏移（水平对齐）
                 x_offset = _calc_offset(img.width, max_width, alignment)
-                canvas.paste(img, (x_offset, current_pos), img)
+                canvas.alpha_composite(img.convert('RGBA'), (x_offset, current_pos))
                 transfer_slots(img, canvas, (x_offset, current_pos))
                 current_pos += img.height + spacing
         ctx.update_buffer([canvas]).save_buffer(self.name()).success()

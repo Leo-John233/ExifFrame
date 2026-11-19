@@ -8,7 +8,7 @@ from PIL import Image, ImageDraw, ImageFilter
 
 from core.image_cache import dominant_palette
 from processor.core import get_processor
-from processor.logo_layer import adaptive_logo, layer_logo
+from processor.logo_layer import layer_logo, logo_options
 from processor.text_layers import render_text_row, watermark_scale
 from processor.render_slots import crop_slots, effective_text, tag_logo, transfer_slots
 
@@ -19,6 +19,8 @@ class Layer:
     box: tuple[float, float, float, float]
     bitmap: Image.Image | None = None
     text_node: dict | None = None
+    logo_path: str | None = None
+    logo_slot: str | None = None
 
 
 def _size(box):
@@ -74,13 +76,13 @@ def _text_layer(node, unit, default_height, scale):
     return Layer('text', (0, 0, width, height), image, node if adaptable else None)
 
 
-def _logo_layer(path, unit, scale):
+def _logo_layer(path, unit, scale, ctx=None):
     if not path or path == 'None':
         return None
     w, h = unit * .13 * scale, unit * .047 * scale
-    badge = layer_logo(path, (max(1, round(w)), max(1, round(h))))
+    badge = layer_logo(path, (max(1, round(w)), max(1, round(h))), **logo_options(ctx or {}))
     factor = min(w / badge.width, h / badge.height)
-    return Layer('logo', (0, 0, badge.width * factor, badge.height * factor), badge)
+    return Layer('logo', (0, 0, badge.width * factor, badge.height * factor), badge, logo_path=path)
 
 
 def _move(layer, x, y, scale=1):
@@ -182,8 +184,9 @@ def plan_overlay(ctx, layout):
             lines[name] = line
     logos = {}
     for slot in ('left', 'center', 'right'):
-        logo = _logo_layer(ctx.get(slot + '_logo'), unit, scale)
+        logo = _logo_layer(ctx.get(slot + '_logo'), unit, scale, ctx)
         if logo:
+            logo = replace(logo, logo_slot=slot + '_logo')
             tag_logo(logo.bitmap, ctx, slot + '_logo')
         logos[slot] = [logo] if logo else []
     if ctx.get('caption_layout') == 'centered':
@@ -286,10 +289,11 @@ def draw_overlay(canvas, source, ctx, layout, image_id):
                 if z > a:
                     draw.rectangle((a, box[1], z - 1, box[3] - 1), fill=color)
         elif layer.kind == 'logo':
-            stamp = layer.bitmap
-            if ctx.get('adaptive_logo_invert'):
-                stamp = adaptive_logo(stamp, _luma(canvas, box))
-            _stamp(canvas, stamp, box, opacity, shadow, sampling)
+            stamp = layer_logo(layer.logo_path, _size(box), background=_luma(canvas, box), **logo_options(ctx))
+            x = box[0] + (box[2] - box[0] - stamp.width) // 2
+            y = box[1] + (box[3] - box[1] - stamp.height) // 2
+            tag_logo(stamp, ctx, layer.logo_slot)
+            _stamp(canvas, stamp, (x, y, x + stamp.width, y + stamp.height), opacity, shadow, sampling)
         else:
             stamp = layer.bitmap
             if layer.text_node is not None and _luma(canvas, box) < 128:
@@ -314,6 +318,7 @@ def draw_timestamp(source, ctx):
     renderer().process(ctx)
     text = ctx.get_buffer()[0]
     position = int(source.width * .93) - text.width, int(source.height * .95)
-    source.paste(text, position, mask=text)
+    source = source.convert('RGBA')
+    source.alpha_composite(text.convert('RGBA'), position)
     transfer_slots(text, source, position)
     return source

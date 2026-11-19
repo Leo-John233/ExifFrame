@@ -19,7 +19,7 @@ from PIL import Image, ImageColor, ImageOps
 from core.brand_glyphs import validate_policy
 from core.configs import logos_dir, templates_dir
 from core import CONFIG_PATH
-from core.image_cache import check_cancelled, photo_dimensions, photo_draft, photo_proxy, resized_logo
+from core.image_cache import check_cancelled, photo_dimensions, photo_draft, photo_proxy
 from core.runtime_paths import config_path, resource_path
 from core.jinja2renders import auto_logo, vh, vw
 from core.util import find_exiftool, get_exif
@@ -352,6 +352,8 @@ def _selected_logo(choice, metadata):
     """将品牌或自定义图片解析为当前照片的标识"""
     path = Path(choice).expanduser()
     if path.is_absolute() or path.suffix.lower() in {'.png', '.jpg', '.jpeg'}:
+        from processor.logo_layer import resolve_logo_path
+        path = resolve_logo_path(path)
         if not path.is_file():
             raise ValueError('所选标识图片不存在')
         return str(path.resolve()).replace('\\', '/')
@@ -383,7 +385,8 @@ def _configured_logo(context, brand=None):
 
 def _uses_logo(nodes, logo):
     """识别模板已接入所选标识的路径，避免重复叠加"""
-    needle = str(logo).replace('\\', '/').casefold()
+    from processor.logo_layer import resolve_logo_path
+    needle = resolve_logo_path(logo).as_posix().casefold()
     if isinstance(nodes, list):
         return any(_uses_logo(item, logo) for item in nodes)
     if not isinstance(nodes, dict):
@@ -393,7 +396,7 @@ def _uses_logo(nodes, logo):
             continue
         if key in {'left_logo', 'right_logo', 'center_logo', 'path', 'buffer_path'}:
             paths = value if isinstance(value, list) else [value]
-            if any(isinstance(path, str) and needle in path.replace('\\', '/').casefold() for path in paths):
+            if any(isinstance(path, str) and path and resolve_logo_path(path).as_posix().casefold() == needle for path in paths):
                 return True
         if isinstance(value, (dict, list)) and _uses_logo(value, logo):
             return True
@@ -403,8 +406,12 @@ def _uses_logo(nodes, logo):
 def _overlay_logo(image, logo, *, collect_metadata=False):
     """为无标识槽位的版式添加右上角小标识"""
     bounds = (max(1, round(image.width * .08)), max(1, round(image.height * .08)))
-    badge = resized_logo(logo, bounds, contain=True)
+    from processor.logo_layer import layer_logo, background_luma
+    badge = layer_logo(logo, bounds)
     margin = max(1, round(min(image.size) * .02))
+    x = max(0, image.width - badge.width - margin)
+    lightness = background_luma(image, (x, margin, x + badge.width, margin + badge.height))
+    badge = layer_logo(logo, bounds, background=lightness)
     canvas = image.convert('RGBA')
     canvas.alpha_composite(badge, (max(0, image.width - badge.width - margin), margin))
     canvas.info.update(image.info)
@@ -480,7 +487,8 @@ def _configure_nodes(nodes, image, settings, metadata, source, preview=False, so
         paths = node.get('buffer_path')
         if not preview or not isinstance(paths, (list, tuple)) or not paths:
             return
-        resolved = [Path(path).resolve() for path in paths]
+        from processor.logo_layer import resolve_logo_path
+        resolved = [resolve_logo_path(path) for path in paths]
         if preview_inputs and all(path in preview_inputs for path in resolved):
             entries = [preview_inputs[path] for path in resolved]
             node.update(input_buffer=[item[0].copy() for item in entries], buffer_loaded=True,
@@ -655,7 +663,8 @@ def _preview_input_paths(nodes):
         elif isinstance(value, dict):
             paths = value.get('buffer_path') if value.get('processor_name') else None
             if isinstance(paths, (list, tuple)):
-                result.extend(Path(path).resolve() for path in paths)
+                from processor.logo_layer import resolve_logo_path
+                result.extend(resolve_logo_path(path) for path in paths)
             for key, child in value.items():
                 if key not in {'exif', 'metadata', 'metadata_overrides'} and isinstance(child, (dict, list)):
                     visit(child)
@@ -943,8 +952,9 @@ def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True, 
         complete_slots(nodes, result)
         rendered_slots = finish_slots(result, full_size)
         rendered_style = resolved_style(nodes, source_scale)
-        if not rendered_style.get('logo'):
-            rendered_style['logo'] = next((item.get('logo') for item in rendered_slots if item.get('logo')), None)
+        rendered_style['logo'] = next((item.get('logo') for item in rendered_slots
+                                      if item.get('logo') and item.get('visible') and item.get('bbox')),
+                                     rendered_style.get('logo'))
         result = _output_rgb(result, settings)
         if not full_resolution:
             max_side = 900 if interactive else 1800

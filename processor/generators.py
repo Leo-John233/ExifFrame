@@ -565,10 +565,14 @@ class MultiRichTextGenerator(Generator):
 
 class ImageLoader(Generator):
     def process(self, ctx: PipelineContext):
+        from processor.logo_layer import resolve_logo_path
+        def read_image(path):
+            with Image.open(resolve_logo_path(path)) as opened:
+                return opened.copy()
         if isinstance(ctx.get('path'), str):
-            ctx.update_buffer([Image.open(ctx.get('path'))]).success()
+            ctx.update_buffer([read_image(ctx.get('path'))]).success()
         elif isinstance(ctx.get('path'), list):
-            ctx.update_buffer([Image.open(path) for path in ctx.get('path')])
+            ctx.update_buffer([read_image(path) for path in ctx.get('path')])
 
     def name(self) -> str:
         return "image"

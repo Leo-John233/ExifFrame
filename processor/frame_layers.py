@@ -218,7 +218,7 @@ def legacy_base(source, ctx, footer_height, image_id=None):
     if cached is not None and _cache_identity(ctx, image_id) == identity:
         return transfer_slots(source, cached, (left, top), replace=True)
     canvas = Image.new('RGBA', size, color)
-    canvas.paste(source, (left, top), mask=source if source.mode == 'RGBA' else None)
+    canvas.alpha_composite(source.convert('RGBA'), (left, top))
     if key is not None and _cache_identity(ctx, image_id) == identity:
         cache_preview_image(key, canvas)
     return transfer_slots(source, canvas, (left, top), replace=True)

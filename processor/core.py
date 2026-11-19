@@ -71,7 +71,8 @@ class PipelineContext(MutableMapping):
 
     def get_buffer(self) -> List[Image]:
         if not self.get("buffer_loaded", False) and self.get("buffer_path"):
-            self.set("buffer", [ImageOps.exif_transpose(Image.open(path)) for path in self.get("buffer_path")])
+            from processor.logo_layer import resolve_logo_path
+            self.set("buffer", [ImageOps.exif_transpose(Image.open(resolve_logo_path(path))) for path in self.get("buffer_path")])
             self.set("buffer_loaded", True)
         return self.get("buffer", [])
 
