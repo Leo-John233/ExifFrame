@@ -22,7 +22,7 @@ from core.util import find_exiftool, get_exif
 from core.metadata import merge_overrides, metadata_key
 from core.geography import coordinate_degrees
 from core.template_render import compiled_template, _prepare_footer_calls
-from processor.core import start_process
+from processor.core import start_process, uses_frame_layers
 
 SUPPORTED_SUFFIXES = {'.jpg', '.jpeg', '.png', '.heic', '.heif'}
 SETTINGS_PATH = config_path('desktop.json')
@@ -402,6 +402,39 @@ def _overlay_logo(image, logo):
     return canvas
 
 
+def _legacy_auto_colors(node, background=None):
+    """旧底栏遇到自动文字色时使用对比色，不改动模板文件"""
+    from processor.core import _parse_color
+
+    try:
+        red, green, blue, *_ = _parse_color(background if background is not None else node.get('color', 'white'))
+        dark = red * .2126 + green * .7152 + blue * .0722 < 145
+    except (TypeError, ValueError):
+        dark = False
+    color = '#FAFAF8' if dark else '#202124'
+    for key in ('left_top', 'left_bottom', 'right_top', 'right_bottom'):
+        child = node.get(key)
+        if not isinstance(child, dict):
+            continue
+        inherited_auto = child.get('color') == 'auto'
+        if inherited_auto:
+            child['color'] = color
+        segments = child.get('text_segments')
+        if isinstance(segments, str):
+            if not inherited_auto and not re.search(r'"color"\s*:\s*"auto"', segments):
+                continue
+            try:
+                segments = json.loads(segments)
+            except ValueError:
+                continue
+            child['text_segments'] = segments
+        if isinstance(segments, list):
+            for segment in segments:
+                if isinstance(segment, dict) and (segment.get('color') == 'auto'
+                                                  or (inherited_auto and 'color' not in segment)):
+                    segment['color'] = color
+
+
 def _configure_nodes(nodes, image, settings, metadata, source, preview=False, source_scale=1.0,
                      preview_inputs=None):
     """为现有处理器注入尺寸与样式，同时复用内存中的预览图"""
@@ -451,6 +484,10 @@ def _configure_nodes(nodes, image, settings, metadata, source, preview=False, so
             return
         kind = node.get('processor_name')
         if kind == 'watermark':
+            frame_requested = uses_frame_layers(node)
+            if not frame_requested:
+                background = settings.background if not settings.use_template_styles and settings.background_override else None
+                _legacy_auto_colors(node, background)
             for key in ('left_logo', 'right_logo', 'center_logo'):
                 if key in node and node[key] in (None, '', 'None'):
                     node[key] = None
@@ -491,6 +528,10 @@ def _configure_nodes(nodes, image, settings, metadata, source, preview=False, so
                 node['watermark_scale'] = float(node.get('watermark_scale', 1)) * settings.font_scale
             if settings.background_override:
                 node['color'] = settings.background
+                if frame_requested:
+                    node['frame_color'] = settings.background
+            if settings.text_color_override and frame_requested:
+                node['text_color'] = settings.text_color
             # 居中标识模板同样支持自定义署名
             if settings.title and not node.get('left_top', {}).get('text'):
                 child = node.get('left_top', {})
@@ -498,6 +539,13 @@ def _configure_nodes(nodes, image, settings, metadata, source, preview=False, so
                     child.update(text=settings.title)
             if settings.subtitle and not node.get('left_bottom', {}).get('text'):
                 node.get('left_bottom', {}).update(text=settings.subtitle)
+        if kind == 'watermark_with_timestamp' and uses_frame_layers(node):
+            if settings.border_override:
+                node['bottom_margin'] = max(1, round(image.height * settings.border_percent / 100))
+            if settings.background_override:
+                node['frame_color'] = settings.background
+            if settings.text_color_override:
+                node['text_color'] = settings.text_color
         if kind in {'rich_text', 'multi_rich_text', 'watermark_with_timestamp'}:
             if settings.font_path:
                 node['font_path'] = settings.font_path
@@ -716,13 +764,39 @@ def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True, 
         width, height = int(nodes[-1].get('width') or 0), int(nodes[-1].get('height') or 0)
         if width > 0 and height > 0:
             full_size = (width, height)
+    frame_geometry_node = None
+    if preview and not full_resolution and source_scale != 1:
+        node = nodes[-1]
+        paths = node.get('buffer_path')
+        if paths:
+            direct = (isinstance(paths, (list, tuple)) and len(paths) == 1
+                      and Path(paths[0]).resolve() == source)
+        else:
+            direct = len(nodes) == 1
+            if not direct and isinstance(node.get('select'), str):
+                try:
+                    direct = json.loads(node['select']) == [0]
+                except (TypeError, ValueError):
+                    pass
+        if node.get('processor_name') in {'watermark', 'watermark_with_timestamp'} and direct and uses_frame_layers(node):
+            keys = ('frame_style', 'overlay_mode', 'frame_margin', 'frame_bottom', 'frame_radius',
+                    'frame_shadow', 'frame_blur', 'frame_brightness', 'frame_vignette',
+                    'frame_color', 'color', 'bottom_margin')
+            frame_geometry_node = {key: node[key] for key in keys if key in node}
     if image.size != original_size:
         _scale_nodes(nodes, source_scale)
     _configure_nodes(nodes, image, settings, metadata, source, preview=preview, source_scale=source_scale,
                      preview_inputs=preview_inputs)
+    if frame_geometry_node is not None:
+        from processor.frame_layers import frame_geometry
+        if not settings.use_template_styles and settings.border_override:
+            frame_geometry_node['bottom_margin'] = max(1, round(original_size[1] * settings.border_percent / 100))
+        full_size = frame_geometry(original_size, frame_geometry_node)['canvas_size']
     check_cancelled(cancelled)
     rendered_rows = _rendered_rows(nodes) if preview else None
-    result = start_process(nodes, initial_buffer=[image], preview_source_key=source_key, cancelled=cancelled)
+    image_id = ('file', str(source), info.st_mtime_ns, info.st_size)
+    result = start_process(nodes, initial_buffer=[image], preview_source_key=source_key,
+                           cancelled=cancelled, image_id=image_id)
     check_cancelled(cancelled)
     if not settings.use_template_styles and settings.show_logo and settings.logo_choice:
         logo = _selected_logo(settings.logo_choice, metadata)
