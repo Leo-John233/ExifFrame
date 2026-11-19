@@ -7,6 +7,7 @@ import unicodedata
 from bisect import bisect_left
 from collections import OrderedDict
 from contextlib import contextmanager
+from dataclasses import dataclass
 from functools import lru_cache
 from io import BytesIO
 from itertools import count
@@ -119,6 +120,39 @@ def load_font(font_path: str | None):
 def _font_token(font):
     """文字缓存记录实例代号，避免延长被淘汰字体的生命周期"""
     return (getattr(font, '_exifframe_token', font), getattr(font, 'size', None))
+
+
+def font_at_size(path, size):
+    """在独占字体槽位内复用字号变体"""
+    primary = load_font(path)
+    if size == BASE_FONT_SIZE:
+        return primary
+    key = (_font_token(primary), size)
+    state = _font_cache_state()
+    if not hasattr(state, 'variants'):
+        state.variants = OrderedDict()
+    cache = state.variants
+    if key not in cache:
+        variant = primary.font_variant(size=size) if hasattr(primary, 'font_variant') else primary
+        if variant is not primary:
+            variant._exifframe_token = ('variant', _font_token(primary), size)
+        if isinstance(getattr(primary, 'path', None), (str, Path)):
+            variant._exifframe_path = primary.path
+        cache[key] = variant
+        if len(cache) > 8:
+            cache.popitem(last=False)
+    cache.move_to_end(key)
+    return cache[key]
+
+
+@dataclass(frozen=True)
+class TextRun:
+    """共享基线上的一段文字和字体颜色"""
+
+    text: str
+    font: object
+    color: tuple
+    spacing_before: float = 0.0
 
 
 @lru_cache(maxsize=48)
@@ -386,3 +420,131 @@ def render_with_fallback(text, primary, load_font, color):
         image.alpha_composite(line, (0, top))
         top += line.height
     return image
+
+
+def _styled_line(runs, reference, tight):
+    """按字体连续区间计算字距，再按颜色绘制"""
+    ascent, descent = reference.getmetrics()
+    for run, _, _ in runs:
+        font_ascent, font_descent = run.font.getmetrics()
+        ascent, descent = max(ascent, font_ascent), max(descent, font_descent)
+
+    positions = []
+    cursor, index = 0.0, 0
+    while index < len(runs):
+        font = runs[index][0].font
+        cursor += runs[index][0].spacing_before
+        end = index
+        while (end < len(runs) and runs[end][0].font is font
+               and (end == index or not runs[end][0].spacing_before)):
+            end += 1
+        prefix = ''
+        for run, layout, stroke in runs[index:end]:
+            prefix += layout
+            position = cursor + font.getlength(prefix) - font.getlength(layout)
+            positions.append((position, run, layout, stroke))
+        cursor += font.getlength(prefix)
+        index = end
+
+    left, right, top = 0, max(1, math.ceil(cursor)), 0
+    bottom = 1 if tight else ascent + abs(descent)
+    for position, run, layout, stroke in positions:
+        box = run.font.getbbox(layout)
+        font_ascent = run.font.getmetrics()[0]
+        padding = max(0, stroke)
+        left = min(left, math.floor(position + box[0]) - padding)
+        right = max(right, math.ceil(position + box[2]) + padding)
+        top = min(top, ascent - font_ascent + box[1] - padding)
+        bottom = max(bottom, ascent - font_ascent + box[3] + padding)
+    image = Image.new('RGBA', (max(1, right - left), max(1, bottom - top)), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    for position, run, layout, stroke in positions:
+        origin = position - left, ascent - run.font.getmetrics()[0] - top
+        if stroke < 0 or run.text != layout:
+            layer = Image.new('RGBA', image.size, (0, 0, 0, 0))
+            ImageDraw.Draw(layer).text(origin, layout, font=run.font, fill=run.color,
+                                      stroke_width=max(0, stroke), stroke_fill=run.color)
+            alpha = layer.getchannel('A')
+            if stroke < 0:
+                alpha = alpha.filter(ImageFilter.MinFilter(1 - stroke * 2))
+            if run.text != layout:
+                alpha = _style_native_z(alpha, run.text, layout, run.font, origin)
+            layer.putalpha(alpha)
+            image.alpha_composite(layer)
+        else:
+            draw.text(origin, layout, font=run.font, fill=run.color,
+                      stroke_width=stroke, stroke_fill=run.color)
+    return image, ascent - top
+
+
+def render_styled_runs(runs, *, tight=False):
+    """渲染不同字体和颜色的连续文字，保持字偶调整与共同基线"""
+    if not runs:
+        raise ValueError('文字片段不能为空')
+    fonts = Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'Fonts'
+    candidates = [fonts / name for name in ('seguisym.ttf', 'cambria.ttc', 'seguiemj.ttf', 'msyh.ttc', 'arial.ttf')]
+    loaded, chosen, keys, weights = {}, {}, {}, {}
+    lines = [[]]
+    fallback_used = False
+    for run in runs:
+        first = True
+        for character in run.text:
+            if character == '\n':
+                lines.append([])
+                continue
+            spacing = run.spacing_before if first else 0.0
+            first = False
+            font = run.font
+            token = _font_token(font)
+            if token not in keys:
+                keys[token] = _font_key(font)
+            key = keys[token]
+            if not _invisible(character) and not _supports(key, ord(character)):
+                fallback_used = True
+                if character == 'ℤ' and _native_z(font):
+                    pass
+                else:
+                    selection = (_font_token(font), character)
+                    if selection not in chosen:
+                        chosen[selection] = font
+                        for path in candidates:
+                            if not path.is_file():
+                                continue
+                            candidate_key = (str(path), font.size)
+                            if candidate_key not in loaded:
+                                candidate = font_at_size(str(path), font.size)
+                                loaded[candidate_key] = candidate, _font_key(candidate)
+                            candidate, candidate_key = loaded[candidate_key]
+                            if _supports(candidate_key, ord(character)):
+                                chosen[selection] = candidate
+                                break
+                    font = chosen[selection]
+            if font is not run.font:
+                for item in (run.font, font):
+                    identity = _font_token(item)
+                    if identity not in weights:
+                        weights[identity] = _weight(item)
+                difference = weights[_font_token(run.font)] - weights[_font_token(font)]
+            else:
+                difference = 0
+            radius = round(font.size * min(abs(difference), 500) / 20000)
+            stroke = radius if difference > 0 else -radius
+            layout = 'Z' if character == 'ℤ' and _native_z(font) else character
+            current = lines[-1]
+            if (not spacing and current and current[-1][0].font is font and current[-1][0].color == run.color
+                    and current[-1][2] == stroke):
+                previous, previous_layout, _ = current[-1]
+                current[-1] = (TextRun(previous.text + character, font, run.color, previous.spacing_before),
+                               previous_layout + layout, stroke)
+            else:
+                current.append((TextRun(character, font, run.color, spacing), layout, stroke))
+    rendered = [_styled_line(line, runs[0].font, tight) for line in lines]
+    if len(rendered) == 1:
+        return rendered[0][0], rendered[0][1], fallback_used
+    image = Image.new('RGBA', (max(item.width for item, _ in rendered),
+                              sum(item.height for item, _ in rendered)), (0, 0, 0, 0))
+    top = 0
+    for line, _ in rendered:
+        image.alpha_composite(line, (0, top))
+        top += line.height
+    return image, rendered[0][1], fallback_used
