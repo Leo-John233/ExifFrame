@@ -133,7 +133,6 @@ class WorkspacePreview:
         if not self._interaction_active or key != self._interaction_key:
             return
         self._interaction_active = False
-        self._live_timer.stop()
         if self._interaction_dirty:
             self._settle_timer.start(120)
 
@@ -146,8 +145,7 @@ class WorkspacePreview:
     def _schedule_live_preview(self):
         if self._closing or self._exporting:
             return
-        if not self._draft_accepting or (self._settle_timer.isActive()
-                                        and self._interaction_key not in ('title', 'subtitle')):
+        if not self._draft_accepting:
             self._settle_timer.stop()
             self._interaction_epoch += 1
             self._invalidate_preview(keep_interaction=True)
@@ -156,6 +154,7 @@ class WorkspacePreview:
             self._draft_signature = None
         else:
             # 同一次交互只更新最新待处理值，不取消正在渲染的草图
+            self._settle_timer.stop()
             self._render_revision_id += 1
             self._hq_pending = self._hq_ready = False
             self._priority.hold(self)
@@ -166,13 +165,14 @@ class WorkspacePreview:
         self._queue_live_preview()
 
     def _queue_live_preview(self):
-        if not self._interaction_active or not self._pending or self._rendering or self._live_timer.isActive():
+        if (not (self._interaction_active or self._settle_timer.isActive()) or not self._pending
+                or self._rendering or self._live_timer.isActive()):
             return
         elapsed = (time.monotonic() - self._last_draft_started) * 1000
         self._live_timer.start(max(0, round(33 - elapsed)))
 
     def _render_live_preview(self):
-        if self._interaction_active and self._interaction_dirty:
+        if self._interaction_dirty and (self._interaction_active or self._settle_timer.isActive()):
             self._render_preview(interactive=True)
 
     def _finish_live_preview(self):
