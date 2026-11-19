@@ -288,7 +288,7 @@ def _source_identity(key):
 
 def uses_frame_layers(node):
     """仅显式声明画框或启用新前景功能时切换新引擎"""
-    return ('frame_style' in node or 'overlay_mode' in node or bool(node.get('palette_bar'))
+    return ('custom_frame' in node or 'frame_style' in node or 'overlay_mode' in node or bool(node.get('palette_bar'))
             or bool(node.get('adaptive_logo_invert')))
 
 
