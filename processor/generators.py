@@ -5,12 +5,14 @@ from collections import OrderedDict
 from abc import ABC
 from dataclasses import dataclass, asdict
 from enum import Enum
+from functools import wraps
 from pathlib import Path
 from typing import Optional, List
 
 import numpy as np
 from PIL import Image, ImageDraw
 
+from core.brand_glyphs import brand_glyph_policy, current_policy, node_glyph_policy, validate_policy
 from core.configs import fonts_dir
 from core.font_fallback import (BASE_FONT_SIZE, TextRun, _font_cache_state, _font_token, _weight,
                                 font_at_size, load_font, pooled_fonts, render_styled_runs,
@@ -63,7 +65,17 @@ def _style_input(value):
     return json.loads(value) if isinstance(value, str) else value
 
 
-def _styled_segments(node, segments, whole_rules, whole_chars):
+def _segment_glyph_policy(function):
+    @wraps(function)
+    def wrapper(segment, *args, **kwargs):
+        if segment.brand_glyph_policy is None:
+            return function(segment, *args, **kwargs)
+        with brand_glyph_policy(segment.brand_glyph_policy):
+            return function(segment, *args, **kwargs)
+    return wrapper
+
+
+def _styled_segments(node, segments, whole_rules, whole_chars, *, force_brand=False):
     """保持原有分段缩放及对齐，逐段绘制整行索引对应的样式"""
     from core.character_styles import resolve_character_styles
     from processor.core import start_process
@@ -87,9 +99,12 @@ def _styled_segments(node, segments, whole_rules, whole_chars):
             text=segment.get('text'), font_path=path, height=height,
             is_bold=segment.get('is_bold', node.get('is_bold', False)),
             color=segment.get('color', node.get('color', 'black')),
-            trim=segment.get('trim', node.get('trim', False)), char_styles=overrides or None))
+            trim=segment.get('trim', node.get('trim', False)), char_styles=overrides or None,
+            brand_glyph_policy=segment.get('brand_glyph_policy'),
+            _preserve_brand_advance=('ℤ' in displayed and (segment.get('brand_glyph_policy') or current_policy())
+                                     == 'geometric' and (displayed.startswith('ℤ') or displayed.endswith('ℤ')))))
         offset += len(displayed)
-    if not changed:
+    if not changed and not force_brand:
         return None
     spacing = int(node.get('text_spacing') or 0)
     groups = []
@@ -101,7 +116,8 @@ def _styled_segments(node, segments, whole_rules, whole_chars):
             previous_text = previous.text or ''
             compatible = (previous_text and location_typography(previous_text) is None
                           and previous.font_path == segment.font_path and previous.is_bold == segment.is_bold
-                          and previous.trim == segment.trim and _parse_color(previous.color)[3] == 255
+                          and previous.trim == segment.trim and previous.brand_glyph_policy == segment.brand_glyph_policy
+                          and _parse_color(previous.color)[3] == 255
                           and _parse_color(segment.color)[3] == 255)
         if compatible:
             groups[-1].append(segment)
@@ -109,7 +125,9 @@ def _styled_segments(node, segments, whole_rules, whole_chars):
             groups.append([segment])
     images = []
     for group in groups:
-        if len(group) == 1 or not any(segment.char_styles for segment in group):
+        group_brand = any('ℤ' in (segment.text or '') and
+                          (segment.brand_glyph_policy or current_policy()) == 'geometric' for segment in group)
+        if len(group) == 1 or not (group_brand or any(segment.char_styles for segment in group)):
             images.extend(RichTextGenerator.generate(segment) for segment in group)
             continue
         first = group[0]
@@ -127,7 +145,10 @@ def _styled_segments(node, segments, whole_rules, whole_chars):
                 index += 1
         combined = TextSegment(text=''.join(segment.text or '' for segment in group),
                                font_path=first.font_path, height=height, is_bold=first.is_bold,
-                               color=first.color, trim=first.trim, char_styles=merged or None)
+                               color=first.color, trim=first.trim, char_styles=merged or None,
+                               brand_glyph_policy=first.brand_glyph_policy,
+                               _preserve_brand_advance=(group_brand and
+                                   ((group[0].text or '').startswith('ℤ') or (group[-1].text or '').endswith('ℤ'))))
         images.append(RichTextGenerator.generate(combined))
     result = start_process([{'processor_name': 'concat', 'alignment': node.get('text_alignment'),
                              'spacing': spacing, 'save_buffer': False}],
@@ -135,19 +156,27 @@ def _styled_segments(node, segments, whole_rules, whole_chars):
     return result, 0
 
 
+@node_glyph_policy
 @pooled_fonts()
 def render_character_node(node, *, watermark=False):
     """把整行和片段的逐字样式合并为共享基线的文字图"""
-    if not node.get('char_styles') and not node.get('highlight_rules'):
+    preserve_brand = bool(node.get('_preserve_brand_advance') and current_policy() == 'geometric'
+                          and 'ℤ' in (node.get('text') or ''))
+    if not preserve_brand and not node.get('char_styles') and not node.get('highlight_rules'):
         raw = node.get('text_segments') or []
         if isinstance(raw, str):
-            if 'char_styles' not in raw and 'highlight_rules' not in raw:
+            if ('char_styles' not in raw and 'highlight_rules' not in raw
+                    and 'ℤ' not in raw and '\\u2124' not in raw.lower()):
                 return None
-        elif not any(segment.get('char_styles') or segment.get('highlight_rules') for segment in raw):
+        elif not any(segment.get('char_styles') or segment.get('highlight_rules') or 'ℤ' in (segment.get('text') or '')
+                     for segment in raw):
             return None
     from core.character_styles import resolve_character_styles
     segments = _rendered_segments(node)
-    if not (node.get('char_styles') or node.get('highlight_rules') or
+    brand_needed = preserve_brand or (node.get('processor_name') != 'rich_text' and any(
+        'ℤ' in displayed and (segment.get('brand_glyph_policy') or current_policy()) == 'geometric'
+        for segment, displayed in segments))
+    if not (brand_needed or node.get('char_styles') or node.get('highlight_rules') or
             any(segment.get('char_styles') or segment.get('highlight_rules') for segment, _ in segments)):
         return None
     text = ''.join(value for _, value in segments)
@@ -165,8 +194,8 @@ def render_character_node(node, *, watermark=False):
                     has_font = True
                     break
         if not has_font:
-            return _styled_segments(node, segments, whole_rules, whole_chars)
-    offset, runs, changed, fonts, weights = 0, [], False, {}, {}
+            return _styled_segments(node, segments, whole_rules, whole_chars, force_brand=brand_needed)
+    offset, runs, changed, fonts, weights = 0, [], brand_needed, {}, {}
     height = max(1, int(node.get('height', 100)))
     spacing = max(0, int(node.get('text_spacing') or 0))
     multiple = node.get('processor_name') != 'rich_text'
@@ -175,6 +204,9 @@ def render_character_node(node, *, watermark=False):
         if not displayed:
             continue
         original = segment.get('text') or ''
+        segment_policy = segment.get('brand_glyph_policy')
+        if segment_policy is not None:
+            validate_policy(segment_policy)
         bold = segment.get('is_bold', node.get('is_bold', False))
         base_path = segment.get('font_path') or segment.get('font') or node.get('font_path') or node.get('font')
         path, _, _ = location_text_font(original, base_path, bold)
@@ -203,18 +235,20 @@ def render_character_node(node, *, watermark=False):
                 fonts[key] = font_at_size(selected_path, size)
             font = fonts[key]
             gap = (spacing * BASE_FONT_SIZE / height if multiple and segment_index and index == 0 else 0)
-            if runs and runs[-1].font is font and runs[-1].color == selected_color and not gap:
+            if (runs and runs[-1].font is font and runs[-1].color == selected_color
+                    and runs[-1].brand_policy == segment_policy and not gap):
                 old = runs[-1]
-                runs[-1] = TextRun(old.text + character, font, selected_color, old.spacing_before)
+                runs[-1] = TextRun(old.text + character, font, selected_color, old.spacing_before, segment_policy)
             else:
-                runs.append(TextRun(character, font, selected_color, gap))
+                runs.append(TextRun(character, font, selected_color, gap, segment_policy))
         offset += len(displayed)
     if not changed:
         return None
     target = round(height * 1.13) if any_bold else height
     trim = bool(node.get('trim')) or any(segment.get('trim', False) for segment, _ in segments)
-    key = ('character_text', watermark, tuple((run.text, _font_token(run.font), run.color, run.spacing_before)
-                                              for run in runs), target, trim)
+    key = ('character_text', watermark, current_policy(),
+           tuple((run.text, _font_token(run.font), run.color, run.spacing_before, run.brand_policy)
+                 for run in runs), target, trim)
     state = _font_cache_state()
     if not hasattr(state, 'text_images'):
         state.text_images, state.text_bytes = OrderedDict(), 0
@@ -227,7 +261,9 @@ def render_character_node(node, *, watermark=False):
     if not watermark:
         from processor.core import start_process
         image = start_process([
-            {'processor_name': 'trim', 'trim_top': trim, 'trim_bottom': trim, 'save_buffer': False},
+            {'processor_name': 'trim', 'trim_top': trim, 'trim_bottom': trim,
+             'trim_left': not (preserve_brand and text.startswith('ℤ')),
+             'trim_right': not (preserve_brand and text.endswith('ℤ')), 'save_buffer': False},
             {'processor_name': 'resize', 'height': target, 'save_buffer': False},
         ], initial_buffer=[image])
         baseline = 0
@@ -252,6 +288,8 @@ class TextSegment:
     trim: bool = False
     char_styles: dict | None = None
     highlight_rules: list | None = None
+    brand_glyph_policy: str | None = None
+    _preserve_brand_advance: bool = False
 
     def get(self, key: str, default=None):
         return getattr(self, key, default)
@@ -267,6 +305,8 @@ class TextSegment:
             trim=data.get("trim", False),
             char_styles=data.get("char_styles"),
             highlight_rules=data.get("highlight_rules"),
+            brand_glyph_policy=data.get("brand_glyph_policy"),
+            _preserve_brand_advance=data.get("_preserve_brand_advance", False),
         )
 
     @staticmethod
@@ -401,9 +441,10 @@ class GradientColorGenerator(Generator):
 
 class RichTextGenerator(Generator):
     @staticmethod
+    @_segment_glyph_policy
     @pooled_fonts()
     def generate(segment: TextSegment) -> Image.Image:
-        if segment.char_styles or segment.highlight_rules:
+        if segment.char_styles or segment.highlight_rules or segment._preserve_brand_advance:
             styled = render_character_node({'processor_name': 'rich_text', **asdict(segment)})
             if styled is not None:
                 return styled[0]
@@ -411,7 +452,7 @@ class RichTextGenerator(Generator):
         path, text, _ = location_text_font(text, segment.font_path, segment.is_bold)
         font = load_font(path)
         color = _parse_color(segment.color)
-        key = (_font_token(font), text, segment.height, segment.is_bold, color, segment.trim)
+        key = (_font_token(font), text, segment.height, segment.is_bold, color, segment.trim, current_policy())
         state = _font_cache_state()
         if not hasattr(state, 'text_images'):
             state.text_images = OrderedDict()
@@ -423,13 +464,15 @@ class RichTextGenerator(Generator):
 
         # 普通文字保持原有绘制方式，缺字时继续执行字体回退
         metrics = font.getmetrics()
-        image = render_with_fallback(text, font, load_font, color)
-        can_cache = image is None
-        if can_cache:
-            bbox = font.getbbox(text)
+        drawing = text.replace('ℤ', 'Z') if current_policy() == 'plain_z' else text
+        image = render_with_fallback(drawing, font, load_font, color)
+        primary_font = image is None
+        can_cache = primary_font or image.info.get('_font_fallback_used') is False
+        if primary_font:
+            bbox = font.getbbox(drawing)
             image = Image.new('RGBA', (int(bbox[2] - bbox[0]), metrics[0] + abs(metrics[1])), (0, 0, 0, 0))
             draw = ImageDraw.Draw(image)
-            draw.text((0, 0), text, font=font, fill=color)
+            draw.text((0, 0), drawing, font=font, fill=color)
 
         pipeline = [
             {
@@ -457,7 +500,16 @@ class RichTextGenerator(Generator):
         return result
 
     def process(self, ctx: PipelineContext):
-        img = RichTextGenerator.generate(TextSegment.from_dict(ctx))
+        segment = TextSegment.from_dict(ctx)
+        if ctx.get('_interactive_preview'):
+            # 字号连续变化时复用同一份已裁边字图，仅缩放草图贴片
+            height = max(1, int(segment.height * (1.13 if segment.is_bold else 1)))
+            segment.height = 96
+            sample = self.generate(segment)
+            width = max(1, round(sample.width * height / sample.height))
+            img = sample.resize((width, height), Image.Resampling.BILINEAR)
+        else:
+            img = self.generate(segment)
         ctx.update_buffer([img]).save_buffer(self.name()).success()
 
     def name(self) -> str:
@@ -484,6 +536,7 @@ class MultiRichTextGenerator(Generator):
             segment.height = height
             context = PipelineContext(asdict(segment))
             context.set("save_buffer", False)
+            context.set('_interactive_preview', ctx.get('_interactive_preview', False))
             RichTextGenerator().process(context)
             text_images.extend(context.get_buffer())
 
