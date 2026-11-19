@@ -1,6 +1,7 @@
 """定位程序资源并保存单文件版的可编辑配置"""
 
 import errno
+import hashlib
 import json
 import os
 import re
@@ -114,6 +115,72 @@ def _copy_seed_file(source: Path, target: Path, transform=None) -> None:
             temporary.unlink(missing_ok=True)
 
 
+# 已随旧版分发的字节签名，仅用于一次性升级完全未改动的标识
+_FACTORY_LOGOS_1 = {
+    'apple.png': (64742, '6d79f9ad5e269860acc5689f517ab7cd0afc904823278f597e36f96857abab54'),
+    'canon.png': (112450, '43dd5f6bd7acddc4d484e51d0ed335c63afa678cac72d1cc3443a2b7205cd86c'),
+    'default.png': (3470, 'cb3d86476e22db486484299d3b7f89435dcb109ea0e59b0ebb8278bad93c8816'),
+    'DJI.jpg': (14199, 'e9190a733bf42ad6fd1449771308b5309e8a81eea7330cf897e5adb8c4fdce85'),
+    'fujifilm.png': (46672, 'ac79d0e224ac88a6d8d6c49cf3296b9423a7630549911d20a100e3113d6c1618'),
+    'hasselblad.png': (273148, '3a3b0662d20538cae7d41d3f237e8b2b9289e6a4346453b9dc93a7cdbcc86287'),
+    'leica_logo.png': (156809, 'b487ec61f1ac8b29170c601130a1d615d5e3d10c7cfbad7a5e716d02a2324082'),
+    'nikon.png': (263898, '16a13a565d630ff28a3c7903f34abe3c7199bd0364ab69a9155e6d168d52706f'),
+    'olympus_blue_gold.png': (73567, 'c1c983257b1bf671d0aeb6added72476206e446d8981c80075ba2ed798f4d6d5'),
+    'olympus_white_gold.png': (34761, '17c3a37b3f8ab4593173adaacf4bbb9e7259ec63544d4f1a3abceb30fa94f3aa'),
+    'panasonic.png': (49301, '4b044cfd8d0c6b458770df453431aaa99ad7c572845173e039dc736fc18fa10a'),
+    'panasonic2.png': (84578, 'c19a41c5bb932a40d44e278141edb61a94e249d0ff4448ae1048f77f70171ff5'),
+    'pentax.png': (52302, '6dc8d3c211680948b03175a72144b0e9171cca6c26d272596f5fbcb0a921c04c'),
+    'ricoh.png': (48397, '8f20bf3ceedac3d4e01f735d054f2a97a1a3a607e0df6c046b808d2830313723'),
+    'sony.png': (85053, '38fd29b5efa86cb71820d754aac121da48a63733dd822520d945a2c45aa18643'),
+    'sony_dark.png': (23660, 'f49c78b8572030d2f93784ee831815f9b38061a09ac253a831e15f08bdad50eb'),
+    'xmage.png': (283512, '8632838d87c2023a3d75df10ec983732f1b09e683c92375b30a1c766558dc52f'),
+}
+
+
+def _upgrade_factory_logo(target, replacement, size, digest):
+    if (not replacement.is_file() or target.is_symlink() or not target.is_file()
+            or target.stat().st_size != size):
+        return
+    with target.open('rb') as stream:
+        if hashlib.sha256(stream.read()).hexdigest() != digest:
+            return
+    if target.suffix.lower() == '.jpg':
+        # 新 PNG 先就位；已有自定义 PNG 始终保留
+        new_target = target.with_suffix('.png')
+        if new_target.exists() and (not new_target.is_file() or new_target.is_symlink()):
+            return
+        _copy_seed_file(replacement, new_target)
+        target.unlink()
+        return
+    temporary = None
+    try:
+        with replacement.open('rb') as source, NamedTemporaryFile(
+            dir=target.parent, prefix='.logo-', suffix='.tmp', delete=False
+        ) as out:
+            temporary = Path(out.name)
+            shutil.copyfileobj(source, out)
+        temporary.replace(target)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _upgrade_factory_logos(config, bundled):
+    marker = config / '.transparent-logos-v1'
+    folder = config / 'logos'
+    if marker.is_file() or folder.resolve().parent != config.resolve():
+        return
+    complete = True
+    for name, (size, digest) in _FACTORY_LOGOS_1.items():
+        try:
+            _upgrade_factory_logo(folder / name, bundled / Path(name).with_suffix('.png').name, size, digest)
+        except PermissionError:
+            # 被查看器占用的素材可继续使用，下次启动再升级
+            complete = False
+    if complete:
+        marker.touch()
+
+
 def _legacy_absolute(value: str, root: Path) -> str:
     """将旧工作目录中的相对照片路径绑定到原程序位置"""
     if not value.strip():
@@ -201,6 +268,7 @@ def initialize_user_config(migrate_legacy: bool = True) -> None:
                     if item.is_file():
                         _copy_seed_file(item, target / item.relative_to(source))
             marker.touch(exist_ok=True)
+        _upgrade_factory_logos(target, resource_path('config/logos'))
         # 升级时只补一次新增模板，后续保留用户删除
         style_marker = target / _STYLE_PACK_MARKER
         if not style_marker.is_file():
