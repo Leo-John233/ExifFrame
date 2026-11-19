@@ -6,6 +6,7 @@ import ctypes
 import hashlib
 import os
 import re
+import stat
 from concurrent.futures import CancelledError, FIRST_COMPLETED, ThreadPoolExecutor, wait
 from ctypes import wintypes
 from dataclasses import replace
@@ -18,7 +19,7 @@ from PySide6.QtGui import QImage
 
 from core.desktop_service import SUPPORTED_SUFFIXES, export_photo, read_template, render_photo
 from core.image_cache import photo_proxy, photo_thumbnail
-from studio.canvas import set_image_size
+from studio.canvas import image_size, set_image_size
 
 
 # 仅为已检查内存规模的内置源码启用双路，模板变化后需重新核验
@@ -145,6 +146,8 @@ class WorkerSignals(QObject):
     error = Signal(str, int, str)
     finished = Signal(str, int)
     item = Signal(int, object)
+    batch = Signal(int, object)
+    dimensions = Signal(str, int, object)
     progress = Signal(int, int, str)
     summary = Signal(object)
 
@@ -152,12 +155,16 @@ class WorkerSignals(QObject):
 class ImageTask(QRunnable):
     """每项任务拥有取消标记且只在安全的单张边界停止"""
 
-    def __init__(self, kind: str, token: int, *, paths=(), settings=None, output=None, full_resolution=False):
+    def __init__(self, kind: str, token: int, *, paths=(), settings=None, output=None, full_resolution=False,
+                 batch_size=1, pause=None, io_lock=None):
         super().__init__()
         self.kind, self.token = kind, token
         self.paths, self.settings, self.output = tuple(paths), settings, output
         self.full_resolution = full_resolution
         self.cancel = Event()
+        self.pause = pause if pause is not None else Event()
+        self.io_lock = io_lock
+        self.batch_size = max(1, min(64, int(batch_size)))
         self.signals = WorkerSignals()
 
     def run(self):
@@ -166,16 +173,23 @@ class ImageTask(QRunnable):
                 return
             if self.kind in ("import", "output"):
                 result = self._import()
+            elif self.kind == 'thumbnail':
+                result = self._thumbnails()
             elif self.kind == "export":
                 result = self._export()
             else:
+                source_size = None
                 if self.kind in ("original", "comparison"):
                     result = original_image(self.paths[0], full_resolution=self.full_resolution,
                                             cancelled=self.cancel.is_set)
+                    source_size = image_size(result)
                 else:
                     photo = render_photo(self.paths[0], self.settings, preview=True,
                                          full_resolution=self.full_resolution, cancelled=self.cancel.is_set)
+                    source_size = photo.info.get('preview_source_size')
                     result = qt_image(photo)
+                if source_size and not self.cancel.is_set():
+                    self.signals.dimensions.emit(self.kind, self.token, (Path(self.paths[0]).resolve(), *source_size))
             if not self.cancel.is_set() or self.kind == "export":
                 self.signals.result.emit(self.kind, self.token, result)
         except CancelledError:
@@ -186,50 +200,150 @@ class ImageTask(QRunnable):
         finally:
             self.signals.finished.emit(self.kind, self.token)
 
+    def _ready(self):
+        """暂停期间仍响应取消"""
+        while self.pause.is_set():
+            if self.cancel.wait(.025):
+                return False
+        return not self.cancel.is_set()
+
+    def _acquire_io(self):
+        """只在非暂停状态持有低优先级磁盘锁"""
+        while self._ready():
+            if self.io_lock is None:
+                return True
+            if self.io_lock.acquire(timeout=.025):
+                if self.cancel.is_set() or self.pause.is_set():
+                    self.io_lock.release()
+                    continue
+                return True
+        return False
+
+    def _release_io(self):
+        if self.io_lock is not None:
+            self.io_lock.release()
+
     def _import(self):
-        errors, seen, added = [], set(), 0
+        """先流式提交文件路径，缩略图由可见项任务另行读取"""
+        errors, seen, added, pending = [], set(), 0, []
+
+        def flush():
+            if pending:
+                self.signals.batch.emit(self.token, tuple(pending))
+                self.signals.progress.emit(added, 0, pending[-1][0].name)
+                pending.clear()
+
         for root in self.paths:
-            # 目录扫描也留在后台且不跟随目录符号链接
-            candidates = self._walk(root) if root.is_dir() else (root,)
-            for path in candidates:
-                if self.cancel.is_set():
-                    return errors
-                if path.suffix.lower() not in SUPPORTED_SUFFIXES:
-                    continue
-                identity = os.path.normcase(str(path.resolve()))
-                if identity in seen:
-                    continue
-                seen.add(identity)
+            if not self._acquire_io():
+                return errors
+            try:
+                # 目录扫描不跟随目录符号链接
+                candidates = iter(self._walk(root) if root.is_dir() else (root,))
+            finally:
+                self._release_io()
+
+            def stop():
+                close = getattr(candidates, 'close', None)
+                if close is not None:
+                    close()
+                return errors
+
+            while True:
+                if not self._acquire_io():
+                    return stop()
+                path, resolved = None, None
                 try:
-                    if self.kind == 'import':
-                        photo, (width, height), _ = photo_proxy(path, cancelled=self.cancel.is_set)
-                        photo.thumbnail((144, 112), Image.Resampling.LANCZOS)
-                    else:
-                        photo, width, height = photo_thumbnail(path)
-                    thumb = qt_image(photo)
-                    if self.cancel.is_set():
-                        return errors
-                    self.signals.item.emit(self.token, (path.resolve(), thumb, width, height))
-                    added += 1
-                    self.signals.progress.emit(added, 0, path.name)
-                except CancelledError:
-                    return errors
-                except Exception as exc:
-                    errors.append(f"{path.name}：{exc}")
+                    try:
+                        path = next(candidates)
+                    except StopIteration:
+                        break
+                    if path.suffix.lower() not in SUPPORTED_SUFFIXES:
+                        continue
+                    resolved = path.resolve(strict=True)
+                    if not stat.S_ISREG(resolved.stat().st_mode):
+                        continue
+                    identity = os.path.normcase(str(resolved))
+                    if identity in seen:
+                        continue
+                    seen.add(identity)
+                except (OSError, ValueError) as exc:
+                    errors.append(f"{path.name if path else root.name}：{exc}")
+                    continue
+                finally:
+                    self._release_io()
+                if self.cancel.is_set():
+                    return stop()
+                added += 1
+                item = (resolved, None, 0, 0)
+                if added == 1 or self.batch_size == 1:
+                    self.signals.item.emit(self.token, item)
+                    self.signals.progress.emit(added, 0, resolved.name)
+                else:
+                    pending.append(item)
+                    if len(pending) >= self.batch_size:
+                        flush()
+                        # 避免连续批次挤占界面与可见项读取
+                        if self.cancel.wait(.005):
+                            return stop()
+        if not self.cancel.is_set():
+            flush()
+        return errors
+
+    def _thumbnails(self):
+        """仅解码当前可见的照片并返回文件版本"""
+        errors = []
+        for path in self.paths:
+            if not self._acquire_io():
+                return errors
+            try:
+                source = Path(path).resolve(strict=True)
+                info = source.stat()
+                signature = info.st_mtime_ns, info.st_size
+                photo, width, height = photo_thumbnail(source, cancelled=self.cancel.is_set)
+                info = source.stat()
+                if signature != (info.st_mtime_ns, info.st_size):
+                    raise OSError('照片在读取期间发生变化，请重试')
+            except CancelledError:
+                return errors
+            except (OSError, ValueError) as exc:
+                errors.append(f"{Path(path).name}：{exc}")
+                continue
+            finally:
+                self._release_io()
+            if not self._ready():
+                return errors
+            image = qt_image(photo)
+            if self.cancel.is_set():
+                return errors
+            self.signals.item.emit(self.token, (source, image, width, height, signature))
         return errors
 
     def _walk(self, root):
         # 输入扫描排除位于其下的输出目录以免循环处理导出结果
         excluded = None
         if self.kind == "import" and self.settings and self.settings.output_dir:
-            excluded = Path(self.settings.output_dir).resolve()
-        for folder, directories, names in os.walk(root):
-            if self.cancel.is_set():
-                return
-            directories[:] = sorted(name for name in directories
-                                    if not excluded or (Path(folder) / name).resolve() != excluded)
-            for name in sorted(names):
-                yield Path(folder) / name
+            excluded = os.path.normcase(str(Path(self.settings.output_dir).resolve()))
+        pending = [Path(root).resolve()]
+        while pending and not self.cancel.is_set():
+            folder = pending.pop()
+            # 空目录也要给调用方留出暂停和取消的机会
+            yield folder
+            try:
+                with os.scandir(folder) as entries:
+                    for entry in entries:
+                        if self.cancel.is_set():
+                            return
+                        try:
+                            if entry.is_dir(follow_symlinks=False):
+                                key = os.path.normcase(os.path.abspath(entry.path))
+                                if key != excluded:
+                                    pending.append(Path(entry.path))
+                        except OSError:
+                            pass
+                        # 每个目录项都返回给调用方，以便暂停或取消
+                        yield Path(entry.path)
+            except OSError:
+                continue
 
     def _export(self):
         completed, errors, skipped = [], [], []

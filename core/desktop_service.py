@@ -613,6 +613,7 @@ def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True, 
         if not full_resolution:
             result.thumbnail((1800, 1800), Image.Resampling.LANCZOS)
         result.info['preview_full_size'] = full_size
+        result.info['preview_source_size'] = original_size
     if profile:
         result.info['icc_profile'] = profile
     return result
