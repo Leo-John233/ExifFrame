@@ -98,25 +98,21 @@ def _palette_sample(image):
 
 
 def dominant_palette(image, image_id=None):
-    """按真实文件版本复用五个主色，来源不明时不共享缓存"""
-    valid = valid_file_image_id(image_id)
-    if valid:
-        path = Path(image_id[1])
-    if valid:
-        with _palette_lock:
-            if image_id in _palette_cache:
-                _palette_cache.move_to_end(image_id)
-                return _palette_cache[image_id]
-        try:
-            with Image.open(path) as opened:
-                opened.draft('RGB', (160, 160))
-                opened.thumbnail((160, 160), Image.Resampling.LANCZOS)
-                result = _palette_sample(opened)
-            info = path.stat()
-            valid = (info.st_mtime_ns, info.st_size) == image_id[2:]
-        except (OSError, ValueError):
-            valid = False
-    if not valid:
+    """按原片版本复用五个主色，来源不明时只采样当前图"""
+    if not valid_file_image_id(image_id):
+        return _palette_sample(image)
+    with _palette_lock:
+        if image_id in _palette_cache:
+            _palette_cache.move_to_end(image_id)
+            return _palette_cache[image_id]
+    try:
+        with Image.open(image_id[1]) as opened:
+            opened.draft('RGB', (160, 160))
+            opened.thumbnail((160, 160), Image.Resampling.LANCZOS)
+            result = _palette_sample(opened)
+        if not valid_file_image_id(image_id):
+            return _palette_sample(image)
+    except (OSError, ValueError):
         return _palette_sample(image)
     with _palette_lock:
         _palette_cache[image_id] = result
@@ -238,6 +234,13 @@ def photo_proxy(path: Path, max_side=1800, cancelled=None):
     return image, full_size, encoded_size
 
 
+def contain_logo(image, bounds):
+    """将标识等比放入指定范围，极细的笔画至少占一像素"""
+    scale = min(bounds[0] / image.width, bounds[1] / image.height)
+    size = max(1, round(image.width * scale)), max(1, round(image.height * scale))
+    return image.resize(size, Image.Resampling.LANCZOS)
+
+
 def _logo(source, modified, file_size, bounds, contain):
     key = ('logo', source, modified, file_size, bounds, contain)
     cached = _preview_cache.get(key)
@@ -246,7 +249,7 @@ def _logo(source, modified, file_size, bounds, contain):
     with Image.open(source) as opened:
         image = opened.convert('RGBA')
     if contain:
-        result = ImageOps.contain(image, bounds, Image.Resampling.LANCZOS)
+        result = contain_logo(image, bounds)
     else:
         result = image.resize(bounds, Image.Resampling.LANCZOS)
     _preview_cache.put(key, result)
