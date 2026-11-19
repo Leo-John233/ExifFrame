@@ -5,11 +5,102 @@ import os
 import struct
 import unicodedata
 from bisect import bisect_left
+from collections import OrderedDict
+from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
+from queue import LifoQueue
+from threading import local
+from types import SimpleNamespace
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
+
+from core.configs import fonts_dir
+
+
+BASE_FONT_SIZE = 512
+_font_state = local()
+_font_pool = LifoQueue(maxsize=2)
+for _slot in range(2):
+    _font_pool.put(SimpleNamespace(slot=_slot, variants=OrderedDict(),
+                                   text_images=OrderedDict(), text_bytes=0))
+
+
+def _font_cache_state():
+    """独占池内字体，兼容直接调用加载函数"""
+    return getattr(_font_state, 'active', _font_state)
+
+
+@contextmanager
+def pooled_fonts():
+    """在一次文字渲染期间独占字体槽位"""
+    if getattr(_font_state, 'active', None) is not None:
+        yield
+        return
+    state = _font_pool.get()
+    _font_state.active = state
+    try:
+        yield
+    finally:
+        del _font_state.active
+        _font_pool.put(state)
+
+
+def _load_font(font_path):
+    """沿用原字体加载与回退顺序"""
+    try:
+        if font_path:
+            font_file = Path(font_path)
+            if not font_file.is_absolute():
+                font_file = fonts_dir / font_path
+            return ImageFont.truetype(str(font_file), BASE_FONT_SIZE)
+        for fallback in (fonts_dir / 'AlibabaPuHuiTi-2-45-Light.otf', 'arial.ttf', 'Arial.ttf', 'DejaVuSans.ttf'):
+            try:
+                return ImageFont.truetype(fallback, BASE_FONT_SIZE)
+            except OSError:
+                continue
+        return ImageFont.load_default()
+    except OSError:
+        return ImageFont.load_default()
+
+
+@lru_cache(maxsize=16)
+def _pooled_font(slot, font_path, candidate, version):
+    """按槽位及字体文件版本缓存独立的字体实例"""
+    return _load_font(font_path)
+
+
+def load_font(font_path: str | None):
+    """槽位独占字体实例，直接调用时使用线程本地缓存"""
+    candidate = Path(font_path) if font_path else fonts_dir / 'AlibabaPuHuiTi-2-45-Light.otf'
+    if font_path and not candidate.is_absolute():
+        candidate = fonts_dir / candidate
+    try:
+        info = candidate.stat()
+        version = (info.st_mtime_ns, info.st_size)
+    except OSError:
+        version = None
+    path = str(font_path) if font_path else None
+    active = getattr(_font_state, 'active', None)
+    if active is not None:
+        return _pooled_font(active.slot, path, str(candidate), version)
+    if not hasattr(_font_state, 'fonts'):
+        _font_state.fonts = OrderedDict()
+    cache = _font_state.fonts
+    key = (path, str(candidate), version)
+    if key not in cache:
+        cache[key] = _load_font(path)
+        if len(cache) > 8:
+            cache.popitem(last=False)
+    cache.move_to_end(key)
+    return cache[key]
+
+
+def _font_token(font):
+    """文字缓存记录字体版本，避免延长被淘汰字体的生命周期"""
+    key = _font_key(font)
+    return (key if key is not None else font, getattr(font, 'size', None))
 
 
 @lru_cache(maxsize=48)
@@ -79,7 +170,7 @@ def _cmaps(path, index, modified, size):
 def _font_key(font):
     """将字体文件版本纳入缓存，替换字体后自动刷新"""
     try:
-        path = Path(font.path).resolve()
+        path = Path(getattr(font, '_exifframe_path', font.path)).resolve()
         info = path.stat()
         return str(path), getattr(font, 'index', 0), info.st_mtime_ns, info.st_size
     except (AttributeError, TypeError, OSError):

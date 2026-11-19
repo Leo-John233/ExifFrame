@@ -3,36 +3,41 @@
 import json
 import math
 from collections import OrderedDict
-from threading import local
+from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageOps
 
-from core.font_fallback import _font_key, _native_z, _supports, _weight, render_with_fallback
+from core.font_fallback import (_font_cache_state, _font_key, _font_token, _native_z, _supports,
+                                _weight, load_font, pooled_fonts, render_with_fallback)
 from processor.core import _parse_color
-from processor.generators import _font_state, load_font, location_text_font
+from processor.generators import location_text_font
 from processor.types import Alignment
 
 
 _NORMAL_HEIGHT = 1000
-_FONT_CACHE = local()
 _TEXT_LIMIT = 16 * 1024 * 1024
 
 
 def _font_at_size(path, size):
-    """按字体文件版本和工作线程复用对应字号"""
+    """在独占槽位内复用对应字号"""
     primary = load_font(path)
-    key = (primary, size)
-    if not hasattr(_FONT_CACHE, 'variants'):
-        _FONT_CACHE.variants = OrderedDict()
-    cache = _FONT_CACHE.variants
+    key = (_font_token(primary), size)
+    state = _font_cache_state()
+    if not hasattr(state, 'variants'):
+        state.variants = OrderedDict()
+    cache = state.variants
     if key not in cache:
-        cache[key] = primary.font_variant(size=size) if hasattr(primary, 'font_variant') else primary
-        if len(cache) > 32:
+        variant = primary.font_variant(size=size) if hasattr(primary, 'font_variant') else primary
+        if isinstance(getattr(primary, 'path', None), (str, Path)):
+            variant._exifframe_path = primary.path
+        cache[key] = variant
+        if len(cache) > 8:
             cache.popitem(last=False)
     cache.move_to_end(key)
     return cache[key]
 
 
+@pooled_fonts()
 def _segment_image(segment):
     """按旧版字形边界生成单个文字片段"""
     original = segment.get('text') or '   '
@@ -43,11 +48,14 @@ def _segment_image(segment):
     original_font = _font_at_size(None, size) if location else None
     baseline = original_font.getmetrics()[0] if original_font is not None else font.getmetrics()[0]
     color = _parse_color(segment.get('color', 'black'))
-    key = ('watermark_1521', font, text, color, original_font, original if original_font is not None else None)
-    if not hasattr(_font_state, 'text_images'):
-        _font_state.text_images = OrderedDict()
-        _font_state.text_bytes = 0
-    cache = _font_state.text_images
+    key = ('watermark_1521', _font_token(font), text, color,
+           _font_token(original_font) if original_font is not None else None,
+           original if original_font is not None else None)
+    state = _font_cache_state()
+    if not hasattr(state, 'text_images'):
+        state.text_images = OrderedDict()
+        state.text_bytes = 0
+    cache = state.text_images
     if key in cache:
         cache.move_to_end(key)
         return cache[key][0].copy(), baseline
@@ -80,11 +88,11 @@ def _segment_image(segment):
         image = frame
     cost = image.width * image.height * 4 + len(text) * 4
     if can_cache and cost <= _TEXT_LIMIT:
-        while cache and (_font_state.text_bytes + cost > _TEXT_LIMIT or len(cache) >= 64):
+        while cache and (state.text_bytes + cost > _TEXT_LIMIT or len(cache) >= 64):
             _, (_, old_cost) = cache.popitem(last=False)
-            _font_state.text_bytes -= old_cost
+            state.text_bytes -= old_cost
         cache[key] = (image.copy(), cost)
-        _font_state.text_bytes += cost
+        state.text_bytes += cost
     return image, baseline
 
 

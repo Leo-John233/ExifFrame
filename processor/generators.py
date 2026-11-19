@@ -2,7 +2,6 @@ import os.path
 import json
 import sys
 from collections import OrderedDict
-from threading import local
 from abc import ABC
 from dataclasses import dataclass, asdict
 from enum import Enum
@@ -10,64 +9,13 @@ from pathlib import Path
 from typing import Optional, List
 
 import numpy as np
-from PIL import ImageFont, Image, ImageDraw
+from PIL import Image, ImageDraw
 
 from core.configs import fonts_dir
-from core.font_fallback import render_with_fallback
+from core.font_fallback import (_font_cache_state, _font_token, load_font,
+                                pooled_fonts, render_with_fallback)
 from core.geography import location_typography
 from processor.core import PipelineContext, ImageProcessor, Direction, _parse_color
-
-BASE_FONT_SIZE = 512
-
-
-_font_state = local()
-
-
-def load_font(font_path: str):
-    """同一工作线程复用字体，避免并发共享字体对象"""
-    candidate = Path(font_path) if font_path else fonts_dir / 'AlibabaPuHuiTi-2-45-Light.otf'
-    if font_path and not candidate.is_absolute():
-        candidate = fonts_dir / candidate
-    try:
-        info = candidate.stat()
-        version = (info.st_mtime_ns, info.st_size)
-    except OSError:
-        version = None
-    key = (str(font_path) if font_path else None, str(candidate), version, BASE_FONT_SIZE)
-    if not hasattr(_font_state, 'fonts'):
-        _font_state.fonts = OrderedDict()
-    cache = _font_state.fonts
-    if key not in cache:
-        cache[key] = _load_font(font_path)
-        if len(cache) > 16:
-            cache.popitem(last=False)
-    cache.move_to_end(key)
-    return cache[key]
-
-
-def _load_font(font_path: str):
-    """沿用原字体加载与回退顺序"""
-    try:
-        if font_path:
-            font_file = Path(font_path)
-
-            # 如果是相对路径，转换为基于执行文件所在目录的绝对路径
-            if not font_file.is_absolute():
-                font_file = fonts_dir / font_path
-
-            return ImageFont.truetype(str(font_file), BASE_FONT_SIZE)
-        else:
-            # 尝试常见系统字体
-            for fallback in [fonts_dir / "AlibabaPuHuiTi-2-45-Light.otf", "arial.ttf", "Arial.ttf", "DejaVuSans.ttf"]:
-                try:
-                    return ImageFont.truetype(fallback, BASE_FONT_SIZE)
-                except OSError:
-                    continue
-            else:
-                return ImageFont.load_default()
-    except OSError:
-        return ImageFont.load_default()
-
 
 def location_text_font(text: str, font_path: str | None, is_bold: bool):
     """仅在轻体字体可用且未指定字体时调整完整地理行"""
@@ -244,16 +192,18 @@ class GradientColorGenerator(Generator):
 
 class RichTextGenerator(Generator):
     @staticmethod
+    @pooled_fonts()
     def generate(segment: TextSegment) -> Image.Image:
         text = ' ' if not segment.text or segment.text == '' else segment.text
         path, text, _ = location_text_font(text, segment.font_path, segment.is_bold)
         font = load_font(path)
         color = _parse_color(segment.color)
-        key = (font, text, segment.height, segment.is_bold, color, segment.trim)
-        if not hasattr(_font_state, 'text_images'):
-            _font_state.text_images = OrderedDict()
-            _font_state.text_bytes = 0
-        cache = _font_state.text_images
+        key = (_font_token(font), text, segment.height, segment.is_bold, color, segment.trim)
+        state = _font_cache_state()
+        if not hasattr(state, 'text_images'):
+            state.text_images = OrderedDict()
+            state.text_bytes = 0
+        cache = state.text_images
         if key in cache:
             cache.move_to_end(key)
             return cache[key][0].copy()
@@ -283,14 +233,14 @@ class RichTextGenerator(Generator):
         ]
         from processor.core import start_process
         result = start_process(pipeline, input_path=None, output_path=None, initial_buffer=[image])
-        # 限制每个工作线程的像素缓存，字体回退结果不缓存以反映系统字体变化
+        # 限制每个槽位的像素缓存，字体回退结果不缓存以反映系统字体变化
         cost = result.width * result.height * len(result.getbands()) + len(text) * 4
         if can_cache and cost <= 16 * 1024 * 1024:
-            while cache and (_font_state.text_bytes + cost > 16 * 1024 * 1024 or len(cache) >= 64):
+            while cache and (state.text_bytes + cost > 16 * 1024 * 1024 or len(cache) >= 64):
                 _, (_, old_cost) = cache.popitem(last=False)
-                _font_state.text_bytes -= old_cost
+                state.text_bytes -= old_cost
             cache[key] = (result.copy(), cost)
-            _font_state.text_bytes += cost
+            state.text_bytes += cost
         return result
 
     def process(self, ctx: PipelineContext):
