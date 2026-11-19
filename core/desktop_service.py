@@ -13,6 +13,7 @@ from threading import Lock
 from jinja2 import Environment, pass_context
 from PIL import Image, ImageColor, ImageOps
 
+from core.brand_glyphs import validate_policy
 from core.configs import logos_dir, templates_dir
 from core import CONFIG_PATH
 from core.image_cache import check_cancelled, photo_dimensions, photo_proxy, resized_logo
@@ -72,6 +73,7 @@ class WatermarkSettings:
     input_files: tuple[str, ...] = ()
     protected_sources: tuple[str, ...] = ()
     metadata_overrides: dict[str, dict[str, str]] = field(default_factory=dict)
+    brand_glyph_policy: str = ''
 
 
 _PRESET_INFO = {
@@ -123,8 +125,10 @@ def _validate(settings: WatermarkSettings) -> None:
                  'background_override', 'text_color_override'):
         if not isinstance(getattr(settings, name), bool):
             raise ValueError('开关设置格式无效，请重新加载配置')
-    if settings.template_name not in {preset.name for preset in list_presets()}:
+    if not _template_path(settings.template_name).is_file():
         raise ValueError('水印模板不存在，请重新选择')
+    if settings.brand_glyph_policy != '':
+        validate_policy(settings.brand_glyph_policy)
     if not 0.5 <= settings.font_scale <= 2.0:
         raise ValueError('文字大小需在 50% 到 200% 之间')
     if not 6 <= settings.border_percent <= 30:
@@ -483,6 +487,15 @@ def _configure_nodes(nodes, image, settings, metadata, source, preview=False, so
         if not isinstance(node, dict):
             return
         kind = node.get('processor_name')
+        if settings.brand_glyph_policy and not settings.use_template_styles and kind in {
+                'watermark', 'watermark_with_timestamp', 'rich_text', 'multi_rich_text'}:
+            node['brand_glyph_policy'] = settings.brand_glyph_policy
+            segments = node.get('text_segments', [])
+            if isinstance(segments, str):
+                node['text_segments'] = segments = json.loads(segments)
+            for segment in segments:
+                if 'brand_glyph_policy' in segment:
+                    segment['brand_glyph_policy'] = settings.brand_glyph_policy
         if kind == 'watermark':
             frame_requested = uses_frame_layers(node)
             if not frame_requested:

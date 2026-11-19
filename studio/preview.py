@@ -297,7 +297,7 @@ class TemplatePreview(QWidget):
             for name in ('use_template_styles', 'title', 'subtitle', 'show_logo', 'font_scale',
                          'border_percent', 'border_override', 'background', 'text_color',
                          'background_override', 'text_color_override', 'logo_choice', 'font_path',
-                         'text_alignment', 'text_spacing', 'line_spacing'):
+                         'text_alignment', 'text_spacing', 'line_spacing', 'brand_glyph_policy'):
                 setattr(self._settings, name, getattr(settings, name))
         if self.settings != before:
             self._failed = False

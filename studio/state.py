@@ -19,7 +19,7 @@ STYLE_FIELDS = (
     'template_name', 'template_source', 'title', 'subtitle', 'show_logo', 'font_scale',
     'border_percent', 'border_override', 'background', 'text_color', 'background_override',
     'text_color_override', 'use_template_styles', 'logo_choice', 'font_path', 'text_alignment',
-    'text_spacing', 'line_spacing',
+    'text_spacing', 'line_spacing', 'brand_glyph_policy',
 )
 
 
