@@ -451,6 +451,7 @@ class FileBrowser(QWidget):
                             state = (Qt.CheckState.Unchecked if item.checkState(0) == Qt.CheckState.Checked
                                      else Qt.CheckState.Checked)
                             self._checkbox_press = watched
+                            self.user_navigated.emit(kind)
                             item.setCheckState(0, state)
                             return True
             if event.type() == QEvent.Type.MouseButtonPress:
