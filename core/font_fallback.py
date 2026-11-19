@@ -19,6 +19,7 @@ from types import SimpleNamespace
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
+from core.brand_glyphs import brand_glyph, current_policy, draw_brand_glyph
 from core.configs import fonts_dir
 
 
@@ -153,6 +154,7 @@ class TextRun:
     font: object
     color: tuple
     spacing_before: float = 0.0
+    brand_policy: str | None = None
 
 
 @lru_cache(maxsize=48)
@@ -342,7 +344,8 @@ def _render_line(runs, primary, color):
     cursor, left, right = 0.0, 0, 1
     weight = _weight(primary)
     for text, font in runs:
-        layout = text.replace('ℤ', 'Z') if 'ℤ' in text and _native_z(font) else text
+        layout = (text.replace('ℤ', 'Z') if current_policy() != 'system'
+                  and 'ℤ' in text and _native_z(font) else text)
         font_ascent, font_descent = font.getmetrics()
         ascent, descent = max(ascent, font_ascent), max(descent, font_descent)
         # 缺字字体只有常规体时，按原字重细化或加粗笔画
@@ -357,8 +360,8 @@ def _render_line(runs, primary, color):
         padding = max(0, stroke)
         left = min(left, math.floor(position + box[0]) - padding)
         right = max(right, math.ceil(position + box[2]) + padding)
-        top = min(top, ascent - font_ascent + box[1] - padding)
-        bottom = max(bottom, ascent - font_ascent + box[3] + padding)
+        top = min(top, math.floor(ascent - font_ascent + box[1] - padding))
+        bottom = max(bottom, math.ceil(ascent - font_ascent + box[3] + padding))
     right = max(right, math.ceil(cursor))
     image = Image.new('RGBA', (right - left, bottom - top), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
@@ -377,18 +380,26 @@ def _render_line(runs, primary, color):
             image.alpha_composite(layer)
         else:
             draw.text(origin, layout, font=font, fill=color, stroke_width=stroke, stroke_fill=color)
+    image.info['_fallback_baseline'] = ascent - top
     return image
 
 
 def render_with_fallback(text, primary, load_font, color):
     """仅在原字体缺字时绘制混合字体，普通文字沿用原有流程"""
+    if 'ℤ' in text and current_policy() == 'plain_z':
+        return render_with_fallback(text.replace('ℤ', 'Z'), primary, load_font, color)
+    if 'ℤ' in text and current_policy() == 'geometric':
+        image, baseline, fallback = render_styled_runs([TextRun(text, primary, color)])
+        image.info['_fallback_baseline'] = baseline
+        image.info['_font_fallback_used'] = fallback
+        return image
     primary_key = _font_key(primary)
     if all(_invisible(char) or _supports(primary_key, ord(char)) for char in text):
         return None
     fonts = Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'Fonts'
     candidates = [fonts / name for name in ('seguisym.ttf', 'cambria.ttc', 'seguiemj.ttf', 'msyh.ttc', 'arial.ttf')]
     loaded, chosen, lines = {}, {}, []
-    native_z = 'ℤ' in text and _native_z(primary)
+    native_z = current_policy() != 'system' and 'ℤ' in text and _native_z(primary)
     for line in text.split('\n'):
         runs = []
         for character in line:
@@ -419,6 +430,7 @@ def render_with_fallback(text, primary, load_font, color):
     for line in lines:
         image.alpha_composite(line, (0, top))
         top += line.height
+    image.info['_fallback_baseline'] = lines[0].info.get('_fallback_baseline', 0)
     return image
 
 
@@ -439,36 +451,46 @@ def _styled_line(runs, reference, tight):
                and (end == index or not runs[end][0].spacing_before)):
             end += 1
         prefix = ''
+        extra = 0.0
         for run, layout, stroke in runs[index:end]:
             prefix += layout
-            position = cursor + font.getlength(prefix) - font.getlength(layout)
+            position = cursor + font.getlength(prefix) - font.getlength(layout) + extra
             positions.append((position, run, layout, stroke))
-        cursor += font.getlength(prefix)
+            if (run.brand_policy or current_policy()) == 'geometric' and run.text == 'ℤ':
+                _, _, _, advance = brand_glyph(font)
+                extra += advance - font.getlength('Z')
+        cursor += font.getlength(prefix) + extra
         index = end
 
     left, right, top = 0, max(1, math.ceil(cursor)), 0
     bottom = 1 if tight else ascent + abs(descent)
     for position, run, layout, stroke in positions:
-        box = run.font.getbbox(layout)
+        if (run.brand_policy or current_policy()) == 'geometric' and run.text == 'ℤ':
+            glyph, gx, gy, _ = brand_glyph(run.font)
+            ink = glyph.getbbox() or (0, 0, glyph.width, glyph.height)
+            box = (gx + ink[0], gy + ink[1], gx + ink[2], gy + ink[3])
+        else:
+            box = run.font.getbbox(layout)
         font_ascent = run.font.getmetrics()[0]
         padding = max(0, stroke)
         left = min(left, math.floor(position + box[0]) - padding)
         right = max(right, math.ceil(position + box[2]) + padding)
-        top = min(top, ascent - font_ascent + box[1] - padding)
-        bottom = max(bottom, ascent - font_ascent + box[3] + padding)
+        top = min(top, math.floor(ascent - font_ascent + box[1] - padding))
+        bottom = max(bottom, math.ceil(ascent - font_ascent + box[3] + padding))
     image = Image.new('RGBA', (max(1, right - left), max(1, bottom - top)), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
     for position, run, layout, stroke in positions:
         origin = position - left, ascent - run.font.getmetrics()[0] - top
-        if stroke < 0 or run.text != layout:
+        policy = run.brand_policy or current_policy()
+        if policy == 'geometric' and run.text == 'ℤ':
+            draw_brand_glyph(image, run.font, origin, run.color)
+        elif stroke < 0:
             layer = Image.new('RGBA', image.size, (0, 0, 0, 0))
             ImageDraw.Draw(layer).text(origin, layout, font=run.font, fill=run.color,
                                       stroke_width=max(0, stroke), stroke_fill=run.color)
             alpha = layer.getchannel('A')
             if stroke < 0:
                 alpha = alpha.filter(ImageFilter.MinFilter(1 - stroke * 2))
-            if run.text != layout:
-                alpha = _style_native_z(alpha, run.text, layout, run.font, origin)
             layer.putalpha(alpha)
             image.alpha_composite(layer)
         else:
@@ -487,6 +509,7 @@ def render_styled_runs(runs, *, tight=False):
     lines = [[]]
     fallback_used = False
     for run in runs:
+        policy = run.brand_policy or current_policy()
         first = True
         for character in run.text:
             if character == '\n':
@@ -499,26 +522,25 @@ def render_styled_runs(runs, *, tight=False):
             if token not in keys:
                 keys[token] = _font_key(font)
             key = keys[token]
-            if not _invisible(character) and not _supports(key, ord(character)):
+            brand = character == 'ℤ' and policy != 'system'
+            glyph = 'Z' if brand else character
+            if not _invisible(character) and not _supports(key, ord(glyph)):
                 fallback_used = True
-                if character == 'ℤ' and _native_z(font):
-                    pass
-                else:
-                    selection = (_font_token(font), character)
-                    if selection not in chosen:
-                        chosen[selection] = font
-                        for path in candidates:
-                            if not path.is_file():
-                                continue
-                            candidate_key = (str(path), font.size)
-                            if candidate_key not in loaded:
-                                candidate = font_at_size(str(path), font.size)
-                                loaded[candidate_key] = candidate, _font_key(candidate)
-                            candidate, candidate_key = loaded[candidate_key]
-                            if _supports(candidate_key, ord(character)):
-                                chosen[selection] = candidate
-                                break
-                    font = chosen[selection]
+                selection = (_font_token(font), glyph)
+                if selection not in chosen:
+                    chosen[selection] = font
+                    for path in candidates:
+                        if not path.is_file():
+                            continue
+                        candidate_key = (str(path), font.size)
+                        if candidate_key not in loaded:
+                            candidate = font_at_size(str(path), font.size)
+                            loaded[candidate_key] = candidate, _font_key(candidate)
+                        candidate, candidate_key = loaded[candidate_key]
+                        if _supports(candidate_key, ord(glyph)):
+                            chosen[selection] = candidate
+                            break
+                font = chosen[selection]
             if font is not run.font:
                 for item in (run.font, font):
                     identity = _font_token(item)
@@ -529,15 +551,17 @@ def render_styled_runs(runs, *, tight=False):
                 difference = 0
             radius = round(font.size * min(abs(difference), 500) / 20000)
             stroke = radius if difference > 0 else -radius
-            layout = 'Z' if character == 'ℤ' and _native_z(font) else character
+            layout = glyph
             current = lines[-1]
             if (not spacing and current and current[-1][0].font is font and current[-1][0].color == run.color
-                    and current[-1][2] == stroke):
+                    and current[-1][0].brand_policy == run.brand_policy and current[-1][2] == stroke
+                    and not (policy == 'geometric' and (character == 'ℤ' or current[-1][0].text == 'ℤ'))):
                 previous, previous_layout, _ = current[-1]
-                current[-1] = (TextRun(previous.text + character, font, run.color, previous.spacing_before),
+                current[-1] = (TextRun(previous.text + character, font, run.color, previous.spacing_before,
+                                       run.brand_policy),
                                previous_layout + layout, stroke)
             else:
-                current.append((TextRun(character, font, run.color, spacing), layout, stroke))
+                current.append((TextRun(character, font, run.color, spacing, run.brand_policy), layout, stroke))
     rendered = [_styled_line(line, runs[0].font, tight) for line in lines]
     if len(rendered) == 1:
         return rendered[0][0], rendered[0][1], fallback_used
