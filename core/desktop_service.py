@@ -505,9 +505,10 @@ def _preview_inputs(nodes, source, image, original_size, info, cancelled):
         check_cancelled(cancelled)
         before = path.stat()
         limit = min(1800, max(1, round(max(sizes[path]) * source_scale)))
-        other, _, _ = photo_proxy(path, max_side=limit, cancelled=cancelled)
+        other, actual_size, _ = photo_proxy(path, max_side=limit, cancelled=cancelled)
         after = path.stat()
-        if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
+        if (actual_size != sizes[path] or
+                (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size)):
             raise OSError('照片在预览期间发生变化，请重试')
         key = ('source', str(path), before.st_mtime_ns, before.st_size, other.size, other.mode, 'proxy', limit)
         inputs[path] = (other, key)
