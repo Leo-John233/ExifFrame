@@ -98,7 +98,9 @@ def _dimensions(source, modified, file_size):
 def photo_dimensions(path: Path, cancelled=None):
     """读取照片方向修正后的尺寸和编码尺寸"""
     check_cancelled(cancelled)
-    dimensions = _dimensions(*_signature(path))
+    signature = _signature(path)
+    dimensions = _dimensions(*signature)
+    _check_source_version(*signature)
     check_cancelled(cancelled)
     return dimensions
 
