@@ -39,6 +39,11 @@ class BlurFilter(FilterProcessor):
 
 
 class ResizeFilter(FilterProcessor):
+    @staticmethod
+    def preview_cache_params(ctx):
+        """区分影响缩放结果的尺寸和比例"""
+        return ctx.get('width'), ctx.get('height'), ctx.get('scale')
+
     def process(self, ctx: PipelineContext):
         width, height = ctx.get("width"), ctx.get("height")
         scale = ctx.get("scale")
@@ -250,156 +255,156 @@ class MarginWithRatioFilter(FilterProcessor):
         return "margin_with_ratio"
 
 
+def draw_pixel_footer(ctx, img, scale):
+    """保留显式像素布局与文字前景"""
+    delimiter_color = ctx.get("delimiter_color", "black")
+    delimiter_width = ctx.getint("delimiter_width", int(img.width * .003))
+    left_margin = ctx.getint("left_margin", 0)
+    right_margin = ctx.getint("right_margin", 0)
+    top_margin = ctx.getint("top_margin", 0)
+    base_bottom_margin = ctx.getint("bottom_margin", int(img.height * .12))
+    fixed_footer = 'bottom_margin' in ctx
+    bottom_margin = base_bottom_margin if fixed_footer or scale == 1 else max(1, round(base_bottom_margin * scale))
+    middle_spacing = ctx.getint("middle_spacing", int(base_bottom_margin * .05))
+    if scale != 1:
+        delimiter_width = max(1, round(delimiter_width * scale))
+        middle_spacing = max(0, round(middle_spacing * scale))
+    right_alignment = ctx.getenum("right_alignment", Alignment.RIGHT, Alignment)
+
+    text_nodes = []
+    for t_s in [ctx.get("left_top"), ctx.get("left_bottom"), ctx.get("right_top"), ctx.get("right_bottom")]:
+        if "height" not in t_s:
+            t_s["height"] = int(base_bottom_margin * .3)
+        if scale != 1:
+            t_s = dict(t_s)
+            t_s['height'] = max(1, round(float(t_s['height']) * scale))
+        text_nodes.append(t_s)
+
+    left_top, left_bottom, right_top, right_bottom = (start_process([node]) for node in text_nodes)
+
+    left_logo = ctx.get("left_logo")
+    right_logo = ctx.get("right_logo")
+    center_logo = ctx.get("center_logo")
+    center_logo_height = ctx.getint("center_logo_height", ctx.getint("center_height", 0))
+
+    canvas_width = img.width + left_margin + right_margin
+    canvas_height = img.height + top_margin + bottom_margin
+    common_spacing = int(.02 * canvas_width)
+    if scale != 1:
+        common_spacing = max(0, round(common_spacing * scale))
+
+    # 旧版前景共用可缓存的原图底板
+    from processor.frame_layers import legacy_base
+    canvas = legacy_base(img, ctx, bottom_margin, ctx.get('_frame_image_id'))
+    # 底部区域
+    footer_start_y = top_margin + img.height
+    # 左图标处理
+    left_logo_width = 0
+    if left_logo:
+        logo_size = canvas_height - footer_start_y
+        if fixed_footer and scale != 1:
+            logo_size = max(1, round(logo_size * scale))
+        # 缩放图标以适应底部高度 (正方形)
+        left_logo = resized_logo(left_logo, (logo_size, logo_size))
+        logo_y = footer_start_y if scale == 1 else footer_start_y + (bottom_margin - logo_size) // 2
+        canvas.paste(left_logo, (left_margin, logo_y), mask=left_logo if left_logo.mode == 'RGBA' else None)
+        left_logo_width = logo_size
+
+    if center_logo and bottom_margin > 0:
+        # 四周预留空间并同时限制宽高，完整展示宽标识和底部文字
+        padding = max(1, ctx.getint('center_logo_padding', round(bottom_margin * .12)))
+        available_width = max(1, canvas_width - left_margin - right_margin - padding * 2)
+        if ctx.get('fit_center_columns', False):
+            available_width = min(available_width, max(1, round(canvas_width * .18)))
+        available_height = max(1, bottom_margin - padding * 2)
+        logo_height = min(center_logo_height or available_height, available_height)
+        if scale != 1 and (fixed_footer or center_logo_height):
+            logo_height = min(available_height, max(1, round(logo_height * scale)))
+        center_logo = resized_logo(center_logo, (available_width, max(1, logo_height)), contain=True)
+        center_x = (canvas.width - center_logo.width) // 2
+        center_y = footer_start_y + ((canvas.height - footer_start_y) - center_logo.height) // 2
+        canvas.paste(center_logo, (center_x, center_y), mask=center_logo if center_logo.mode == 'RGBA' else None)
+
+    if ctx.get('fit_center_columns', False) and isinstance(center_logo, Image.Image):
+        # 两侧信息限定在独立栏内，长名称和竖图不会侵入中间标识
+        left_width = max(1, center_x - left_margin - left_logo_width - common_spacing * 2)
+        right_width = max(1, canvas_width - right_margin - center_x - center_logo.width - common_spacing * 2)
+        def fit_column(text_image, width):
+            if text_image.width <= width:
+                return text_image
+            height = max(1, round(text_image.height * width / text_image.width))
+            return text_image.resize((width, height), Image.Resampling.LANCZOS)
+        left_top, left_bottom = (fit_column(item, left_width) for item in (left_top, left_bottom))
+        right_top, right_bottom = (fit_column(item, right_width) for item in (right_top, right_bottom))
+
+    # 文本处理
+    elem_height = max(left_top.height + left_bottom.height, right_top.height + right_bottom.height) + middle_spacing
+    # 计算文本块距离底部边缘的留白，使其在 bottom_margin 区域内垂直居中
+    elem_margin = int((bottom_margin - elem_height) / 2)
+    # PIL 坐标原点在左上角。
+    l_x = left_margin + left_logo_width + common_spacing
+
+    # 右侧文本 X 坐标基准 (右对齐)
+    # 右侧内容的右边界 = canvas_width - right_margin - right_logo_width
+    right_content_end_x = canvas_width - right_margin
+    # --- 左上 (Left Top) ---
+    # 距离下边缘: elem_margin + left_bottom.height + middle_spacing + left_top.height
+    bottom_dist_lt = elem_margin + left_bottom.height + middle_spacing + left_top.height
+    lt_y = canvas_height - bottom_dist_lt
+
+    # --- 左下 (Left Bottom) ---
+    # 距离下边缘: elem_margin + left_bottom.height
+    bottom_dist_lb = elem_margin + left_bottom.height
+    lb_y = canvas_height - bottom_dist_lb
+
+    # --- 右上 (Right Top) ---
+    # 规则：右上和左上是“底部对齐”。
+    # 左上图片的底部 Y 坐标 = lt_y + left_top.height
+    # 右上 Y = 左上底部 Y - 右上高度
+    rt_y = (lt_y + left_top.height) - right_top.height
+    rt_x = right_content_end_x - right_top.width - common_spacing  # 右对齐计算
+    # --- 右下 (Right Bottom) ---
+    # 规则：右下和左下是“底部对齐”。
+    # 左下图片的底部 Y 坐标 = lb_y + left_bottom.height
+    # 右下 Y = 左下底部 Y - 右下高度
+    rb_y = (lb_y + left_bottom.height) - right_bottom.height
+    rb_x = right_content_end_x - right_bottom.width - common_spacing  # 右对齐计算
+    if Alignment.LEFT == right_alignment:
+        rt_x = rb_x = min(rt_x, rb_x)
+
+    # 6. 绘制文本元素
+    # 使用 mask 确保透明背景的文字能正确叠加
+    canvas.paste(left_top, (l_x, lt_y), mask=left_top if left_top.mode == 'RGBA' else None)
+    canvas.paste(left_bottom, (l_x, lb_y), mask=left_bottom if left_bottom.mode == 'RGBA' else None)
+    canvas.paste(right_top, (rt_x, rt_y), mask=right_top if right_top.mode == 'RGBA' else None)
+    canvas.paste(right_bottom, (rb_x, rb_y), mask=right_bottom if right_bottom.mode == 'RGBA' else None)
+
+    # 右图标处理 (逻辑类推：放置在右边距内侧)
+    if right_logo:
+        # 先画一条分割线
+        logo_size = elem_height
+        delimiter = Image.new("RGBA", (delimiter_width, int(logo_size * 1.1)), delimiter_color)
+        delimiter_x = canvas_width - right_margin - max(right_top.width,
+                                                        right_bottom.width) - 2 * common_spacing - delimiter.width
+        delimiter_y = int(footer_start_y + elem_margin - logo_size * .05)
+        canvas.paste(delimiter, (delimiter_x, delimiter_y), mask=delimiter)
+
+        right_logo = resized_logo(right_logo, (logo_size, logo_size))
+        right_logo_x = delimiter_x - common_spacing - logo_size
+        right_logo_y = footer_start_y + elem_margin
+        canvas.paste(right_logo, (right_logo_x, right_logo_y),
+                     mask=right_logo if right_logo.mode == 'RGBA' else None)
+
+    # 7. 返回结果
+    return canvas
+
+
+
 class WatermarkFilter(FilterProcessor):
     def process(self, ctx: PipelineContext):
+        from processor.frame_layers import render_frame
         img = ctx.get_buffer()[0]
-        from processor.watermark_1521 import render_watermark, uses_default_layout, watermark_scale
-        scale = watermark_scale(ctx)
-        if uses_default_layout(ctx):
-            canvas = render_watermark(ctx, img, scale)
-            ctx.update_buffer([canvas]).save_buffer(self.name()).success()
-            return
-        color = ctx.get("color", "white")
-        delimiter_color = ctx.get("delimiter_color", "black")
-        delimiter_width = ctx.getint("delimiter_width", int(img.width * .003))
-        left_margin = ctx.getint("left_margin", 0)
-        right_margin = ctx.getint("right_margin", 0)
-        top_margin = ctx.getint("top_margin", 0)
-        base_bottom_margin = ctx.getint("bottom_margin", int(img.height * .12))
-        fixed_footer = 'bottom_margin' in ctx
-        bottom_margin = base_bottom_margin if fixed_footer or scale == 1 else max(1, round(base_bottom_margin * scale))
-        middle_spacing = ctx.getint("middle_spacing", int(base_bottom_margin * .05))
-        if scale != 1:
-            delimiter_width = max(1, round(delimiter_width * scale))
-            middle_spacing = max(0, round(middle_spacing * scale))
-        right_alignment = ctx.getenum("right_alignment", Alignment.RIGHT, Alignment)
-
-        text_nodes = []
-        for t_s in [ctx.get("left_top"), ctx.get("left_bottom"), ctx.get("right_top"), ctx.get("right_bottom")]:
-            if "height" not in t_s:
-                t_s["height"] = int(base_bottom_margin * .3)
-            if scale != 1:
-                t_s = dict(t_s)
-                t_s['height'] = max(1, round(float(t_s['height']) * scale))
-            text_nodes.append(t_s)
-
-        left_top, left_bottom, right_top, right_bottom = (start_process([node]) for node in text_nodes)
-
-        left_logo = ctx.get("left_logo")
-        right_logo = ctx.get("right_logo")
-        center_logo = ctx.get("center_logo")
-        center_logo_height = ctx.getint("center_logo_height", ctx.getint("center_height", 0))
-
-        canvas_width = img.width + left_margin + right_margin
-        canvas_height = img.height + top_margin + bottom_margin
-        common_spacing = int(.02 * canvas_width)
-        if scale != 1:
-            common_spacing = max(0, round(common_spacing * scale))
-
-        # 新建画布
-        canvas = Image.new("RGBA", (canvas_width, canvas_height), color)
-        # 主图
-        canvas.paste(img, (left_margin, top_margin), mask=img if img.mode == 'RGBA' else None)
-        # 底部区域
-        footer_start_y = top_margin + img.height
-        # 左图标处理
-        left_logo_width = 0
-        if left_logo:
-            logo_size = canvas_height - footer_start_y
-            if fixed_footer and scale != 1:
-                logo_size = max(1, round(logo_size * scale))
-            # 缩放图标以适应底部高度 (正方形)
-            left_logo = resized_logo(left_logo, (logo_size, logo_size))
-            logo_y = footer_start_y if scale == 1 else footer_start_y + (bottom_margin - logo_size) // 2
-            canvas.paste(left_logo, (left_margin, logo_y), mask=left_logo if left_logo.mode == 'RGBA' else None)
-            left_logo_width = logo_size
-
-        if center_logo and bottom_margin > 0:
-            # 四周预留空间并同时限制宽高，完整展示宽标识和底部文字
-            padding = max(1, ctx.getint('center_logo_padding', round(bottom_margin * .12)))
-            available_width = max(1, canvas_width - left_margin - right_margin - padding * 2)
-            if ctx.get('fit_center_columns', False):
-                available_width = min(available_width, max(1, round(canvas_width * .18)))
-            available_height = max(1, bottom_margin - padding * 2)
-            logo_height = min(center_logo_height or available_height, available_height)
-            if scale != 1 and (fixed_footer or center_logo_height):
-                logo_height = min(available_height, max(1, round(logo_height * scale)))
-            center_logo = resized_logo(center_logo, (available_width, max(1, logo_height)), contain=True)
-            center_x = (canvas.width - center_logo.width) // 2
-            center_y = footer_start_y + ((canvas.height - footer_start_y) - center_logo.height) // 2
-            canvas.paste(center_logo, (center_x, center_y), mask=center_logo if center_logo.mode == 'RGBA' else None)
-
-        if ctx.get('fit_center_columns', False) and isinstance(center_logo, Image.Image):
-            # 两侧信息限定在独立栏内，长名称和竖图不会侵入中间标识
-            left_width = max(1, center_x - left_margin - left_logo_width - common_spacing * 2)
-            right_width = max(1, canvas_width - right_margin - center_x - center_logo.width - common_spacing * 2)
-            def fit_column(text_image, width):
-                if text_image.width <= width:
-                    return text_image
-                height = max(1, round(text_image.height * width / text_image.width))
-                return text_image.resize((width, height), Image.Resampling.LANCZOS)
-            left_top, left_bottom = (fit_column(item, left_width) for item in (left_top, left_bottom))
-            right_top, right_bottom = (fit_column(item, right_width) for item in (right_top, right_bottom))
-
-        # 文本处理
-        elem_height = max(left_top.height + left_bottom.height, right_top.height + right_bottom.height) + middle_spacing
-        # 计算文本块距离底部边缘的留白，使其在 bottom_margin 区域内垂直居中
-        elem_margin = int((bottom_margin - elem_height) / 2)
-        # PIL 坐标原点在左上角。
-        l_x = left_margin + left_logo_width + common_spacing
-
-        # 右侧文本 X 坐标基准 (右对齐)
-        # 右侧内容的右边界 = canvas_width - right_margin - right_logo_width
-        right_content_end_x = canvas_width - right_margin
-        # --- 左上 (Left Top) ---
-        # 距离下边缘: elem_margin + left_bottom.height + middle_spacing + left_top.height
-        bottom_dist_lt = elem_margin + left_bottom.height + middle_spacing + left_top.height
-        lt_y = canvas_height - bottom_dist_lt
-
-        # --- 左下 (Left Bottom) ---
-        # 距离下边缘: elem_margin + left_bottom.height
-        bottom_dist_lb = elem_margin + left_bottom.height
-        lb_y = canvas_height - bottom_dist_lb
-
-        # --- 右上 (Right Top) ---
-        # 规则：右上和左上是“底部对齐”。
-        # 左上图片的底部 Y 坐标 = lt_y + left_top.height
-        # 右上 Y = 左上底部 Y - 右上高度
-        rt_y = (lt_y + left_top.height) - right_top.height
-        rt_x = right_content_end_x - right_top.width - common_spacing  # 右对齐计算
-        # --- 右下 (Right Bottom) ---
-        # 规则：右下和左下是“底部对齐”。
-        # 左下图片的底部 Y 坐标 = lb_y + left_bottom.height
-        # 右下 Y = 左下底部 Y - 右下高度
-        rb_y = (lb_y + left_bottom.height) - right_bottom.height
-        rb_x = right_content_end_x - right_bottom.width - common_spacing  # 右对齐计算
-        if Alignment.LEFT == right_alignment:
-            rt_x = rb_x = min(rt_x, rb_x)
-
-        # 6. 绘制文本元素
-        # 使用 mask 确保透明背景的文字能正确叠加
-        canvas.paste(left_top, (l_x, lt_y), mask=left_top if left_top.mode == 'RGBA' else None)
-        canvas.paste(left_bottom, (l_x, lb_y), mask=left_bottom if left_bottom.mode == 'RGBA' else None)
-        canvas.paste(right_top, (rt_x, rt_y), mask=right_top if right_top.mode == 'RGBA' else None)
-        canvas.paste(right_bottom, (rb_x, rb_y), mask=right_bottom if right_bottom.mode == 'RGBA' else None)
-
-        # 右图标处理 (逻辑类推：放置在右边距内侧)
-        if right_logo:
-            # 先画一条分割线
-            logo_size = elem_height
-            delimiter = Image.new("RGBA", (delimiter_width, int(logo_size * 1.1)), delimiter_color)
-            delimiter_x = canvas_width - right_margin - max(right_top.width,
-                                                            right_bottom.width) - 2 * common_spacing - delimiter.width
-            delimiter_y = int(footer_start_y + elem_margin - logo_size * .05)
-            canvas.paste(delimiter, (delimiter_x, delimiter_y), mask=delimiter)
-
-            right_logo = resized_logo(right_logo, (logo_size, logo_size))
-            right_logo_x = delimiter_x - common_spacing - logo_size
-            right_logo_y = footer_start_y + elem_margin
-            canvas.paste(right_logo, (right_logo_x, right_logo_y),
-                         mask=right_logo if right_logo.mode == 'RGBA' else None)
-
-        # 7. 返回结果
+        canvas = render_frame(img, ctx, ctx.get('_frame_image_id'))
         ctx.update_buffer([canvas]).save_buffer(self.name()).success()
 
     def name(self) -> str:
@@ -408,23 +413,10 @@ class WatermarkFilter(FilterProcessor):
 
 class WatermarkWithTimestampFilter(FilterProcessor):
     def process(self, ctx: PipelineContext):
+        from processor.frame_layers import render_frame
         img = ctx.get_buffer()[0]
-
-        if "height" not in ctx:
-            ctx.set("height", int(img.height * .02))
-        # 使用注册表动态获取处理器，避免直接导入
-        multi_text_processor = get_processor("multi_rich_text")
-        if multi_text_processor:
-            multi_text_processor().process(ctx)
-        else:
-            raise RuntimeError("multi_rich_text processor not found")
-        text = ctx.get_buffer()[0]
-
-        text_x = int(img.width * .93) - text.width
-        text_y = int(img.height * .95)
-
-        img.paste(text, (text_x, text_y), mask=text)
-        ctx.update_buffer([img]).save_buffer(self.name()).success()
+        canvas = render_frame(img, ctx, ctx.get('_frame_image_id'))
+        ctx.update_buffer([canvas]).save_buffer(self.name()).success()
 
     def name(self) -> str:
         return "watermark_with_timestamp"
