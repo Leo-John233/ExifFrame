@@ -312,6 +312,7 @@ def start_process(data: List[dict], input_path: str = None, output_path: str = N
 
     for idx, node in enumerate(nodes):
         check_cancelled(cancelled)
+        input_keys = None
         processor = get_processor(node.get_processor_name())
         if processor is None:
             raise RuntimeError(f"Processor '{node.get_processor_name()}' not found")
@@ -322,8 +323,12 @@ def start_process(data: List[dict], input_path: str = None, output_path: str = N
             node.update_buffer(node['input_buffer'])
             node['buffer_loaded'] = True
             if all_keys is not None:
-                input_keys = ([preview_source_key] if node.get('_preview_source_input', False)
-                              and len(node['input_buffer']) == 1 else [None] * len(node['input_buffer']))
+                supplied = node.get('_preview_input_keys')
+                if supplied is not None and len(supplied) == len(node['input_buffer']):
+                    input_keys = list(supplied)
+                else:
+                    input_keys = ([preview_source_key] if node.get('_preview_source_input', False)
+                                  and len(node['input_buffer']) == 1 else [None] * len(node['input_buffer']))
         elif 'select' in node:
             indexes = json.loads(node['select'])
             flattened = list(chain.from_iterable([all_buffer[i] for i in indexes]))
@@ -353,6 +358,8 @@ def start_process(data: List[dict], input_path: str = None, output_path: str = N
             output = node.get_buffer()
             all_buffer.append(output)
             continue
+        if input_keys is None:
+            input_keys = []
         cacheable = 'preview_cache_params' in processor.__dict__
         if cacheable:
             # 独立文件输入可能替代上一步缓冲区，不能沿用其身份
