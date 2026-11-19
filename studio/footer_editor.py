@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 from core.desktop_service import validate_template, write_template
 from core.footer import FIELD_CATALOG, REGION_LABELS, FooterError, get_footer_field, normalize_layout, preview_rows, read_layout, write_layout
 from studio.canvas import ImageCanvas
-from studio.i18n import bind, localize_error, register_translations, tr, translator
+from studio.i18n import bind, localize_error, region_title, register_translations, tr, translator
 
 
 register_translations({
@@ -436,9 +436,7 @@ class FooterPanel(QWidget):
     def _region_label(self, region):
         if region in REGION_LABELS:
             return tr(REGION_LABELS[region])
-        if region.startswith('text_') and region[5:].isdigit():
-            return tr('文字区域 {number}', number=int(region[5:]) + 1)
-        return region
+        return region_title(region)
 
     def _clear_grid(self, grid):
         while grid.count():

@@ -129,7 +129,10 @@ def _generated_row(text):
         if isinstance(call, nodes.Call) and isinstance(call.node, nodes.Name) and call.node.name in {'footer_row', 'footer_segments'}:
             if encoded_segments != (call.node.name == 'footer_segments'):
                 return None
-            return {'items': call.args[1].as_const(), 'separator': call.args[2].as_const()}, call.args[3].as_const()
+            row = {'items': call.args[1].as_const(), 'separator': call.args[2].as_const()}
+            if len(call.args) > 4:
+                row['segment_defaults'] = call.args[4].as_const()
+            return row, call.args[3].as_const()
     except Exception:
         pass
     return None
@@ -336,6 +339,54 @@ def _row_call(function, row, missing, style=None):
     return '{{ ' + function + '(exif, ' + encoded + ')' + suffix + ' }}'
 
 
+def _remove_character_properties(value):
+    """仅清理行和分段的单字属性，保留原有整段样式"""
+    changed = False
+    if isinstance(value, list):
+        for part in value:
+            changed |= _remove_character_properties(part)
+    elif isinstance(value, dict):
+        for key in _CHARACTER_KEYS:
+            if key in value:
+                del value[key]
+                changed = True
+        for key in ('items', 'segments', 'text_segments', 'style', 'segment_defaults'):
+            if key in value:
+                changed |= _remove_character_properties(value[key])
+    return changed
+
+
+def clear_row_character_styles(source, region):
+    """清除指定文字区的索引和规则，不改动其他区域与原有文字表达式"""
+    data = _load(source)
+    for key, _, _, node in text_targets(data)[1]:
+        if key != region:
+            continue
+        changed = _remove_character_properties(node)
+        attribute = 'text_segments' if 'text_segments' in node else 'text'
+        value = node.get(attribute)
+        if isinstance(value, str):
+            generated = _generated_row(value)
+            if generated:
+                row, missing = generated
+                if _remove_character_properties(row):
+                    function = 'footer_segments' if attribute == 'text_segments' else 'footer_row'
+                    node[attribute] = _row_call(function, row, missing, row.get('segment_defaults'))
+                    changed = True
+            elif attribute == 'text_segments':
+                try:
+                    parts = json.loads(value)
+                except ValueError:
+                    parts = None
+                if isinstance(parts, list) and _remove_character_properties(parts):
+                    node[attribute] = json.dumps(parts, ensure_ascii=False)
+                    changed = True
+        if changed:
+            return json.dumps(data, ensure_ascii=False, indent=2) + '\n'
+        break
+    return source
+
+
 def write_layout(source: str, layout: dict) -> str:
     """只重建发生修改的文字区，保留其他滤镜、字体、颜色和自定义步骤"""
     layout = normalize_layout(layout)
@@ -365,7 +416,8 @@ def write_layout(source: str, layout: dict) -> str:
                 style = {name: edited[name] for name in _STYLE_KEYS if name in edited}
                 if isinstance(edited.get('text_segments'), list) and edited['text_segments']:
                     style.update({name: value for name, value in edited['text_segments'][0].items() if name in _STYLE_KEYS})
-                edited['text_segments'] = _row_call('footer_segments', row, layout['missing'], style)
+                edited['text_segments'] = _row_call('footer_segments', row, layout['missing'],
+                                                    row.get('segment_defaults', style))
                 edited.pop('text', None)
             else:
                 edited['text'] = _row_call('footer_row', row, layout['missing'])
