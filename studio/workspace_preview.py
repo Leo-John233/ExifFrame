@@ -15,7 +15,7 @@ from .asset_watcher import AssetWatcher
 from .canvas import image_size, is_full_image, set_image_size
 from .preview import _task_owner
 from .state import STYLE_FIELDS
-from .i18n import localize_error
+from .i18n import localize_error, tr
 from .template_editor import TemplateEditor
 from .workers import ImageTask, qt_rendered_rows
 
@@ -25,6 +25,7 @@ class WorkspacePreview:
 
     def _init_preview(self):
         self._tasks = {}
+        self._sample_data = None
         self._serial = self._render_revision_id = 0
         self._rendering = self._pending = False
         self._hq_pending = self._hq_ready = self._context_pending = False
@@ -64,6 +65,24 @@ class WorkspacePreview:
         self._idle_check.setInterval(80)
         self._idle_check.timeout.connect(self._release_preview_if_idle)
 
+    def _canvas_path(self):
+        return self._sample_data[0] if self._sample_data else self._current_path()
+
+    def _show_preset_sample(self):
+        """空队列创建或编辑预设时使用随程序提供的照片"""
+        if self._current_path() or self._current_kind != 'import' or self._sample_data:
+            return
+        from PIL import Image
+        from core.sample_photo import example_photo_path
+        photo = example_photo_path()
+        try:
+            with Image.open(photo) as sample:
+                self._sample_data = photo, *sample.size
+        except OSError:
+            return
+        self.canvas_name.setText(tr('示例照片'))
+        self._schedule_preview()
+
     def _visible_footer_editors(self):
         return [editor for editor in self._editors if hasattr(editor, "set_preview")
                 and editor.name == self._photo_settings().template_name and editor.isVisible() and not editor.isMinimized()]
@@ -72,7 +91,7 @@ class WorkspacePreview:
         from core.desktop_service import _preview_file_signature
 
         settings = self._photo_settings()
-        path = self._current_path()
+        path = self._canvas_path()
         selected = tuple(str(item) for item in self.state.checked_paths)
         try:
             info = path.stat() if path else None
@@ -131,6 +150,7 @@ class WorkspacePreview:
     def _begin_live_interaction(self, key):
         if self._closing or self._exporting:
             return
+        self.history.gesture = object()
         self._interaction_key = key
         self._interaction_active = True
 
@@ -138,10 +158,12 @@ class WorkspacePreview:
         if not self._interaction_active or key != self._interaction_key:
             return
         self._interaction_active = False
+        self.history.gesture = None
         if self._interaction_dirty:
             self._settle_timer.start(120)
 
     def _abort_live_interaction(self):
+        self.history.gesture = None
         self._interaction_epoch += 1
         self._interaction_active = self._interaction_dirty = self._draft_accepting = False
         self._live_timer.stop()
@@ -230,7 +252,7 @@ class WorkspacePreview:
             return
         active = next((task for (kind, token), task in self._tasks.items()
                        if kind in ('preview', 'original') and token == self._render_revision_id), None)
-        if (self._closing or self._exporting or not self._current_path()
+        if (self._closing or self._exporting or not self._canvas_path()
                 or self._hq_ready or self._hq_pending or self._pending
                 or (active is not None and active.full_resolution)):
             return
@@ -241,7 +263,7 @@ class WorkspacePreview:
     def _request_original(self, view=None, *, force_full=False):
         if self._closing or self._exporting or self._current_kind != 'import' or self.original_toggle.isChecked():
             return
-        path = self._current_path()
+        path = self._canvas_path()
         if path is None:
             return
         view = view or self.photo_view
@@ -287,7 +309,7 @@ class WorkspacePreview:
             self._sync_template_context(immediate=True)
             if self._visible_footer_editors():
                 self._ensure_watermark_mode()
-        path = self._current_path()
+        path = self._canvas_path()
         if not path:
             self._pending = False
             self._release_preview_if_idle()
@@ -304,7 +326,7 @@ class WorkspacePreview:
         # 输出树始终读取已有成品以免重复添加水印
         kind = "original" if self._current_kind == "output" or self.original_toggle.isChecked() else "preview"
         # 与实际导出共用勾选文件快照，支持模板中的跨照片处理
-        selected = tuple(str(item) for item in self.state.checked_paths)
+        selected = (str(path),) if self._sample_data else tuple(str(item) for item in self.state.checked_paths)
         self._render_signature = deepcopy(self._preview_signature(reuse=self._draft_signature if interactive else None))
         self._asset_watcher.set_source(self._render_signature[-2], self._photo_settings().logo_choice,
                                       signature=self._render_signature[-3])
@@ -312,8 +334,11 @@ class WorkspacePreview:
             self._draft_signature = self._render_signature
         if kind == 'preview':
             self._rendered_rows_job_context = self._footer_text_context(self._photo_settings(), self._render_signature[-2])
+        settings = replace(self._photo_settings(), input_files=selected)
+        if self._sample_data:
+            settings = replace(settings, metadata_overrides={}, protected_sources=())
         self._start_task(kind, token=self._render_revision_id, paths=[path],
-                         settings=replace(self._photo_settings(), input_files=selected),
+                         settings=settings,
                          full_resolution=full_resolution, interactive=interactive)
         if interactive:
             self._last_draft_started = time.monotonic()
@@ -353,13 +378,26 @@ class WorkspacePreview:
             priority = 2 if task.kind in ('preview', 'original', 'comparison') else 0
             self.pool.start(task, priority)
 
+    def _show_canvas_result(self, kind, result):
+        from .workers import qt_rendered_slots, qt_rendered_style
+        self.photo_view.set_image(result)
+        data = self._current_data or self._sample_data
+        if data:
+            _, width, height = data
+            self.photo_view.set_source_size((width, height) if width and height else None)
+        if kind == 'preview':
+            slots = qt_rendered_slots(result)
+            self.photo_view.set_slots(slots)
+            self.inspector.set_rendered_slots({item['key']: item for item in slots})
+            self.inspector.set_rendered_style(qt_rendered_style(result))
+
     @Slot(str, int, object)
     def _task_result(self, kind, token, result):
         if self._closing:
             return
         if kind == 'comparison':
             task = self._tasks.get((kind, token))
-            if task is not None and task is self._comparison_task and task.paths[0] == self._current_path():
+            if task is not None and task is self._comparison_task and task.paths[0] == self._canvas_path():
                 self._comparison_image = result
                 self._comparison_full = task.full_resolution or is_full_image(result)
                 self.photo_view.set_original_image(result)
@@ -387,7 +425,7 @@ class WorkspacePreview:
                 # 低清节点取整可能相差几像素，避免画布在两种画质间抖动
                 if all(abs(a - b) <= 5 for a, b in zip(previous, current)):
                     set_image_size(result, previous)
-            self.photo_view.set_image(result)
+            self._show_canvas_result(kind, result)
             if kind == 'preview':
                 self._watermark_image = result
                 self._watermark_signature = old
@@ -401,14 +439,14 @@ class WorkspacePreview:
                 self._schedule_preview()
                 return
             self._hq_ready = bool(task and task.full_resolution) or is_full_image(result)
-            self.photo_view.set_image(result)
+            self._show_canvas_result(kind, result)
             if kind == "preview":
                 self._watermark_image = result
                 self._watermark_signature = self._render_signature
                 self._rendered_rows_context = self._rendered_rows_job_context
                 self.inspector.inline_footer.set_rendered_rows(qt_rendered_rows(result))
                 self._send_footer_preview(self._watermark_image)
-            _, width, height = self._current_data
+            _, width, height = self._current_data or self._sample_data
             mode = "输出文件" if self._current_kind == "output" else "原图" if kind == "original" else "水印预览"
             if width and height:
                 self._set_preview_status("{mode} · {width} × {height}", mode=mode, width=width, height=height)

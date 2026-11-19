@@ -159,6 +159,19 @@ def bind_static_texts(root, exclude=()):
                 bind(item, source, setter)
 
 
+register_translations({
+    'EXIF 副本工具': 'EXIF copy tools', '将所选字段写入新副本': 'Write selected fields to a new copy',
+    '已选 {selected} / 共 {total} 张': '{selected} selected / {total} photos',
+    '展开或收起胶片带': 'Show or hide filmstrip',
+    '显示胶片带': 'Show filmstrip',
+    '新建空白预设': 'New blank preset', '模板槽位样式无效': 'Invalid template slot style',
+    '按住空格对比原图': 'Hold Space for original',
+    '深色': 'Dark', '浅色': 'Light', '主题': 'Theme', '另存为预设': 'Save as preset',
+    '模板已保存：{name}': 'Preset saved: {name}',
+    '从胶片带选择一张照片\n\n勾选的输入照片会一并导出': 'Choose a photo from the filmstrip\n\nChecked photos are exported together',
+})
+
+
 def region_title(region, number=None) -> str:
     """统一显示普通区域、独立文字与多水印区域"""
     from core.footer import REGION_LABELS

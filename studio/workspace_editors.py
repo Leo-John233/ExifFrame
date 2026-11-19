@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 from dataclasses import replace
 from pathlib import Path
 from threading import Event
 
 from PySide6.QtCore import QRunnable, Qt, Slot
-from PySide6.QtWidgets import QDialog, QFileDialog, QInputDialog, QMessageBox
-from core.desktop_service import list_presets, read_template, write_template
+from PySide6.QtWidgets import QFileDialog, QInputDialog, QMessageBox
+from core.desktop_service import WatermarkSettings, list_presets, read_template, write_template
 from core.style_pack import export_style_pack, import_style_pack, save_custom_template
 from .i18n import localize_error, tr
 from .template_editor import TemplateEditor
@@ -93,19 +94,10 @@ class WorkspaceEditors:
         self.activateWindow()
 
     def _edit_metadata(self):
-        """默认编辑当前照片，批量操作通过独立菜单明确选择"""
-        current = self._current_path()
-        if current:
-            self._open_metadata_editor([current], current)
-        else:
-            self._set_status("尚未选择可编辑的照片")
+        self.inspector.show_metadata_tab()
 
     def _advanced_checked_metadata(self):
-        self._read_checked_paths()
-        paths = self.state.checked_paths
-        if paths:
-            current = self._editable_photo()
-            self._open_metadata_editor(paths, current if current in paths else paths[0])
+        self.inspector.show_metadata_tab()
 
     def _open_metadata_editor(self, paths, current):
         from .metadata_editor import MetadataEditor
@@ -120,7 +112,7 @@ class WorkspaceEditors:
                 editor.raise_()
                 editor.activateWindow()
                 return
-        editor = MetadataEditor(self, paths=paths, current=current, overrides=self.state.metadata_overrides)
+        editor = MetadataEditor(self, paths=paths, current=current, overrides=self.state.metadata_overrides, copy_only=True)
         editor.applied.connect(self._metadata_applied)
         editor.finished.connect(lambda result, window=editor: self._metadata_editor_closed(window))
         self._metadata_editors.append(editor)
@@ -284,44 +276,23 @@ class WorkspaceEditors:
         return editor
 
     def _edit_footer(self):
-        from .footer_editor import FooterEditor
-        name = self._photo_settings().template_name
-        previous = next((item for item in self._editors if item.name == name), None)
-        if previous is not None:
-            if isinstance(previous, FooterEditor):
-                self._show_template_editor(previous)
-            elif previous.check_format():
-                self._handoff_editor(previous, previous.source(), visual=True)
-            return
-        try:
-            self._make_template_editor(name, self._photo_settings().template_source or read_template(name), visual=True)
-        except Exception as exc:
-            self._record_errors("无法打开组合编辑器", [str(exc)])
+        self.inspector.show_style_tab()
 
     def _new_template(self):
-        from .template_wizard import TemplateWizard
-        active = next((editor for editor in self._editors if editor.name == self._photo_settings().template_name), None)
-        try:
-            current_source = active.source() if active else self._photo_settings().template_source
-        except Exception as exc:
-            self._record_errors("无法读取当前组合", [str(exc)])
+        name, accepted = QInputDialog.getText(self, tr('新建空白预设'), tr('请输入模板名称'))
+        if not accepted or not name.strip():
             return
-        settings = replace(self._photo_settings(), input_files=tuple(str(path) for path in self.state.checked_paths),
-                               metadata_overrides=self.state.metadata_overrides)
-        wizard = TemplateWizard(self, current_template=self._photo_settings().template_name, current_source=current_source,
-                                settings=deepcopy(settings))
-        self._active_wizard = wizard
-        self._refresh_footer_examples()
-        if wizard.exec() == QDialog.DialogCode.Accepted:
-            try:
-                write_template(wizard.name, wizard.source, create=True)
-                self._template_saved(wizard.name)
-                self._set_status("模板已创建：{name}", name=wizard.name)
-            except Exception as exc:
-                self._record_errors("创建模板失败", [str(exc)])
-                QMessageBox.warning(self, tr("创建模板失败"), localize_error(exc))
-        self._active_wizard = None
-        wizard.deleteLater()
+        rows = {key: {'processor_name': 'rich_text', 'text': ''}
+                for key in ('left_top', 'left_bottom', 'right_top', 'right_bottom')}
+        source = json.dumps([{'processor_name': 'watermark', 'color': 'white', **rows}], indent=2)
+        try:
+            name = save_custom_template(name.strip(), source, WatermarkSettings())
+        except (ValueError, OSError) as exc:
+            self._record_errors('创建模板失败', [str(exc)])
+            return
+        self._template_saved(name)
+        self.inspector.show_my_templates()
+        self.inspector.select_slot('left_top')
 
     def _effective_template_source(self, settings):
         path = self._editable_photo()
@@ -379,21 +350,41 @@ class WorkspaceEditors:
             QMessageBox.warning(self, tr('无法导入样式包'), localize_error(exc))
 
     def _edit_template(self):
-        name = self._photo_settings().template_name
-        for editor in self._editors:
-            if editor.name == name:
-                if isinstance(editor, TemplateEditor):
-                    self._show_template_editor(editor)
-                else:
-                    try:
-                        self._handoff_editor(editor, editor.source(), visual=False)
-                    except Exception as exc:
-                        self._record_errors("无法切换编辑器", [str(exc)])
-                return
+        from .source_panel import SourcePanel
+        self._show_preset_sample()
+        self.inspector.tabs.setCurrentIndex(0)
+        if not hasattr(self, 'source_panel'):
+            self.source_panel = SourcePanel()
+            self.inspector.preset_tools_layout.insertWidget(0, self.source_panel)
+            self.source_panel.changed.connect(lambda value: self._edit_style('template_source', value))
+            self.source_panel.save_requested.connect(self._save_inline_source)
+        settings = self._photo_settings()
         try:
-            self._open_editor(name, self._photo_settings().template_source or read_template(name))
-        except Exception as exc:
-            self._record_errors("读取模板失败", [str(exc)])
+            source = self._effective_template_source(settings)
+        except (OSError, ValueError) as exc:
+            self._record_errors('读取模板失败', [str(exc)])
+            return
+        self.source_panel.sync((self._editable_photo(), settings.template_name), source)
+        self.source_panel.show()
+        self.source_panel.edit.setFocus()
+        from PySide6.QtWidgets import QScrollArea
+        scroll = self.source_panel.parentWidget()
+        while scroll is not None and not isinstance(scroll, QScrollArea):
+            scroll = scroll.parentWidget()
+        if scroll:
+            scroll.ensureWidgetVisible(self.source_panel)
+
+    def _save_inline_source(self, source):
+        name = self._photo_settings().template_name
+        if self._locked or self._exporting or self._current_kind == 'output':
+            return
+        try:
+            write_template(name, source)
+        except (OSError, ValueError) as exc:
+            self._record_errors('无法保存模板', [str(exc)])
+            return
+        self._template_saved(name)
+        self._set_status('模板已保存：{name}', name=name)
 
     def _preview_draft(self, editor, source):
         """未保存的源码只作用于当前会话预览和处理"""

@@ -204,6 +204,7 @@ class CameraRawSlider(QWidget):
         self._decimals = int(decimals)
         self._factor = 10 ** self._decimals
         self._default = default
+        self._reset_action = None
         self._active = False
         self._changed = False
         self._programmatic = False
@@ -368,11 +369,20 @@ class CameraRawSlider(QWidget):
         self._sync_text()
         self._finish()
 
+    def set_reset_action(self, action):
+        """动态模板参数可恢复继承，普通参数使用固定默认值"""
+        self._reset_action = action
+
     def reset_to_default(self):
         self._begin()
         self._editing = False
-        self.track.setValue(self._encode(self._default))
-        self._finish()
+        try:
+            if self._reset_action:
+                self._reset_action()
+            else:
+                self.track.setValue(self._encode(self._default))
+        finally:
+            self._finish()
 
 
 def _display_color(value):
@@ -508,6 +518,8 @@ class CollapsibleSection(QWidget):
     """细分隔线、扁平标题与分组重置"""
 
     reset_requested = Signal()
+    reset_started = Signal()
+    reset_finished = Signal()
 
     def __init__(self, title, *, expanded=True, parent=None):
         super().__init__(parent)
@@ -534,7 +546,7 @@ class CollapsibleSection(QWidget):
         self.reset_button.setObjectName('propertyReset')
         self.reset_button.setText('↶')
         bind(self.reset_button, '重置此分组', 'setToolTip')
-        self.reset_button.clicked.connect(self.reset_requested)
+        self.reset_button.clicked.connect(self._reset)
         header.addWidget(self.toggle, 1)
         header.addWidget(self.reset_button)
         layout.addLayout(header)
@@ -544,6 +556,13 @@ class CollapsibleSection(QWidget):
         self.toggle.toggled.connect(lambda opened: self.toggle.setArrowType(
             Qt.ArrowType.DownArrow if opened else Qt.ArrowType.RightArrow))
         layout.addWidget(self.body)
+
+    def _reset(self):
+        self.reset_started.emit()
+        try:
+            self.reset_requested.emit()
+        finally:
+            self.reset_finished.emit()
 
 
 class NoWheelEventFilter(QObject):

@@ -209,6 +209,7 @@ class WorkspaceLibrary:
         if not self._current_data or kind != self._current_kind or data[0] != self._current_data[0]:
             return
         self._current_data = data
+        self.photo_view.set_source_size(data[1:3])
         if not self._rendering and not self._preview_error and not self.photo_view.photo.pixmap().isNull():
             _, width, height = data
             mode = '输出文件' if kind == 'output' else '原图' if self.original_toggle.isChecked() else '水印预览'
@@ -257,6 +258,7 @@ class WorkspaceLibrary:
         for task in self._tasks.values():
             if task.kind == 'footer_metadata' and (not data or task.paths[0] != data[0]):
                 task.cancel.set()
+        self._sample_data = None
         self._current_kind, self._current_data = kind, data
         self.state.set_selected_photo(data[0] if data else None)
         if self._comparison_task is not None:

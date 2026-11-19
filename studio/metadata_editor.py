@@ -95,8 +95,9 @@ class MetadataEditor(QDialog):
     applied = Signal(dict)
 
     def __init__(self, parent=None, paths: list[Path] | None = None,
-                 current: Path | None = None, overrides: dict | None = None):
+                 current: Path | None = None, overrides: dict | None = None, *, copy_only=False):
         super().__init__(parent)
+        self.copy_only = copy_only
         self.paths = list(dict.fromkeys(Path(path) for path in (paths or [])))
         self.current = Path(current) if current else (self.paths[0] if self.paths else None)
         if self.current and self.current not in self.paths:
@@ -145,7 +146,7 @@ class MetadataEditor(QDialog):
         top.addWidget(self.reference_button)
         layout.addLayout(top)
         note = QLabel()
-        bind(note, '仅影响水印，原片保持不变')
+        bind(note, '将所选字段写入新副本' if self.copy_only else '仅影响水印，原片保持不变')
         layout.addWidget(note)
         splitter = QSplitter()
         selection = QWidget()
@@ -174,6 +175,7 @@ class MetadataEditor(QDialog):
             select_buttons.addWidget(button)
         select_layout.addLayout(select_buttons)
         splitter.addWidget(selection)
+        selection.setVisible(not self.copy_only)
         self.tabs = QTabWidget()
         self.tabs.setObjectName('metadataFields')
         groups = list(dict.fromkeys(field.group for field in FIELDS))
@@ -261,6 +263,8 @@ class MetadataEditor(QDialog):
         self.apply_button.setObjectName('primaryButton')
         self.apply_button.clicked.connect(self._apply)
         bottom.addWidget(self.apply_button)
+        self.apply_button.setVisible(not self.copy_only)
+        self.clear_button.setVisible(not self.copy_only)
         self.close_button = QPushButton()
         bind(self.close_button, '关闭')
         self.close_button.clicked.connect(self.close)
@@ -561,7 +565,7 @@ class MetadataEditor(QDialog):
                         self._saved, '正在迁移 EXIF 到副本…')
 
     def retranslate_ui(self):
-        self.setWindowTitle(tr('编辑照片信息'))
+        self.setWindowTitle(tr('EXIF 副本工具' if self.copy_only else '编辑照片信息'))
         for index, group in enumerate(self._tabs):
             self.tabs.setTabText(index, tr(group))
         for tag, (field, check, original, editor) in self._field_rows.items():

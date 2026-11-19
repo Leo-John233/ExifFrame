@@ -206,6 +206,13 @@ class StudioState(QObject):
             self.style_changed.emit(tuple(updated))
             self.changed.emit()
 
+    def restore_styles(self, mapping):
+        """恢复各张照片的覆写，删除已撤销的字段以重新继承默认值"""
+        for path, style in mapping.items():
+            self._photos.setdefault(self._identity(path), {})['style'] = deepcopy(style)
+        self.style_changed.emit(tuple(mapping))
+        self.changed.emit()
+
     def update_metadata(self, mapping):
         """替换所给照片的完整会话信息，其他照片保持不变"""
         updated = []

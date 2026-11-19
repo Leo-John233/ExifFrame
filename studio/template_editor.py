@@ -63,6 +63,58 @@ register_translations({
 })
 
 
+def format_template_json(source, set_status, apply_formatted):
+    if '{%' in source:
+        set_status('包含 Jinja 条件或循环，保留原始排版')
+        return False
+    try:
+        data = json.loads(source)
+    except ValueError:
+        data = None
+    if data is not None:
+        # 组合函数可能含嵌套表达式，合法 JSON 直接排版以保留全部引号
+        try:
+            validate_template(source)
+        except Exception as exc:
+            set_status('无法安全格式化，源码保持不变：{error}', error=exc)
+            return False
+        apply_formatted(json.dumps(data, ensure_ascii=False, indent=2))
+        return True
+    expressions = []
+    chunks = []
+    position = 0
+    in_string = False
+    escaped = False
+    # 临时占位符区分字符串内部和外部表达式
+    for match in re.finditer(r'\{\{.*?\}\}|\{#.*?#\}', source, flags=re.S):
+        part = source[position:match.start()]
+        for char in part:
+            if escaped:
+                escaped = False
+            elif char == '\\' and in_string:
+                escaped = True
+            elif char == '"':
+                in_string = not in_string
+        marker = f'__EXIFFRAME_JINJA_{len(expressions)}__' if in_string else str(912345678900000 + len(expressions))
+        if marker in source:
+            set_status('无法安全格式化，源码保持不变：{error}', error=tr('插入字段'))
+            return False
+        chunks.extend((part, marker))
+        expressions.append((marker, match.group()))
+        position = match.end()
+    chunks.append(source[position:])
+    try:
+        formatted = json.dumps(json.loads(''.join(chunks)), ensure_ascii=False, indent=2)
+        for marker, expression in expressions:
+            formatted = formatted.replace(marker, expression)
+        validate_template(formatted)
+    except Exception as exc:
+        set_status('无法安全格式化，源码保持不变：{error}', error=exc)
+        return False
+    apply_formatted(formatted)
+    return True
+
+
 class TemplateHighlighter(QSyntaxHighlighter):
     """区分 JSON 字段和 Jinja 表达式而不改写源码"""
 
@@ -358,56 +410,7 @@ class TemplateEditor(QDialog):
         self._set_status(*self._status[:1], **self._status[1])
 
     def format_json(self):
-        source = self.source()
-        if '{%' in source:
-            self._set_status('包含 Jinja 条件或循环，保留原始排版')
-            return False
-        try:
-            data = json.loads(source)
-        except ValueError:
-            data = None
-        if data is not None:
-            # 组合函数可能含嵌套表达式，合法 JSON 直接排版以保留全部引号
-            try:
-                validate_template(source)
-            except Exception as exc:
-                self._set_status('无法安全格式化，源码保持不变：{error}', error=exc)
-                return False
-            self._replace_formatted_source(json.dumps(data, ensure_ascii=False, indent=2))
-            return True
-        expressions = []
-        chunks = []
-        position = 0
-        in_string = False
-        escaped = False
-        # 临时占位符区分字符串内部和外部表达式
-        for match in re.finditer(r'\{\{.*?\}\}|\{#.*?#\}', source, flags=re.S):
-            part = source[position:match.start()]
-            for char in part:
-                if escaped:
-                    escaped = False
-                elif char == '\\' and in_string:
-                    escaped = True
-                elif char == '"':
-                    in_string = not in_string
-            marker = f'__EXIFFRAME_JINJA_{len(expressions)}__' if in_string else str(912345678900000 + len(expressions))
-            if marker in source:
-                self._set_status('无法安全格式化，源码保持不变：{error}', error=tr('插入字段'))
-                return False
-            chunks.extend((part, marker))
-            expressions.append((marker, match.group()))
-            position = match.end()
-        chunks.append(source[position:])
-        try:
-            formatted = json.dumps(json.loads(''.join(chunks)), ensure_ascii=False, indent=2)
-            for marker, expression in expressions:
-                formatted = formatted.replace(marker, expression)
-            validate_template(formatted)
-        except Exception as exc:
-            self._set_status('无法安全格式化，源码保持不变：{error}', error=exc)
-            return False
-        self._replace_formatted_source(formatted)
-        return True
+        return format_template_json(self.source(), self._set_status, self._replace_formatted_source)
 
     def _replace_formatted_source(self, formatted):
         """将格式化操作合并为一次撤销"""

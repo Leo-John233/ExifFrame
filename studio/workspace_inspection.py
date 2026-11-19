@@ -47,9 +47,15 @@ class WorkspaceInspection:
         return self.inspector.font_slider
 
     def _bind_controls(self):
+        from .controls import CollapsibleSection
         panel = self.inspector
+        for section in panel.findChildren(CollapsibleSection):
+            section.reset_started.connect(self.history.begin_group)
+            section.reset_finished.connect(self.history.finish_group)
         panel.template_selected.connect(self._select_template)
         panel.use_as_default_requested.connect(self._use_as_default)
+        self.photo_view.slot_picked.connect(panel.select_slot)
+        panel.slot_selected.connect(self.photo_view.select_slot)
         panel.style_changed.connect(self._edit_style)
         panel.interaction_started.connect(self._begin_live_interaction)
         panel.interaction_finished.connect(self._end_live_interaction)
@@ -124,8 +130,9 @@ class WorkspaceInspection:
             baseline = ''
         source = settings.template_source or baseline
         self._invalidate_changed_rows(settings, source)
+        if hasattr(self, "source_panel"):
+            self.source_panel.sync((self._editable_photo(), settings.template_name), source)
         self.inspector.set_frame_source(source, baseline=baseline)
-        self.inspector.inline_footer.set_source(source)
 
     def _footer_text_context(self, settings, source):
         path = self._editable_photo()
@@ -152,6 +159,9 @@ class WorkspaceInspection:
                            and self._footer_text_context(settings, source) != self._rendered_rows_context)
         if target != self._rendered_rows_target or context_changed:
             self.inspector.inline_footer.set_rendered_rows({})
+            self.inspector.set_rendered_slots({})
+            self.inspector.set_rendered_style({})
+            self.photo_view.set_slots([])
             self._rendered_rows_target = target
             self._rendered_rows_context = None
 
@@ -189,14 +199,16 @@ class WorkspaceInspection:
         path = self._editable_photo()
         if path:
             if self._photo_settings().template_name != name:
-                self.state.update_style((path,), {'template_name': name, 'template_source': '', **saved_style})
+                self.history.run('style', (path,), self.state.update_style, (path,),
+                                 {'template_name': name, 'template_source': '', **saved_style})
         elif self._current_kind == 'import':
-            self.state.set_active_template(name)
+            self._show_preset_sample()
+            self.history.run('style', (), self.state.set_active_template, name)
 
     def _use_as_default(self):
         name = self._photo_settings().template_name
         if name and not self._locked:
-            self.state.set_active_template(name)
+            self.history.run('style', (), self.state.set_active_template, name)
             self._set_status('默认模板已设为 {name}', name=name)
 
     def _active_template_changed(self, name):
@@ -213,7 +225,8 @@ class WorkspaceInspection:
         self._interaction_applying = self._interaction_active
         self._interaction_style_key = key
         try:
-            self._apply_style_edit(key, value)
+            path = self._editable_photo()
+            self.history.run('style', (path,) if path else (), self._apply_style_edit, key, value)
         finally:
             self._interaction_applying = False
 
@@ -249,7 +262,8 @@ class WorkspaceInspection:
     def _apply_current_style(self):
         path = self._editable_photo()
         if path and not self._locked:
-            self.state.update_style((path,), self.state.effective_style(path, self.settings, template_sources=self._drafts))
+            self.history.run('style', (path,), self.state.update_style, (path,),
+                             self.state.effective_style(path, self.settings, template_sources=self._drafts))
             self._set_status('样式已应用到当前照片')
 
     def _sync_checked_style(self):
@@ -257,7 +271,8 @@ class WorkspaceInspection:
         targets = self.state.checked_paths
         path = self._editable_photo()
         if targets and path and not self._locked:
-            self.state.update_style(targets, self.state.effective_style(path, self.settings, template_sources=self._drafts))
+            self.history.run('style', targets, self.state.update_style, targets,
+                             self.state.effective_style(path, self.settings, template_sources=self._drafts))
             self._set_status('样式已同步到 {count} 张照片', count=len(targets))
 
     def _styles_changed(self, paths):
@@ -307,7 +322,7 @@ class WorkspaceInspection:
                     values.pop(tag, None)
             values.update(normalized)
             updates[key] = values
-        self.state.update_metadata(updates)
+        self.history.run('metadata', paths, self.state.update_metadata, updates)
         return True
 
     def _metadata_changed(self, keys):
@@ -343,6 +358,7 @@ class WorkspaceInspection:
         self.inspector.set_locked(self._locked)
         self.input_input.setReadOnly(self._locked)
         self.output_input.setReadOnly(self._locked)
+        self._update_actions()
 
     def _save_config(self):
         try:
@@ -374,7 +390,7 @@ class WorkspaceInspection:
         for code, action in self.language_actions.items():
             action.setChecked(code == language())
         if not self._current_data:
-            self.canvas_name.setText(tr('预览'))
+            self.canvas_name.setText(tr('示例照片' if self._sample_data else '预览'))
         self._set_status(self._status_source, **self._status_values)
         self._set_preview_status(self._preview_source, **self._preview_values)
         self.preview_status.setToolTip(localize_error(self._preview_error))

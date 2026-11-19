@@ -198,7 +198,7 @@ class CustomFramePanel(QWidget):
         self._sections[group] = section
         return section
 
-    def _baseline_color(self, path, default, decoration):
+    def _baseline_value(self, path, default, decoration):
         if decoration is None:
             return _get(self._baseline_frame, path, default)
         item = self._decoration()
@@ -213,8 +213,8 @@ class CustomFramePanel(QWidget):
             baseline = matches[0] if len(matches) == 1 else {}
         return _get(baseline, path, _get(_DECOR_DEFAULTS.get(kind, {}), path, default))
 
-    def _reset_color(self, path, default, decoration):
-        self._change(path, self._baseline_color(path, default, decoration), decoration=decoration)
+    def _reset_value(self, path, default, decoration):
+        self._change(path, self._baseline_value(path, default, decoration), decoration=decoration)
 
     def _reset_section(self, group):
         if self._document is None or group not in self._sections:
@@ -248,6 +248,7 @@ class CustomFramePanel(QWidget):
                                  suffix=suffix)
         slider.setObjectName('customFrame_' + (decoration + '_' if decoration else '') + path.replace('.', '_'))
         bind(slider, label)
+        slider.set_reset_action(lambda: self._reset_value(path, default, decoration))
         self._record(path, slider, decoration=decoration, default=default, scale=scale)
         slider.valueChanged.connect(lambda value: self._change(path, value / scale if scale != 1 else value,
                                                                decoration=decoration))
@@ -286,7 +287,7 @@ class CustomFramePanel(QWidget):
         color.setObjectName('customFrame_' + (decoration + '_' if decoration else '') + path.replace('.', '_'))
         self._record(path, color, decoration=decoration, default=default)
         color.color_changed.connect(lambda value: self._change(path, value, decoration=decoration))
-        color.reset_requested.connect(lambda: self._reset_color(path, default, decoration))
+        color.reset_requested.connect(lambda: self._reset_value(path, default, decoration))
         form.addRow(color)
         return color
 
@@ -706,7 +707,7 @@ class CustomFramePanel(QWidget):
                 widget.setText(str(value or ''))
                 widget.setToolTip(str(value or ''))
         elif isinstance(widget, ColorProperty):
-            baseline = self._baseline_color(path, default, decoration)
+            baseline = self._baseline_value(path, default, decoration)
             widget.set_color(value or default, inherited=str(value).upper() == str(baseline).upper())
         del blocker
 

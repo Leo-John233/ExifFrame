@@ -22,6 +22,7 @@ def _identity(path):
 class FileBrowser(QWidget):
     """显示目录层级并将输入勾选与当前预览分开管理"""
 
+    hierarchical = True
     directory_requested = Signal(str, str)
     file_selected = Signal(str, object)
     file_details_changed = Signal(str, object)
@@ -205,7 +206,7 @@ class FileBrowser(QWidget):
         parent = self.trees[kind].invisibleRootItem()
         self._changing = True
         try:
-            if root:
+            if root and self.hierarchical:
                 try:
                     parts = path.relative_to(root).parts[:-1]
                 except ValueError:

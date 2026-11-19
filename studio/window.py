@@ -5,18 +5,19 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import replace
 
-from PySide6.QtCore import QSize, Qt, QTimer, Slot
-from PySide6.QtGui import QAction, QActionGroup, QKeySequence
+from PySide6.QtCore import Qt, QTimer, Slot
 from PySide6.QtWidgets import (
     QCheckBox, QHBoxLayout, QLabel, QMainWindow, QProgressBar, QPushButton,
-    QSizePolicy, QSplitter, QStyle, QToolBar, QVBoxLayout, QWidget,
+    QSizePolicy, QVBoxLayout, QWidget,
 )
 
 from core.desktop_service import list_presets, load_settings, save_settings
 from .canvas import ImageCanvas
-from .files import FileBrowser
-from .i18n import bind_static_texts, install_qt_translations, set_language, translator
+from .filmstrip import FilmBrowser
+from .history import ParameterHistory
+from .i18n import bind_static_texts, install_qt_translations, translator
 from .inspector import Inspector
+from .workspace_actions import WorkspaceActions
 from .state import StudioState
 from .workspace_inspection import WorkspaceInspection
 from .workspace_library import WorkspaceLibrary
@@ -36,14 +37,14 @@ class PhotoView(ImageCanvas):
 
 
 class MainWindow(
-    WorkspaceInspection, WorkspaceLibrary, WorkspacePreview, WorkspaceExport, WorkspaceEditors, QMainWindow,
+    WorkspaceActions, WorkspaceInspection, WorkspaceLibrary, WorkspacePreview, WorkspaceExport, WorkspaceEditors, QMainWindow,
 ):
     """桌面工作区的布局与信号装配"""
 
     def __init__(self):
         super().__init__()
         self.setWindowTitle("ExifFrame")
-        self.resize(1380, 850)
+        self.resize(1540, 940)
         self.setMinimumSize(1080, 680)
         self.setAcceptDrops(True)
         self.settings = load_settings()
@@ -55,6 +56,7 @@ class MainWindow(
         self._init_editors()
         self._init_export()
         self._init_preview()
+        self.history = ParameterHistory(self)
         self._build_actions()
         self._build_ui()
         # 固定控件绑定一次，动态内容在语言信号到达后原地更新
@@ -69,91 +71,11 @@ class MainWindow(
         self._retranslate_ui()
         QTimer.singleShot(0, self, self._load_directories)
 
-    def _action(self, text, callback, shortcut=None, icon=None, checkable=False):
-        """统一菜单和工具栏使用的动作及快捷键"""
-        action = QAction(text, self)
-        action.setCheckable(checkable)
-        if icon is not None:
-            action.setIcon(self.style().standardIcon(icon))
-        if shortcut:
-            action.setShortcut(QKeySequence(shortcut))
-        action.triggered.connect(callback)
-        return action
-
-    def _build_actions(self):
-        icons = QStyle.StandardPixmap
-        self.add_action = self._action("添加照片", self._pick_photos, "Ctrl+O", icons.SP_FileIcon)
-        self.directory_action = self._action("输入目录", self._pick_folder, "Ctrl+Shift+O", icons.SP_DirOpenIcon)
-        self.refresh_action = self._action("刷新目录", self._refresh_directories, "F5", icons.SP_BrowserReload)
-        self.export_action = self._action("导出照片", self._export, "Ctrl+R", icons.SP_ArrowDown)
-        self.cancel_action = self._action("取消导出", self._cancel_export, "Escape", icons.SP_MediaStop)
-        self.save_action = self._action("保存设置", self._save_config, "Ctrl+S", icons.SP_DialogSaveButton)
-        self.reset_action = self._action("重置设置", self._reset_config, icon=icons.SP_BrowserReload)
-        self.new_template_action = self._action("新建模板…", self._new_template, "Ctrl+N", icons.SP_FileIcon)
-        self.copy_template_action = self._action("模板另存为…", self._copy_template, "Ctrl+Shift+S", icons.SP_DialogSaveButton)
-        self.edit_template_action = self._action("高级源码…", self._edit_template, "Ctrl+E", icons.SP_FileDialogDetailedView)
-        self.footer_action = self._action("组合底部信息…", self._show_style_tab, "Ctrl+Shift+E", icons.SP_FileDialogContentsView)
-        self.metadata_action = self._action("编辑照片信息…", self._show_metadata_tab, "Ctrl+I", icons.SP_FileDialogInfoView)
-        self.metadata_batch_action = self._action("编辑选中照片信息…", self._advanced_checked_metadata, icon=icons.SP_FileDialogListView)
-        self.original_action = self._action("对照原图", self._view_changed, "Ctrl+Tab", checkable=True)
-        self.lock_action = self._action("锁定设置", self._set_locked, checkable=True)
-        self.metadata_action.setToolTip("编辑当前照片的水印信息，原片保持不变（Ctrl+I）")
-        self.footer_action.setToolTip("自由组合水印字段、顺序和分隔符（Ctrl+Shift+E）")
-        self.edit_template_action.setToolTip("编辑完整 JSON / Jinja 模板（Ctrl+E）")
-        file_menu = self.menuBar().addMenu("文件(&F)")
-        for action in (self.add_action, self.directory_action, self.refresh_action):
-            file_menu.addAction(action)
-        file_menu.addSeparator()
-        file_menu.addAction(self.metadata_action)
-        file_menu.addAction(self.metadata_batch_action)
-        file_menu.addSeparator()
-        file_menu.addAction(self.save_action)
-        file_menu.addAction(self.reset_action)
-        file_menu.addSeparator()
-        file_menu.addAction(self.export_action)
-        file_menu.addAction(self.cancel_action)
-        file_menu.addSeparator()
-        file_menu.addAction(self._action("退出", self.close, "Alt+F4"))
-        template_menu = self.menuBar().addMenu("模板(&T)")
-        for action in (self.new_template_action, self.copy_template_action, self.footer_action, self.edit_template_action):
-            template_menu.addAction(action)
-        view_menu = self.menuBar().addMenu("查看(&V)")
-        view_menu.addAction(self.original_action)
-        view_menu.addAction(self.lock_action)
-        view_menu.addAction(self._action("错误详情…", self._show_error_details))
-        self.language_menu = view_menu.addMenu("语言")
-        self.language_actions = {}
-        group = QActionGroup(self)
-        for code, title in (("zh_CN", "中文"), ("en_US", "英文")):
-            action = self._action(title, lambda checked=False, value=code: set_language(value), checkable=True)
-            group.addAction(action)
-            self.language_menu.addAction(action)
-            self.language_actions[code] = action
-        view_menu.addSeparator()
-        self.about_action = self._action("关于", self._show_about)
-        view_menu.addAction(self.about_action)
-        self.toolbar = QToolBar("常用操作")
-        self.toolbar.setMovable(False)
-        self.toolbar.setIconSize(QSize(16, 16))
-        self.toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        # 把最常用的四步操作排在一起，其余入口继续保留
-        for action in (self.add_action, self.metadata_action, self.footer_action):
-            self.toolbar.addAction(action)
-        self.toolbar.addSeparator()
-        self.toolbar.addAction(self.export_action)
-        self.toolbar.addAction(self.cancel_action)
-        self.toolbar.widgetForAction(self.export_action).setObjectName("primaryButton")
-        spacer = QWidget()
-        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self.toolbar.addWidget(spacer)
-        self.toolbar.addAction(self.directory_action)
-        self.toolbar.addAction(self.refresh_action)
-        self.addToolBar(self.toolbar)
-
     def _build_ui(self):
-        self.files = FileBrowser()
+        self.files = FilmBrowser()
+        self.files.fold.toggled.connect(self.filmstrip_action.setChecked)
+        self.filmstrip_action.setChecked(self.files.fold.isChecked())
         self.files.setObjectName("filesPanel")
-        self.files.setMinimumWidth(270)
         self.files.directory_requested.connect(self._directory_requested)
         self.files.file_selected.connect(self._file_selected)
         self.files.selection_changed.connect(self._read_checked_paths)
@@ -169,17 +91,11 @@ class MainWindow(
         layout = QVBoxLayout(preview)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        heading = QHBoxLayout()
-        heading.setContentsMargins(12, 8, 12, 8)
-        self.canvas_name = QLabel("预览")
+        self.canvas_name = self.files.photo_name
         self.canvas_name.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        heading.addWidget(self.canvas_name, 1)
-        self.original_toggle = QCheckBox("对照原图")
-        self.original_toggle.setObjectName("originalToggle")
-        self.original_toggle.setToolTip("仅切换预览，不改变导出内容（Ctrl+Tab）")
+        self.original_toggle = QCheckBox(self)
+        self.original_toggle.hide()
         self.original_toggle.toggled.connect(self._original_toggled)
-        heading.addWidget(self.original_toggle)
-        layout.addLayout(heading)
         self.photo_view = PhotoView()
         self.photo_view.setObjectName("photoPreview")
         self.photo_view.zoom_changed.connect(self._preview_zoom_changed)
@@ -187,20 +103,15 @@ class MainWindow(
         layout.addWidget(self.photo_view, 1)
         self.preview_status = QLabel("未选择照片")
         self.preview_status.setObjectName("previewStatus")
-        layout.addWidget(self.preview_status)
+        layout.addWidget(self.files)
         self.inspector = Inspector()
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.setObjectName("mainSplitter")
-        splitter.setChildrenCollapsible(False)
-        splitter.setHandleWidth(8)
-        for widget in (self.files, preview, self.inspector):
-            splitter.addWidget(widget)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([320, 700, 360])
+        self.inspector.setFixedWidth(348)
         central = QWidget()
-        outer = QVBoxLayout(central)
-        outer.setContentsMargins(12, 12, 12, 12)
-        outer.addWidget(splitter)
+        outer = QHBoxLayout(central)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(1)
+        outer.addWidget(preview, 1)
+        outer.addWidget(self.inspector)
         self.setCentralWidget(central)
         self.summary_label = QLabel("成功 0 / 失败 0 / 跳过 0")
         self.progress = QProgressBar()
@@ -211,11 +122,27 @@ class MainWindow(
         self.error_button.setEnabled(False)
         self.open_button = QPushButton("打开输出目录")
         self.open_button.clicked.connect(self._open_output)
+        self.statusBar().setStyleSheet('QPushButton { min-height: 16px; padding: 1px 5px; } '
+                                      'QLabel#previewStatus { padding: 0px 3px; background: transparent; }')
+        self.files.set_status_widgets(self.canvas_name, self.preview_status)
         self.statusBar().addPermanentWidget(self.progress)
         self.statusBar().addPermanentWidget(self.summary_label)
         self.statusBar().addPermanentWidget(self.error_button)
         self.statusBar().addPermanentWidget(self.open_button)
+        self.statusBar().hide()
         self._set_status("就绪")
+
+    def _toggle_filmstrip(self, checked):
+        self.files.show()
+        self.files._user_fold()
+        self.files.fold.setChecked(checked)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, 'inspector'):
+            width = 340 if self.width() < 1250 else 348
+            self.inspector.setFixedWidth(width)
+            self.files.fit_workspace(self.width(), self.height(), width, self.toolbar.height())
 
     def dragEnterEvent(self, event):
         if not self._exporting and event.mimeData().hasUrls() and any(url.isLocalFile() for url in event.mimeData().urls()):

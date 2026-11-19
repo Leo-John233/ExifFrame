@@ -31,7 +31,10 @@ class WorkspaceExport:
                 rendered[key] = tr(rendered[key])
         if "error" in rendered:
             rendered["error"] = localize_error(rendered["error"])
-        self.statusBar().showMessage(tr(source, **rendered))
+        message = tr(source, **rendered)
+        self.statusBar().showMessage(message)
+        if hasattr(self, 'files'):
+            self.files.count_label.setToolTip(message)
 
     def _set_preview_status(self, source, **values):
         self._preview_source, self._preview_values = source, values
@@ -64,6 +67,7 @@ class WorkspaceExport:
     def _record_errors(self, title, errors):
         self._errors = errors
         self.error_button.setEnabled(True)
+        self.statusBar().show()
         self._set_status("{title}：{error}", title=title, error=errors[0])
 
     def _show_about(self):
@@ -91,6 +95,8 @@ class WorkspaceExport:
         if not hasattr(self, "files"):
             return
         busy = self._exporting or self._closing
+        self.undo_action.setEnabled(self.history.stack.canUndo() and not self._locked and not busy)
+        self.redo_action.setEnabled(self.history.stack.canRedo() and not self._locked and not busy)
         importing = any(kind == "import" for kind, _ in self._tasks)
         selected = len(self.state.checked_paths)
         self.inspector.set_counts(selected, len(self.files.items["import"]))
@@ -131,7 +137,7 @@ class WorkspaceExport:
         if output and not self.files.items["output"]:
             text = "此目录暂无导出照片\n\n导出后可在“输出”标签查看成品"
         elif self.files.items["output" if output else "import"]:
-            text = "从左侧列表选择一张照片\n\n勾选的输入照片会一并导出"
+            text = "从胶片带选择一张照片\n\n勾选的输入照片会一并导出"
         else:
             text = "添加照片后开始编辑水印\n\n拖入 JPG、PNG、HEIC 文件或文件夹，或点击上方“添加照片”"
         self.photo_view.set_empty_message(text)
@@ -195,6 +201,7 @@ class WorkspaceExport:
 
     def _set_exporting(self, active):
         self._exporting = active
+        self.statusBar().show()
         self.inspector.setEnabled(not active)
         self.files.setEnabled(not active)
         for editor in self._editors:

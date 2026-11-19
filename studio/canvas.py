@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QImage, QPainter, QPixmap, QTransform
+from PySide6.QtGui import QColor, QImage, QPainter, QPalette, QPen, QPixmap, QTransform
 from PySide6.QtWidgets import (
     QFrame, QGraphicsPixmapItem, QGraphicsScene, QGraphicsView, QHBoxLayout, QLabel,
     QSizePolicy, QToolButton, QWidget,
@@ -43,6 +43,7 @@ class ImageCanvas(QGraphicsView):
 
     zoom_changed = Signal(float)
     original_requested = Signal()
+    slot_picked = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -58,7 +59,11 @@ class ImageCanvas(QGraphicsView):
         self._holding_original = False
         self.empty_message = ''
         self.setFrameShape(QFrame.Shape.NoFrame)
-        self.setBackgroundBrush(QColor('#141516'))
+        self.setObjectName('photoPreview')
+        self._slots = {}
+        self._selected_slot = ''
+        self._click_pos = None
+        self._source_size = None
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.NoAnchor)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
@@ -70,13 +75,16 @@ class ImageCanvas(QGraphicsView):
         bind(self, '滚轮缩放 拖动平移 双击切换适应和100% 按住空格查看原图', 'setToolTip')
         self.hud = QWidget(self.viewport())
         self.hud.setObjectName('canvasHud')
-        self.hud.setStyleSheet('QWidget#canvasHud { background: rgba(25, 25, 25, 190); border-radius: 4px; }'
+        self.hud.setForegroundRole(QPalette.ColorRole.WindowText)
+        self.hud.setStyleSheet('QWidget#canvasHud { background: rgba(24, 24, 24, 210); border-radius: 10px; }'
                                'QLabel { color: #E5E5E5; background: transparent; }'
-                               'QToolButton { min-height: 18px; padding: 2px 5px; border: 0; background: transparent; }'
+                               'QToolButton { color: #EFEFEF; min-height: 18px; padding: 2px 5px; border: 0; background: transparent; }'
                                'QToolButton:hover { background: #48494B; }')
         hud_layout = QHBoxLayout(self.hud)
         hud_layout.setContentsMargins(6, 2, 4, 2)
         hud_layout.setSpacing(4)
+        self.size_label = QLabel()
+        hud_layout.addWidget(self.size_label)
         self.zoom_label = QLabel()
         hud_layout.addWidget(self.zoom_label)
         self.hud_fit = bind(QToolButton(), '适应')
@@ -86,6 +94,8 @@ class ImageCanvas(QGraphicsView):
         self.hud_actual.setText('1:1')
         self.hud_actual.clicked.connect(self.actual_size)
         hud_layout.addWidget(self.hud_actual)
+        self.compare_hint = bind(QLabel(), '按住空格对比原图')
+        hud_layout.addWidget(self.compare_hint)
         self.hud.hide()
         translator.language_changed.connect(self._update_hud)
 
@@ -124,10 +134,13 @@ class ImageCanvas(QGraphicsView):
         return width, height
 
     def set_image(self, image):
+        self._slots = {}
         old_rect = self.sceneRect()
         old_center = self.mapToScene(self.viewport().rect().center())
         width, height = self._set_item(self.photo, image)
         if not width or not height:
+            self._source_size = None
+            self._selected_slot = ''
             self.original.setPixmap(QPixmap())
             self._holding_original = False
             self.photo.setVisible(True)
@@ -149,6 +162,23 @@ class ImageCanvas(QGraphicsView):
                               old_center.y() * height / old_rect.height())
         self.hud.show()
         self._update_hud()
+
+    def set_source_size(self, size):
+        self._source_size = size
+        self._update_hud()
+
+    def set_slots(self, slots):
+        self._slots = {item['key']: item['bbox'] for item in slots if item.get('bbox')}
+        self.viewport().update()
+
+    def select_slot(self, key):
+        self._selected_slot = key
+        self.viewport().update()
+
+    def _slot_rect(self, bounds):
+        rect = self.sceneRect()
+        x0, y0, x1, y1 = bounds
+        return QRectF(x0*rect.width(), y0*rect.height(), (x1-x0)*rect.width(), (y1-y0)*rect.height())
 
     def set_original_image(self, image):
         self._set_item(self.original, image)
@@ -229,7 +259,22 @@ class ImageCanvas(QGraphicsView):
 
     def mousePressEvent(self, event):
         self.setFocus(Qt.FocusReason.MouseFocusReason)
+        self._click_pos = event.position().toPoint() if event.button() == Qt.MouseButton.LeftButton else None
         super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        pos = event.position().toPoint()
+        click = (event.button() == Qt.MouseButton.LeftButton and self._click_pos is not None
+                 and (pos-self._click_pos).manhattanLength() < 4)
+        self._click_pos = None
+        if click and not self._holding_original and self.photo.isVisible():
+            point = self.mapToScene(pos)
+            for key, bounds in reversed(self._slots.items()):
+                if self._slot_rect(bounds).contains(point):
+                    self.select_slot(key)
+                    self.slot_picked.emit(key)
+                    break
 
     def mouseDoubleClickEvent(self, event):
         if self._mode == 'fit' or abs(self._zoom - 1.0) > 0.001:
@@ -268,6 +313,15 @@ class ImageCanvas(QGraphicsView):
 
     def paintEvent(self, event):
         super().paintEvent(event)
+        bounds = self._slots.get(self._selected_slot)
+        if bounds and self.photo.isVisible() and not self._holding_original:
+            painter = QPainter(self.viewport())
+            box = self.mapFromScene(self._slot_rect(bounds)).boundingRect().adjusted(-1, -1, 1, 1)
+            painter.setPen(QPen(QColor(40, 40, 40, 150), 1))
+            painter.drawRect(box)
+            painter.setPen(QPen(QColor(240, 240, 240, 200), 1, Qt.PenStyle.DashLine))
+            painter.drawRect(box)
+            painter.end()
         if self.photo.pixmap().isNull() and self.empty_message:
             painter = QPainter(self.viewport())
             painter.setPen(QColor('#A6A7A9'))
@@ -279,5 +333,11 @@ class ImageCanvas(QGraphicsView):
             return
         percent = f'{round(self._zoom * 100)}%'
         self.zoom_label.setText(f'{tr("原图")}  {percent}' if self.original.isVisible() else percent)
+        rect = self.sceneRect()
+        output = f'{round(rect.width())}×{round(rect.height())}'
+        self.size_label.setText(f'{self._source_size[0]}×{self._source_size[1]} → {output}' if self._source_size else '')
+        self.size_label.setVisible(bool(self._source_size))
+        self.compare_hint.setVisible(self.viewport().width() > 530)
         self.hud.adjustSize()
-        self.hud.move(max(0, self.viewport().width() - self.hud.width() - 10), 10)
+        self.hud.move(max(0, (self.viewport().width() - self.hud.width()) // 2),
+                      max(0, self.viewport().height() - self.hud.height() - 9))
