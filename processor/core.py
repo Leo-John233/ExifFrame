@@ -11,7 +11,7 @@ from typing import Dict, Any, Type, List, MutableMapping, Iterator, Optional
 from PIL import Image, ImageColor, ImageOps
 
 from core.configs import load_config
-from core.image_cache import cache_preview_image, cached_preview_image, check_cancelled
+from core.image_cache import cache_preview_image, cached_preview_image, check_cancelled, file_image_id
 from core.logger import logger
 from core.util import get_exif, log_rt
 
@@ -272,8 +272,32 @@ def _preview_filter_key(processor, node, input_keys):
     return ('filter', processor, input_keys[0], processor.preview_cache_params(node))
 
 
+def _source_identity(key):
+    """从内部预览身份提取与画质无关的文件版本"""
+    if isinstance(key, tuple) and len(key) == 4 and key[0] == 'filter':
+        return _source_identity(key[2])
+    if isinstance(key, tuple) and len(key) >= 4 and key[0] in ('source', 'file'):
+        return ('file', key[1], key[2], key[3])
+    return None
+
+
+def uses_frame_layers(node):
+    """仅显式声明画框或启用新前景功能时切换新引擎"""
+    return ('frame_style' in node or 'overlay_mode' in node or bool(node.get('palette_bar'))
+            or bool(node.get('adaptive_logo_invert')))
+
+
+def _clear_identities(buffers, identities, changed):
+    """未知处理器可能原位修改输入，不再复用相同对象的来源身份"""
+    affected = {id(image) for image in changed}
+    for images, keys in zip(buffers, identities):
+        for index, image in enumerate(images):
+            if id(image) in affected:
+                keys[index] = None
+
+
 def start_process(data: List[dict], input_path: str = None, output_path: str = None, initial_buffer: List = None,
-                  *, preview_source_key=None, cancelled=None):
+                  *, preview_source_key=None, cancelled=None, image_id=None):
     """
     执行处理管道
 
@@ -304,6 +328,20 @@ def start_process(data: List[dict], input_path: str = None, output_path: str = N
     output = nodes[0].get_buffer()
 
     all_buffer = [output]
+    frame_provenance = any(node.get('processor_name') in {'watermark', 'watermark_with_timestamp'} for node in data)
+    source_id = _source_identity(image_id) or _source_identity(preview_source_key)
+    if frame_provenance and source_id is None and initial_buffer is None:
+        paths = [input_path] if input_path is not None else nodes[0].get('buffer_path', [])
+        if isinstance(paths, (tuple, list)) and len(paths) == 1:
+            source_id = file_image_id(paths[0])
+    all_ids = [[source_id] if len(output) == 1 else [None] * len(output)] if frame_provenance else None
+    if all_ids is not None and source_id is not None and len(output) == 1:
+        source_stage = (preview_source_key if _source_identity(preview_source_key) == source_id else
+                        ('source', *source_id[1:], output[0].size, output[0].mode, 'input'))
+        all_stages = [[source_stage]]
+    else:
+        source_stage = None
+        all_stages = [[None] * len(output)] if all_ids is not None else None
     all_keys = None
     if preview_source_key is not None:
         initial_keys = [preview_source_key] if len(output) == 1 else [None] * len(output)
@@ -329,18 +367,35 @@ def start_process(data: List[dict], input_path: str = None, output_path: str = N
                 else:
                     input_keys = ([preview_source_key] if node.get('_preview_source_input', False)
                                   and len(node['input_buffer']) == 1 else [None] * len(node['input_buffer']))
+            if all_ids is not None:
+                supplied = node.get('_preview_input_keys')
+                if supplied is not None and len(supplied) == len(node['input_buffer']):
+                    input_ids = [_source_identity(item) for item in supplied]
+                    input_stages = [item if _source_identity(item) is not None else None for item in supplied]
+                elif node.get('_preview_source_input', False) and len(node['input_buffer']) == 1:
+                    input_ids = [source_id]
+                    input_stages = [source_stage]
+                else:
+                    input_ids = [None] * len(node['input_buffer'])
+                    input_stages = [None] * len(node['input_buffer'])
         elif 'select' in node:
             indexes = json.loads(node['select'])
             flattened = list(chain.from_iterable([all_buffer[i] for i in indexes]))
             node.update_buffer(flattened)
             if all_keys is not None:
                 input_keys = list(chain.from_iterable([all_keys[i] for i in indexes]))
+            if all_ids is not None:
+                input_ids = list(chain.from_iterable([all_ids[i] for i in indexes]))
+                input_stages = list(chain.from_iterable([all_stages[i] for i in indexes]))
         else:
             # 使用 category() 方法判断是否为 merger，避免导入 Merger 类
             if processor_instance.category() != "merger":
                 node.update_buffer(output)
                 if all_keys is not None:
                     input_keys = all_keys[-1][:]
+                if all_ids is not None:
+                    input_ids = all_ids[-1][:]
+                    input_stages = all_stages[-1][:]
             else:
                 # 收集下标从上一个 merger 之后, 到当前 idx 为止的 buffer
                 buffers_to_merge = all_buffer[last_merger_idx + 1:idx + 1]
@@ -350,12 +405,33 @@ def start_process(data: List[dict], input_path: str = None, output_path: str = N
                 node.update_buffer(flattened)
                 if all_keys is not None:
                     input_keys = list(chain.from_iterable(all_keys[last_merger_idx + 1:idx + 1]))
+                if all_ids is not None:
+                    input_ids = list(chain.from_iterable(all_ids[last_merger_idx + 1:idx + 1]))
+                    input_stages = list(chain.from_iterable(all_stages[last_merger_idx + 1:idx + 1]))
                 last_merger_idx = idx
+
+        if all_ids is not None:
+            paths = node.get('buffer_path')
+            if paths and not node.get('buffer_loaded', False) and isinstance(paths, (tuple, list)):
+                input_ids = [file_image_id(path) for path in paths]
+                input_stages = input_ids[:]
+            provenance_inputs = node.get('buffer', [])
+            if node.get_processor_name() in {'watermark', 'watermark_with_timestamp'}:
+                node['_frame_image_id'] = input_ids[0] if len(input_ids) == 1 else None
+                node['_frame_cache_key'] = input_stages[0] if len(input_stages) == 1 else None
+            derived_stage = _preview_filter_key(processor, node, input_stages)
 
         if all_keys is None:
             processor_instance.process(node)
             check_cancelled(cancelled)
             output = node.get_buffer()
+            if all_ids is not None:
+                if 'preview_cache_params' not in processor.__dict__:
+                    _clear_identities(all_buffer, all_ids, provenance_inputs)
+                    _clear_identities(all_buffer, all_stages, provenance_inputs)
+                trusted = derived_stage is not None and len(input_ids) == 1 and len(output) == 1
+                all_ids.append([input_ids[0]] if trusted else [None] * len(output))
+                all_stages.append([derived_stage] if trusted else [None] * len(output))
             all_buffer.append(output)
             continue
         if input_keys is None:
@@ -389,7 +465,14 @@ def start_process(data: List[dict], input_path: str = None, output_path: str = N
                 for item_index, image in enumerate(images):
                     if id(image) in changed:
                         keys[item_index] = None
+            if all_ids is not None:
+                _clear_identities(all_buffer, all_ids, input_images)
+                _clear_identities(all_buffer, all_stages, input_images)
         output = node.get_buffer()
+        if all_ids is not None:
+            trusted = derived_stage is not None and len(input_ids) == 1 and len(output) == 1
+            all_ids.append([input_ids[0]] if trusted else [None] * len(output))
+            all_stages.append([derived_stage] if trusted else [None] * len(output))
         all_buffer.append(output)
         all_keys.append([key] if key is not None and len(output) == 1 else [None] * len(output))
 
