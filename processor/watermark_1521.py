@@ -177,4 +177,6 @@ def render_watermark(ctx, image, scale):
     canvas = legacy_base(image, ctx, footer_height, ctx.get('_frame_image_id'))
     canvas.alpha_composite(footer, (left_margin, top_margin + image.height))
     transfer_slots(footer, canvas, (left_margin, top_margin + image.height))
+    if ctx.get('_logo_slot_keys'):
+        canvas.info['_render_line_spacing'] = 100 * footer_height / (left_height + 2 * margin)
     return canvas

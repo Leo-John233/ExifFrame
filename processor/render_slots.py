@@ -46,7 +46,8 @@ def prepare_slots(nodes):
             number += 1
             prefix = '' if number == 1 else f'watermark_{number}_'
             node.setdefault('_logo_slot_keys', {name: prefix + name for name in
-                                               ('left_logo', 'center_logo', 'right_logo')})
+                                               ('left_logo', 'center_logo', 'right_logo')
+                                               if name in node or name in (node.get('logo_styles') or {})})
 
 
 def _color(value):
@@ -96,6 +97,7 @@ def tag_text(image, node):
     if node.get('_slot_key'):
         image.info[SLOTS_KEY] = [text_record(node, image)]
     if node.get('visible', True) is False:
+        image.info['_hidden_text_bounds'] = image.getchannel('A').getbbox()
         image.putalpha(0)
     return image
 
@@ -170,3 +172,53 @@ def complete_slots(nodes, image):
                 extra.append({'key': key, 'kind': 'logo', 'logo': node.get(name), 'bbox': None,
                               'visible': bool(node.get(name)) and style.get('visible') is not False})
     image.info[SLOTS_KEY] = list(image.info.get(SLOTS_KEY, [])) + extra
+
+
+def resolved_style(nodes, source_scale=1.0):
+    """从已展开 Jinja、注入快捷样式的节点解析实际默认值"""
+    from core.footer import text_targets
+    from processor.core import PipelineContext, uses_frame_layers
+    from processor.frame_layers import _DEFAULTS, frame_geometry
+    from processor.types import Alignment
+    frame = next((node for node in nodes if node.get('processor_name') in
+                  {'watermark', 'watermark_with_timestamp'}), {})
+    ctx = PipelineContext(frame)
+    modern = bool(frame) and uses_frame_layers(frame)
+    style = frame.get('frame_style') or ('solid_border' if modern else None)
+    custom = frame.get('custom_frame') or {}
+    background = custom.get('background') or {}
+    inset = frame.get('overlay_mode') == 'inset_overlay'
+    background_type = ('photo' if inset or not frame else background.get('type', 'solid') if custom
+                       else 'blurred_photo' if style == 'blurred_glass' else 'solid')
+    color = (background.get('color', '#FFFFFF') if custom else
+             frame.get('frame_color', frame.get('color', _DEFAULTS.get(style, (0, 0, '#FFFFFF'))[2])))
+    size = frame.get('_render_input_size') or (1, 1)
+    unit = min(size)
+    if modern:
+        unit = frame_geometry(size, frame)['unit']
+        line_spacing = float(frame.get('middle_spacing', .012 * unit))
+    else:
+        output = frame.get('buffer') or []
+        line_spacing = output[0].info.get('_render_line_spacing', 0) if output else 0
+    _, targets = text_targets(nodes)
+    spacings = [float(effective_text(node).get('text_spacing', 0)) / source_scale
+                for _, _, _, node in targets if node]
+    policies = [node.get('brand_glyph_policy', 'geometric') for _, _, _, node in targets if node]
+    policy = frame.get('brand_glyph_policy') or (policies[0] if policies and len(set(policies)) == 1 else
+                                               'geometric' if not policies else None)
+    align = ctx.getenum('right_alignment', Alignment.RIGHT, Alignment)
+    alignment = 'left' if align == Alignment.LEFT else 'right'
+    return {'frame_color': _color(color) if background_type == 'solid' else None,
+            'background_type': background_type, 'frame_style': style, 'overlay_mode': frame.get('overlay_mode'),
+            'right_alignment': alignment, 'caption_layout': frame.get('caption_layout', 'columns'),
+            'text_spacing': round(spacings[0], 2) if spacings and len(set(spacings)) == 1 else 0 if not spacings else None,
+            'line_spacing': round(line_spacing / source_scale, 2),
+            'brand_glyph_policy': policy,
+            'logo': next((frame.get(key) for key in ('left_logo', 'center_logo', 'right_logo') if frame.get(key)), None),
+            'palette_bar': bool(frame.get('palette_bar', False)),
+            'adaptive_logo_invert': bool(frame.get('adaptive_logo_invert', False)),
+            'inset_anchor': frame.get('inset_anchor', 'bottom_right'),
+            'frame_brightness': frame.get('frame_brightness', .72),
+            'frame_vignette': frame.get('frame_vignette', .25),
+            'frame_blur': frame.get('frame_blur', .08),
+            'overlay_opacity': frame.get('overlay_opacity', .92 if inset else 1)}

@@ -246,6 +246,8 @@ def read_template(name: str) -> str:
 
 def validate_template(source: str) -> None:
     """检查 Jinja 语法及普通模板的 JSON 结构"""
+    from core.slot_style_metadata import strip_slot_metadata
+    source = strip_slot_metadata(source)
     Environment().parse(_prepare_footer_calls(source))
     # 条件和循环模板的最终结构由照片预览进一步验证
     if '{%' not in source:
@@ -937,9 +939,12 @@ def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True, 
                 full_size = _nearest_frame_ratio(full_size, nodes[-1])
         else:
             full_size = result.size
-        from processor.render_slots import complete_slots, finish_slots
+        from processor.render_slots import complete_slots, finish_slots, resolved_style
         complete_slots(nodes, result)
         rendered_slots = finish_slots(result, full_size)
+        rendered_style = resolved_style(nodes, source_scale)
+        if not rendered_style.get('logo'):
+            rendered_style['logo'] = next((item.get('logo') for item in rendered_slots if item.get('logo')), None)
         result = _output_rgb(result, settings)
         if not full_resolution:
             max_side = 900 if interactive else 1800
@@ -949,6 +954,7 @@ def render_photo(path: Path, settings: WatermarkSettings, preview: bool = True, 
         result.info['preview_source_size'] = original_size
         result.info['preview_rendered_rows'] = rendered_rows
         result.info['preview_rendered_slots'] = rendered_slots
+        result.info['preview_rendered_style'] = rendered_style
     if profile:
         result.info['icc_profile'] = profile
     return result

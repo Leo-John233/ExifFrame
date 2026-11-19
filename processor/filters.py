@@ -419,6 +419,8 @@ def draw_pixel_footer(ctx, img, scale):
         transfer_slots(tag_logo(right_logo, ctx, 'right_logo'), canvas, (right_logo_x, right_logo_y))
 
     # 7. 返回结果
+    if ctx.get('_logo_slot_keys'):
+        canvas.info['_render_line_spacing'] = middle_spacing
     return canvas
 
 

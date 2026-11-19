@@ -4,13 +4,23 @@ import json
 import re
 from functools import lru_cache
 
-from jinja2 import Environment
+from jinja2 import Environment, Template
 from jinja2.sandbox import SandboxedEnvironment
 
 from core.jinja2renders import auto_logo, vh, vw
 from core.footer import _LEGACY_ALTITUDE, _legacy_altitude_unit, footer_row, footer_segments
 from core.geography import format_altitude, format_location
 from core.dates import watermark_date
+from core.slot_style_metadata import apply_slot_metadata, read_slot_metadata, strip_slot_metadata
+
+
+class _SlotStyleTemplate(Template):
+    """共享渲染出口让桌面、网页和预设包使用同一份动态槽位覆写"""
+
+    def render(self, *args, **kwargs):
+        rendered = super().render(*args, **kwargs)
+        nodes = json.loads(rendered)
+        return json.dumps(apply_slot_metadata(nodes, self.slot_styles), ensure_ascii=False)
 
 
 def _json_string(value):
@@ -165,8 +175,15 @@ def _prepare_footer_calls(source):
 def compiled_template(source: str, logo=auto_logo):
     """不可变编译结果可由后台任务共享，照片变量仍逐次传入"""
     environment = SandboxedEnvironment(autoescape=False)
+    styles = read_slot_metadata(source)
+    if styles:
+        environment.template_class = _SlotStyleTemplate
+        source = strip_slot_metadata(source)
     environment.filters['json_string'] = _json_string
     environment.globals.update(vh=vh, vw=vw, auto_logo=logo, footer_row=footer_row,
                                footer_segments=footer_segments, geo_location=format_location,
                                geo_altitude=format_altitude, watermark_date=watermark_date)
-    return environment.from_string(_escape_string_variables(_prepare_footer_calls(source)))
+    template = environment.from_string(_escape_string_variables(_prepare_footer_calls(source)))
+    if styles:
+        template.slot_styles = styles
+    return template

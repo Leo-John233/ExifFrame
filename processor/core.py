@@ -431,6 +431,11 @@ def start_process(data: List[dict], input_path: str = None, output_path: str = N
                 node['_frame_cache_key'] = stage
             derived_stage = _preview_filter_key(processor, node, input_stages)
 
+        if collect_metadata and node.get_processor_name() in {'watermark', 'watermark_with_timestamp'}:
+            inputs = node.get_buffer()
+            if inputs:
+                node['_render_input_size'] = inputs[0].size
+
         if all_keys is None:
             processor_instance.process(node)
             check_cancelled(cancelled)

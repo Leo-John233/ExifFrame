@@ -50,7 +50,7 @@ def _ink_node(node, ink):
 def _text_bitmap(node, ink):
     prepared, adaptable = _ink_node(node, ink)
     image = render_text_row(prepared)
-    bounds = image.getchannel('A').getbbox()
+    bounds = image.getchannel('A').getbbox() or image.info.get('_hidden_text_bounds')
     if not bounds:
         return None, adaptable
     image = crop_slots(image, bounds)

@@ -38,6 +38,7 @@ _BOUNDED_TEMPLATES = {
 
 _RENDERED_ROWS_KEY = 'ExifFrame/RenderedRows'
 _RENDERED_SLOTS_KEY = 'ExifFrame/RenderedSlots'
+_RENDERED_STYLE_KEY = 'ExifFrame/RenderedStyle'
 
 
 def qt_image(image: Image.Image, full_size=None) -> QImage:
@@ -52,6 +53,9 @@ def qt_image(image: Image.Image, full_size=None) -> QImage:
     slots = image.info.get('preview_rendered_slots')
     if isinstance(slots, list):
         result.setText(_RENDERED_SLOTS_KEY, json.dumps(slots, ensure_ascii=True))
+    style = image.info.get('preview_rendered_style')
+    if isinstance(style, dict):
+        result.setText(_RENDERED_STYLE_KEY, json.dumps(style, ensure_ascii=True))
     return result
 
 
@@ -75,6 +79,15 @@ def qt_rendered_slots(image: QImage) -> list[dict]:
     if not isinstance(slots, list):
         return []
     return [item for item in slots if isinstance(item, dict) and isinstance(item.get('key'), str)]
+
+
+def qt_rendered_style(image: QImage) -> dict:
+    """读取同代预览的实际模板默认值，避免在界面展示未展开的表达式"""
+    try:
+        style = json.loads(image.text(_RENDERED_STYLE_KEY))
+    except (TypeError, ValueError):
+        return {}
+    return style if isinstance(style, dict) else {}
 
 
 def original_image(path, *, full_resolution=False, cancelled=None):
