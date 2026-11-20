@@ -75,6 +75,7 @@ class WorkspaceActions:
         self.about_action = self._action("关于", self._show_about)
         view_menu.addAction(self.about_action)
         self.toolbar = QToolBar("常用操作")
+        self.toolbar.setObjectName("workspaceToolbar")
         self.toolbar.setMovable(False)
         self.toolbar.setMaximumHeight(32)
         self.toolbar.setStyleSheet('QToolBar { padding: 0px 6px; spacing: 4px; } '
@@ -102,9 +103,18 @@ class WorkspaceActions:
             action.setChecked(theme() == code)
             self.theme_menu.addAction(action)
             self.theme_actions[code] = action
+        self.theme_menu.addSeparator()
+        self.appearance_action = self._action('外观与主题设置…', self._show_appearance_settings)
+        self.theme_menu.addAction(self.appearance_action)
         theme_notifier.theme_changed.connect(self._theme_changed)
-        for menu in (self.language_menu, self.theme_menu):
-            self._menu_button(menu)
+        self._menu_button(self.language_menu)
+        self.theme_button = bind(QToolButton(), '主题')
+        self.theme_button.setObjectName('themeQuickSwitch')
+        bind(self.theme_button, '点击切换深浅主题，菜单中设置外观', 'setToolTip')
+        self.theme_button.setMenu(self.theme_menu)
+        self.theme_button.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        self.theme_button.clicked.connect(self._toggle_theme)
+        self.toolbar.addWidget(self.theme_button)
         self.toolbar.addAction(self.cancel_action)
         self.toolbar.addAction(self.export_action)
         self.toolbar.widgetForAction(self.export_action).setObjectName("primaryButton")
@@ -118,3 +128,18 @@ class WorkspaceActions:
 
     def _theme_changed(self, code):
         self.theme_actions[code].setChecked(True)
+
+    def _toggle_theme(self):
+        set_theme('light' if theme() == 'dark' else 'dark')
+
+    def _show_appearance_settings(self):
+        from .appearance import AppearanceDialog
+        dialog = getattr(self, '_appearance_dialog', None)
+        if dialog is None:
+            dialog = AppearanceDialog(self)
+            dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+            dialog.finished.connect(lambda _: setattr(self, '_appearance_dialog', None))
+            self._appearance_dialog = dialog
+        dialog.open()
+        dialog.raise_()
+        dialog.activateWindow()

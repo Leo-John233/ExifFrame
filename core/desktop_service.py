@@ -153,9 +153,9 @@ def load_settings() -> WatermarkSettings:
     """损坏或过期的本机设置自动回退到默认值"""
     defaults = WatermarkSettings()
     # 读取原项目配置，使两种入口使用相同的输入输出目录和模板
-    config = configparser.ConfigParser()
+    config = configparser.ConfigParser(interpolation=None)
     try:
-        config.read(WORKSPACE_CONFIG_PATH, encoding='utf-8')
+        config.read(WORKSPACE_CONFIG_PATH, encoding='utf-8-sig')
         defaults.input_dir = config.get('DEFAULT', 'input_folder', fallback='')
         defaults.output_dir = config.get('DEFAULT', 'output_folder', fallback='')
         defaults.quality = config.getint('DEFAULT', 'quality', fallback=95)
@@ -209,19 +209,13 @@ def save_settings(settings: WatermarkSettings) -> None:
 def save_workspace_settings(settings: WatermarkSettings) -> None:
     """显式保存时同步原项目配置，保留服务和编码等已有选项"""
     _validate(settings)
-    config = configparser.ConfigParser()
-    config.read(WORKSPACE_CONFIG_PATH, encoding='utf-8')
-    config['DEFAULT'].update(input_folder=settings.input_dir, output_folder=settings.output_dir,
-                             quality=str(settings.quality), subsampling=str(settings.subsampling),
-                             override_existed=str(settings.overwrite_existing))
-    if not config.has_section('render'):
-        config.add_section('render')
-    config.set('render', 'template_name', settings.template_name)
-    WORKSPACE_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    temporary = WORKSPACE_CONFIG_PATH.with_suffix('.ini.tmp')
-    with temporary.open('w', encoding='utf-8') as stream:
-        config.write(stream)
-    temporary.replace(WORKSPACE_CONFIG_PATH)
+    from core.ini_preferences import update_ini_sections
+    update_ini_sections(WORKSPACE_CONFIG_PATH, {
+        'DEFAULT': {'input_folder': settings.input_dir, 'output_folder': settings.output_dir,
+                    'quality': settings.quality, 'subsampling': settings.subsampling,
+                    'override_existed': settings.overwrite_existing},
+        'render': {'template_name': settings.template_name},
+    })
     save_settings(settings)
 
 

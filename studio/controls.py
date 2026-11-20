@@ -562,7 +562,7 @@ class CollapsibleSection(QWidget):
         header.addWidget(self.toggle, 1)
         header.addWidget(self.reset_button)
         layout.addLayout(header)
-        self.body = QWidget()
+        self.body = QWidget(self)
         self.body.setVisible(expanded)
         self.toggle.toggled.connect(self.body.setVisible)
         self.toggle.toggled.connect(lambda opened: self.toggle.setArrowType(

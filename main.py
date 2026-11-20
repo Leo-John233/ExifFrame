@@ -121,30 +121,89 @@ def _run_application(smoke_test: bool, startup_log: Path | None) -> int:
         if report_path is not None:
             from build_support.package_verify import verify_package
             return verify_package(report_path)
-        _startup_log(startup_log, 'stage: initialize user config')
-        try:
-            initialize_user_config()
-        except PermissionError as error:
-            message = _startup_text(
-                f'无法访问配置目录 {config_path()}，请检查权限或将程序移至可写目录',
-                f'Cannot access the configuration folder {config_path()}. Check permissions or move the program to a writable folder',
-            )
-            raise PermissionError(f'{message}\n{error}') from error
-        _startup_log(startup_log, 'stage: import desktop modules')
-        from studio.i18n import install_qt_translations, localize_error, tr
-        from studio.theme import apply_theme
-        from studio.window import MainWindow
+        from core.splash_settings import load_splash_settings
+        preferences = load_splash_settings()
+        splash = None
+        if preferences.enabled:
+            from studio.splash import SplashScreen
+            from studio.theme import theme
+            splash = SplashScreen(preferences, theme=theme())
+            splash.show()
+            _startup_log(startup_log, 'stage: show splash')
 
-        _startup_log(startup_log, 'stage: install translations and theme')
-        install_qt_translations()
-        apply_theme(application)
+        from PySide6.QtCore import QEventLoop, QObject, Signal, Qt
+
+        def stage(text, fraction):
+            if splash is not None:
+                splash.set_stage(text, fraction)
+                application.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+
+        class StepDone(QObject):
+            finished = Signal()
+
+        def run_step(pool, operation):
+            # 磁盘迁移和图像库初始化在后台完成，Qt 控件始终在主线程构造
+            if splash is None:
+                return operation()
+            done = StepDone()
+            loop = QEventLoop()
+            done.finished.connect(loop.quit, Qt.ConnectionType.QueuedConnection)
+            future = pool.submit(operation)
+            future.add_done_callback(lambda _: done.finished.emit())
+            if not future.done():
+                loop.exec(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+            return future.result()
+
+        stage('正在准备配置…', .08)
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix='ExifFrame startup') as startup_pool:
+            _startup_log(startup_log, 'stage: initialize user config')
+            try:
+                run_step(startup_pool, initialize_user_config)
+            except PermissionError as error:
+                message = _startup_text(
+                    f'无法访问配置目录 {config_path()}，请检查权限或将程序移至可写目录',
+                    f'Cannot access the configuration folder {config_path()}. Check permissions or move the program to a writable folder',
+                )
+                raise PermissionError(f'{message}\n{error}') from error
+            stage('正在加载主题与字体…', .24)
+            from studio.i18n import install_qt_translations, localize_error
+            from studio.theme import apply_theme
+            _startup_log(startup_log, 'stage: install translations and theme')
+            install_qt_translations()
+            apply_theme(application)
+            stage('正在初始化 EXIF 引擎…', .43)
+            def initialize_engine():
+                from core.desktop_service import load_settings
+                # 引入处理器与元数据读取器，ExifTool 仍在首张照片请求时启动
+                return load_settings()
+            settings = run_step(startup_pool, initialize_engine)
+
+        stage('正在构建工作台…', .62)
+        _startup_log(startup_log, 'stage: import desktop modules')
+        from studio.window import MainWindow
         _startup_log(startup_log, 'stage: create main window')
-        window = MainWindow()
+        window = MainWindow(settings=settings, progress=stage, remember_layout=not smoke_test)
+        _warn_missing_exiftool(application_root() / 'exiftool', window,
+                               lambda parent, title, detail: parent.show_startup_notice(title, detail),
+                               smoke_test=smoke_test)
+        stage('准备就绪', 1.0)
+
+        def presented():
+            _startup_log(startup_log, 'stage: main window presented')
+            if smoke_test:
+                QTimer.singleShot(1200, window, window.close)
+
         _startup_log(startup_log, 'stage: show main window')
-        window.show()
-        _warn_missing_exiftool(application_root() / 'exiftool', window, QMessageBox.warning, smoke_test=smoke_test)
-        if smoke_test:
-            QTimer.singleShot(1200, window.close)
+        if splash:
+            splash.finish(window, on_finished=presented)
+        else:
+            from studio.window_presentation import present_window
+            def activate():
+                window.raise_()
+                window.activateWindow()
+                presented()
+            present_window(window, activate)
         _startup_log(startup_log, 'stage: enter event loop')
         result = application.exec()
         _startup_log(startup_log, f'stage: event loop returned {result}')
@@ -155,6 +214,8 @@ def _run_application(smoke_test: bool, startup_log: Path | None) -> int:
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         return result
     except Exception as error:
+        if locals().get('splash') is not None:
+            splash.abort()
         if smoke_test:
             if startup_log is not None:
                 _startup_log(startup_log, 'stage: startup failed\n' + traceback.format_exc())
@@ -165,13 +226,13 @@ def _run_application(smoke_test: bool, startup_log: Path | None) -> int:
         title = _startup_text('窗口启动失败', 'Unable to start ExifFrame')
         message = _startup_text('请检查 config 和 static 资源目录', 'Check the config and static resource folders')
         detail = localize_error(error) if 'localize_error' in locals() else str(error)
-        QMessageBox.critical(None, title, f'{message}\n\n{detail}')
+        QMessageBox.critical(locals().get('window') or locals().get('splash'), title, f'{message}\n\n{detail}')
         return 1
 
 
 def main() -> int:
     smoke_test = '--smoke-test' in sys.argv
-    log_name = os.environ.get('EXIFFRAME_STARTUP_LOG') if smoke_test else None
+    log_name = os.environ.get('EXIFFRAME_STARTUP_LOG')
     log_path = Path(os.path.abspath(log_name)) if log_name else None
     _startup_log(log_path, 'stage: process start', reset=True)
     try:

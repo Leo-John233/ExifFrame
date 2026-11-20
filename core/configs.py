@@ -11,8 +11,8 @@ logos_dir = config_path('logos')
 templates_dir = config_path('templates')
 
 def load_config() -> configparser.ConfigParser:
-    config = configparser.ConfigParser()
-    config.read(CONFIG_PATH, encoding='utf-8')
+    config = configparser.ConfigParser(interpolation=None)
+    config.read(CONFIG_PATH, encoding='utf-8-sig')
     return config
 
 

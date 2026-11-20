@@ -20,6 +20,7 @@ from core.preset_management import is_builtin_preset
 from core.footer import read_layout
 from .controls import CameraRawSlider, CollapsibleSection, ColorProperty
 from .custom_frame_panel import CustomFramePanel
+from studio.path_memory import last_directory, remember_directory
 from .i18n import bind, tr, translator
 from .slot_editor import SlotEditor
 from .pixmaps import TemplateThumbnail
@@ -203,7 +204,7 @@ class Inspector(QWidget):
     reset_settings_requested = Signal()
     lock_settings_toggled = Signal(bool)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, progress=None):
         super().__init__(parent)
         self.setObjectName('inspectorPanel')
         self.setMinimumWidth(340)
@@ -243,8 +244,12 @@ class Inspector(QWidget):
         self.tabs.currentChanged.connect(self._tab_changed)
         self.template_page = self._build_templates()
         self.style_page = self._build_style()
+        if progress:
+            progress('正在构建工作台…', .83)
         self.text_page = self._build_text()
         self.metadata_page = self._build_metadata()
+        if progress:
+            progress('正在恢复工作区…', .91)
         for page, icon in ((self.template_page, '▦'), (self.style_page, '▣'),
                            (self.text_page, 'T'), (self.metadata_page, 'ⓘ')):
             self.tabs.addTab(page, icon)
@@ -915,10 +920,11 @@ class Inspector(QWidget):
             return
         value = self.logo_combo.currentData()
         if value == '__choose__':
-            path, _ = QFileDialog.getOpenFileName(self, tr('选择标识图片'), '', tr('图片 (*.png *.jpg *.jpeg)'))
+            path, _ = QFileDialog.getOpenFileName(self, tr('选择标识图片'), last_directory('logo'), tr('图片 (*.png *.jpg *.jpeg)'))
             if not path:
                 self._set_combo_value(self.logo_combo, self._style_values.get('logo_choice', ''))
                 return
+            remember_directory('logo', Path(path).parent)
             value = str(Path(path).resolve())
             self._set_combo_value(self.logo_combo, value)
         self._emit_style('logo_choice', value or '')
@@ -928,10 +934,11 @@ class Inspector(QWidget):
             return
         value = self.font_combo.currentData()
         if value == '__choose__':
-            path, _ = QFileDialog.getOpenFileName(self, tr('选择字体'), '', tr('字体文件 (*.ttf *.otf *.ttc)'))
+            path, _ = QFileDialog.getOpenFileName(self, tr('选择字体'), last_directory('font'), tr('字体文件 (*.ttf *.otf *.ttc)'))
             if not path:
                 self._set_combo_value(self.font_combo, self._style_values.get('font_path', ''))
                 return
+            remember_directory('font', Path(path).parent)
             value = str(Path(path).resolve())
             self._set_combo_value(self.font_combo, value)
         self._emit_style('font_path', value or '')

@@ -179,6 +179,13 @@ register_translations({
 })
 
 
+register_translations({
+    '无法保存路径': 'Could not save the folder location',
+    '配置值必须在同一行': 'The setting must fit on one line',
+    '请补全 exiftool 文件夹以读取完整照片信息': 'Complete the exiftool folder to read all photo metadata',
+})
+
+
 def region_title(region, number=None) -> str:
     """统一显示普通区域、独立文字与多水印区域"""
     from core.footer import REGION_LABELS
@@ -843,3 +850,42 @@ register_translations({'无法读取已保存的默认模板': 'Could not read t
                        '不能修改链接形式的设置文件': 'Settings files that are links cannot be modified',
                        '设置在更新期间发生变化，请重试': 'Settings changed while updating; please try again'})
 register_translations({'已在文件管理器中显示：{name}': 'Shown in file manager: {name}'})
+
+# 启动画面文案
+register_translations({
+    '摄影水印与 EXIF 工作台': 'Photo watermark & EXIF workspace',
+    '正在启动…': 'Starting…', '正在加载主题与字体…': 'Loading theme and fonts…',
+    '正在初始化 EXIF 引擎…': 'Initializing EXIF engine…',
+    '正在构建工作台…': 'Building the workspace…', '准备就绪': 'Ready',
+})
+
+# 外观与启动画面设置
+_SPLASH_SETTINGS_ERRORS = {
+    '启动画面设置无效': 'Invalid splash screen settings',
+    '启动图片过大或为空': 'The startup image is empty or too large',
+    '启动图片须为 PNG、JPG 或 WebP': 'Choose a PNG, JPG, or WebP startup image',
+    '启动图片尺寸过大': 'The startup image dimensions are too large',
+    '启动图片无效或已损坏': 'The startup image is invalid or damaged',
+    '启动图片目录不能是链接': 'The startup image folder cannot be a link',
+    '启动图片副本不能是链接': 'The saved startup image cannot be a link',
+    '启动图片副本已存在且内容不同': 'A different startup image already exists at the destination',
+    '请选择自定义启动图片': 'Choose a custom startup image',
+}
+register_translations(_SPLASH_SETTINGS_ERRORS)
+_ERROR_SOURCES.update(_SPLASH_SETTINGS_ERRORS)
+register_translations({
+    '外观与主题设置': 'Appearance and theme', '外观与主题设置…': 'Appearance and theme…',
+    '选择工作台主题并自定义启动画面': 'Choose a workspace theme and customize the startup screen',
+    '点击切换深浅主题，菜单中设置外观': 'Click to switch themes; open the menu for appearance settings',
+    '启动画面': 'Startup screen', '启用启动画面': 'Show startup screen', '启动背景': 'Background',
+    '跟随主题（暗房深色 / 极简浅色）': 'Follow theme (darkroom / light)',
+    '精选摄影背景': 'Photography background', '自定义图片': 'Custom image',
+    '自定义图片…': 'Custom image…', '恢复默认背景': 'Restore default background',
+    '图片不可用': 'Image unavailable', '底部文字遮罩暗度': 'Text overlay darkness',
+    '显示版本号': 'Show version', '显示加载文字': 'Show loading status', '最短展示时长': 'Minimum duration',
+    '极速（加载完即关）': 'Fast (close when ready)', '标准（0.8 秒）': 'Standard (0.8 s)',
+    '展示（1.5 秒）': 'Showcase (1.5 s)', '立即预览启动画面': 'Preview startup screen',
+    '选择启动背景': 'Choose startup background', '图片 (*.png *.jpg *.jpeg *.webp)': 'Images (*.png *.jpg *.jpeg *.webp)',
+    '无法使用启动图片': 'Unable to use startup image', '无法保存启动画面设置': 'Unable to save startup screen settings',
+})
+register_translations({'正在准备配置…': 'Preparing configuration…', '正在恢复工作区…': 'Restoring workspace…'})

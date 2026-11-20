@@ -12,6 +12,9 @@ tmp
 config/desktop.json
 config/ui.json
 config/theme.json
+config/workspace-view.ini
+config/.preferences.lock
+config/splash/
 config/desktop.json.tmp
 config/*.tmp
 /test/

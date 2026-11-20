@@ -248,7 +248,7 @@ def initialize_user_config(migrate_legacy: bool = True) -> None:
                     overlaps = legacy_root.is_relative_to(target_root) or target_root.is_relative_to(legacy_root)
                     if not legacy.is_dir() or overlaps:
                         continue
-                    for name in ('config.ini', 'desktop.json', 'ui.json'):
+                    for name in ('config.ini', 'desktop.json', 'ui.json', 'theme.json', 'workspace-view.ini'):
                         if (legacy / name).is_file():
                             transform = None
                             if name == 'config.ini':
@@ -256,7 +256,7 @@ def initialize_user_config(migrate_legacy: bool = True) -> None:
                             elif name == 'desktop.json':
                                 transform = lambda data: _migrate_desktop_json(data, legacy_base)
                             _copy_seed_file(legacy / name, target / name, transform)
-                    for name in (*_CONFIG_DIRS, *_STYLE_DIRS):
+                    for name in (*_CONFIG_DIRS, *_STYLE_DIRS, 'splash'):
                         folder = legacy / name
                         if folder.is_dir():
                             for item in sorted(folder.rglob('*')):

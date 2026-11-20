@@ -148,6 +148,7 @@ class WorkspaceExport:
         if folder:
             self.output_input.setText(folder)
             self._directories_changed()
+            self._remember_workspace_dirs()
         return folder
 
     def _export(self):

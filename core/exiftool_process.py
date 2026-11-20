@@ -10,6 +10,7 @@ import time
 from collections import deque
 from pathlib import Path
 from threading import Condition, Event, Lock, Thread
+from core.process_launch import hidden_process_kwargs
 
 
 _launch_lock = Lock()
@@ -36,10 +37,10 @@ def _external_environment() -> dict[str, str]:
 
 def _start_exiftool(command: list[str]) -> subprocess.Popen:
     """仅在创建子进程期间恢复系统搜索路径"""
-    flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+    hidden = hidden_process_kwargs()
     if sys.platform != 'win32' or not getattr(sys, 'frozen', False):
         return subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                creationflags=flags)
+                                **hidden)
 
     from ctypes import wintypes
     kernel = ctypes.WinDLL('kernel32', use_last_error=True)
@@ -51,16 +52,21 @@ def _start_exiftool(command: list[str]) -> subprocess.Popen:
     set_directory.restype = wintypes.BOOL
     environment = _external_environment()
     with _launch_lock:
+        ctypes.set_last_error(0)
         length = get_directory(0, None)
-        buffer = ctypes.create_unicode_buffer(length + 1) if length else None
-        if buffer is not None and not get_directory(len(buffer), buffer):
+        if not length and ctypes.get_last_error():
             raise ctypes.WinError(ctypes.get_last_error())
+        buffer = ctypes.create_unicode_buffer(length + 1) if length else None
+        if buffer is not None:
+            ctypes.set_last_error(0)
+            if not get_directory(len(buffer), buffer) and ctypes.get_last_error():
+                raise ctypes.WinError(ctypes.get_last_error())
         previous = buffer.value if buffer is not None else None
         if not set_directory(None):
             raise ctypes.WinError(ctypes.get_last_error())
         try:
             return subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                    creationflags=flags, env=environment)
+                                    env=environment, **hidden)
         finally:
             set_directory(previous)
 

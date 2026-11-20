@@ -85,6 +85,8 @@ class WorkspaceInspection:
         panel.lock_settings_toggled.connect(self._set_locked)
         self.input_input.textEdited.connect(self._directories_changed)
         self.output_input.textEdited.connect(self._directories_changed)
+        for editor in (self.input_input, self.output_input, panel.output_input):
+            editor.editingFinished.connect(self._remember_workspace_dirs)
         self.state.selected_photo_changed.connect(self._inspect_photo)
         self.state.active_template_changed.connect(self._active_template_changed)
         self.state.checked_paths_changed.connect(self._checked_paths_changed)
@@ -353,6 +355,22 @@ class WorkspaceInspection:
         self.settings = replace(self.settings, input_dir=self.input_input.text().strip(),
                                 output_dir=self.output_input.text().strip())
         self.inspector.set_settings(self._photo_settings())
+        self._workspace_changed()
+
+    def _remember_workspace_dirs(self):
+        from core.desktop_service import WORKSPACE_CONFIG_PATH
+        from core.ini_preferences import update_ini_values
+        changed = {key: getattr(self.settings, key) for key in ('input_dir', 'output_dir')
+                   if getattr(self._saved, key) != getattr(self.settings, key)}
+        if not changed:
+            return
+        try:
+            fields = {'input_dir': 'input_folder', 'output_dir': 'output_folder'}
+            update_ini_values(WORKSPACE_CONFIG_PATH, 'DEFAULT', {fields[k]: v for k, v in changed.items()})
+        except (OSError, ValueError) as error:
+            self._record_errors('无法保存路径', [str(error)])
+            return
+        self._saved = replace(self._saved, **changed)
         self._workspace_changed()
 
     def _workspace_changed(self):

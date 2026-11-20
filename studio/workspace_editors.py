@@ -14,6 +14,7 @@ from core.desktop_service import WatermarkSettings, list_presets, read_template,
 from core.sample_photo import example_photo_path
 from core.style_pack import (export_style_json, export_style_pack, export_style_png, import_style_pack,
                              read_preset_style, save_custom_template)
+from studio.path_memory import last_directory, remember_directory
 from .i18n import localize_error, tr
 from .template_editor import TemplateEditor
 from .workers import WorkerSignals
@@ -373,11 +374,12 @@ class WorkspaceEditors:
                    'zip': tr('ZIP 样式包 (*.zip)'), 'efstyle': tr('样式包 (*.efstyle)')}
         initial_format = format_hint if format_hint in filters else 'png'
         selected, selected_filter = QFileDialog.getSaveFileName(
-            self, tr('导出模板'), f'{name}.{initial_format}',
+            self, tr('导出模板'), str(Path(last_directory('preset_export')) / f'{name}.{initial_format}'),
             filters[initial_format] if format_hint else ';;'.join(filters.values()))
         if not selected:
             return
         path = Path(selected)
+        remember_directory('preset_export', path.parent)
         filter_choice = next((key for key, label in filters.items() if selected_filter == label), None)
         chosen = filter_choice or initial_format
         suffix = path.suffix.casefold().lstrip('.')
@@ -433,12 +435,13 @@ class WorkspaceEditors:
             QMessageBox.warning(self, tr('无法导出模板'), localize_error(message))
 
     def _import_style_pack(self):
-        selected, _ = QFileDialog.getOpenFileName(self, tr('导入模板'), '',
+        selected, _ = QFileDialog.getOpenFileName(self, tr('导入模板'), last_directory('preset_import'),
                                                    tr('模板文件 (*.png *.json *.zip *.efstyle)'))
         if not selected:
             return
         try:
             name = import_style_pack(selected)
+            remember_directory('preset_import', Path(selected).parent)
             self._template_saved(name)
             self.inspector.show_my_templates()
             self._preset_feedback('模板已导入：{name}', name=name)

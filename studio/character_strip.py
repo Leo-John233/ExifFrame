@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 
 from core.configs import fonts_dir
 from core.character_styles import resolve_character_styles
+from studio.path_memory import last_directory, remember_directory
 from .i18n import bind, tr, translator
 
 
@@ -404,9 +405,10 @@ class CharacterStrip(QWidget):
             self._font_value = value
             return
         previous = self._font_value
-        path, _ = QFileDialog.getOpenFileName(self, tr('选择字体'), '', tr('字体文件 (*.ttf *.otf *.ttc)'))
+        path, _ = QFileDialog.getOpenFileName(self, tr('选择字体'), last_directory('font'), tr('字体文件 (*.ttf *.otf *.ttc)'))
         with QSignalBlocker(self.font):
             if path:
+                remember_directory('font', Path(path).parent)
                 value = str(Path(path).resolve())
                 existing = self.font.findData(value)
                 if existing < 0:

@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
 from core.configs import fonts_dir
 from core.footer import FooterError, has_dynamic_structure, set_slot_style, slot_targets
 from .controls import CameraRawSlider, CollapsibleSection, ColorProperty
+from studio.path_memory import last_directory, remember_directory
 from .i18n import bind, region_title, tr, translator
 from .inspector_footer import InlineFooter
 
@@ -369,10 +370,11 @@ class SlotEditor(QWidget):
             return
         value = self.font_combo.currentData()
         if value == '__choose__':
-            value, _ = QFileDialog.getOpenFileName(self, tr('选择字体'), '', tr('字体文件 (*.ttf *.otf *.ttc)'))
+            value, _ = QFileDialog.getOpenFileName(self, tr('选择字体'), last_directory('font'), tr('字体文件 (*.ttf *.otf *.ttc)'))
             if not value:
                 self._sync()
                 return
+            remember_directory('font', Path(value).parent)
         if value:
             self._change({'font_path': value})
         else:

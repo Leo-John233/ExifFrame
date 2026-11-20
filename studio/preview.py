@@ -18,6 +18,7 @@ from core.metadata import merge_overrides, metadata_key
 from core.sample_photo import example_photo_path
 from studio.asset_watcher import AssetWatcher
 from studio.canvas import ImageCanvas, is_full_image
+from studio.path_memory import last_directory, remember_directory
 from studio.i18n import bind, localize_error, register_translations, tr, translator
 from studio.workers import original_image, qt_image
 
@@ -527,10 +528,11 @@ class TemplatePreview(QWidget):
 
     def _choose_photo(self):
         initial = str(self._photo_path.parent) if self._photo_path else ''
-        filename, _ = QFileDialog.getOpenFileName(self, tr('选择预览照片'), initial,
+        filename, _ = QFileDialog.getOpenFileName(self, tr('选择预览照片'), last_directory('preview_photo', initial),
                                                   tr('照片 (*.jpg *.jpeg *.png *.heic *.heif)'),
                                                   options=QFileDialog.Option.DontUseNativeDialog)
         if filename:
+            remember_directory('preview_photo', Path(filename).parent)
             self.set_photo(filename)
 
     def _set_status(self, source, **values):

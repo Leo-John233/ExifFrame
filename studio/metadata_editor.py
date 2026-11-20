@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.metadata import FIELDS, metadata_key, normalize_changes, read_metadata, save_metadata_copy
+from studio.path_memory import last_directory, remember_directory
 from studio.i18n import bind, tr, register_translations, translator, localize_error, language
 
 
@@ -452,10 +453,14 @@ class MetadataEditor(QDialog):
         self._load_current()
 
     def _photo_file(self, title):
-        path, _ = QFileDialog.getOpenFileName(self, tr(title), str(self.current.parent if self.current else Path.cwd()),
+        initial = last_directory('metadata_source', self.current.parent if self.current else Path.cwd())
+        path, _ = QFileDialog.getOpenFileName(self, tr(title), initial,
                                              tr('照片与 RAW 文件 ({extensions});;所有文件 (*)', extensions=PHOTO_EXTENSIONS),
                                              options=QFileDialog.Option.DontUseNativeDialog)
-        return Path(path) if path else None
+        if path:
+            remember_directory('metadata_source', Path(path).parent)
+            return Path(path)
+        return None
 
     def _load_reference(self):
         if self._job or not self._discard_pending():
@@ -511,7 +516,7 @@ class MetadataEditor(QDialog):
         self._set_status('已清除 {count} 张照片的水印修改', count=len(paths))
 
     def _destination(self, photo):
-        suggested = photo.with_name(photo.stem + '_metadata' + photo.suffix)
+        suggested = Path(last_directory('metadata_copy', photo.parent)) / (photo.stem + '_metadata' + photo.suffix)
         name, _ = QFileDialog.getSaveFileName(self, tr('保存照片副本'), str(suggested),
                                              tr('照片文件 (*{suffix});;所有文件 (*)', suffix=photo.suffix),
                                              options=QFileDialog.Option.DontUseNativeDialog | QFileDialog.Option.DontConfirmOverwrite)
@@ -523,6 +528,7 @@ class MetadataEditor(QDialog):
         if destination.suffix.lower() != photo.suffix.lower():
             self._set_status('副本必须保留原照片的扩展名')
             return None
+        remember_directory('metadata_copy', destination.parent)
         return destination
 
     def _saved(self, path):

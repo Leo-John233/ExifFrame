@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from .controls import CameraRawSlider, CollapsibleSection, ColorProperty
+from studio.path_memory import last_directory, remember_directory
 from .i18n import bind, localize_error, tr, translator
 
 
@@ -531,7 +532,8 @@ class CustomFramePanel(QWidget):
 
     def _choose_asset(self, path, decoration, png_only):
         filters = tr('PNG 图片 (*.png)') if png_only else tr('背景图片 (*.png *.jpg *.jpeg)')
-        filename, _ = QFileDialog.getOpenFileName(self, tr('选择图片'), '', filters)
+        purpose = 'frame_overlay' if png_only else 'frame_background'
+        filename, _ = QFileDialog.getOpenFileName(self, tr('选择图片'), last_directory(purpose), filters)
         if not filename:
             return
         try:
@@ -540,6 +542,7 @@ class CustomFramePanel(QWidget):
         except (OSError, ValueError) as error:
             QMessageBox.warning(self, tr('图片导入失败'), localize_error(error))
             return
+        remember_directory(purpose, Path(filename).parent)
         self._change(path, value, decoration=decoration)
 
     def _decoration(self):

@@ -15,7 +15,7 @@ from core.desktop_service import list_presets, load_settings, save_settings
 from .canvas import ImageCanvas
 from .filmstrip import FilmBrowser
 from .history import ParameterHistory
-from .i18n import bind_static_texts, install_qt_translations, translator
+from .i18n import bind, bind_static_texts, translator
 from .inspector import Inspector
 from .workspace_actions import WorkspaceActions
 from .state import StudioState
@@ -25,6 +25,7 @@ from .workspace_library import WorkspaceLibrary
 from .workspace_preview import WorkspacePreview
 from .workspace_export import WorkspaceExport
 from .workspace_editors import WorkspaceEditors
+from .window_presentation import restore_layout, save_layout
 
 
 class PhotoView(ImageCanvas):
@@ -42,13 +43,15 @@ class MainWindow(
 ):
     """桌面工作区的布局与信号装配"""
 
-    def __init__(self):
+    def __init__(self, *, settings=None, progress=None, remember_layout=True):
         super().__init__()
+        self._remember_layout = remember_layout
+        self._initial_scan_queued = False
         self.setWindowTitle("ExifFrame")
         self.resize(1540, 940)
         self.setMinimumSize(1080, 680)
         self.setAcceptDrops(True)
-        self.settings = load_settings()
+        self.settings = settings if settings is not None else load_settings()
         self.state = StudioState(self.settings.template_name, parent=self)
         self._saved = deepcopy(self.settings)
         self.presets = list_presets()
@@ -59,7 +62,7 @@ class MainWindow(
         self._init_preview()
         self.history = ParameterHistory(self)
         self._build_actions()
-        self._build_ui()
+        self._build_ui(progress)
         # 固定控件绑定一次，动态内容在语言信号到达后原地更新
         bind_static_texts(self, exclude=(self.canvas_name, self.preview_status, self.summary_label,
                                         self.files.count_label, self.export_action, self.inspector,
@@ -68,11 +71,35 @@ class MainWindow(
         self._restore_controls()
         self._update_actions()
         translator.language_changed.connect(self._retranslate_ui)
-        install_qt_translations()
         self._retranslate_ui()
-        QTimer.singleShot(0, self, self._load_directories)
+        if remember_layout:
+            restore_layout(self)
 
-    def _build_ui(self):
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._initial_scan_queued:
+            self._initial_scan_queued = True
+            QTimer.singleShot(0, self, self._load_directories)
+
+    def show_startup_notice(self, title, message):
+        """以工作区内提示保留源码版补全 ExifTool 的指引"""
+        from PySide6.QtWidgets import QMessageBox, QToolButton
+        panel = self.photo_view.parentWidget()
+        row = QWidget(panel)
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(10, 4, 10, 4)
+        layout.addWidget(bind(QLabel(), '请补全 exiftool 文件夹以读取完整照片信息'), 1)
+        details = bind(QPushButton(), '详情')
+        details.clicked.connect(lambda: QMessageBox.information(self, title, message))
+        layout.addWidget(details)
+        close = QToolButton(row)
+        close.setText('×')
+        bind(close, '关闭', 'setAccessibleName')
+        close.clicked.connect(row.hide)
+        layout.addWidget(close)
+        panel.layout().insertWidget(0, row)
+
+    def _build_ui(self, progress):
         self.files = FilmBrowser()
         self.files.fold.toggled.connect(self.filmstrip_action.setChecked)
         self.filmstrip_action.setChecked(self.files.fold.isChecked())
@@ -105,7 +132,9 @@ class MainWindow(
         self.preview_status = QLabel("未选择照片")
         self.preview_status.setObjectName("previewStatus")
         layout.addWidget(self.files)
-        self.inspector = Inspector()
+        if progress:
+            progress('正在构建工作台…', .74)
+        self.inspector = Inspector(progress=progress)
         self.inspector.setFixedWidth(348)
         central = QWidget()
         outer = QHBoxLayout(central)
@@ -174,7 +203,10 @@ class MainWindow(
                 if not editor.close():
                     event.ignore()
                     return
-            # 共享配置只在点击保存时写回，关闭时保留已保存的个人配置
+            # 输入与输出路径自动记忆，其他会话调整仍需显式保存
+            if self._remember_layout:
+                self._remember_workspace_dirs()
+                save_layout(self)
             try:
                 save_settings(replace(self._saved, template_source=""))
             except Exception:

@@ -9,6 +9,7 @@ from threading import Lock
 
 from PySide6.QtCore import QThreadPool, Slot
 from PySide6.QtWidgets import QFileDialog
+from studio.path_memory import last_directory, remember_directory
 from .i18n import tr
 
 
@@ -33,9 +34,11 @@ class WorkspaceLibrary:
     def _pick_photos(self):
         if self._exporting or self._closing:
             return
-        paths, _ = QFileDialog.getOpenFileNames(self, tr("添加照片"), self.settings.input_dir,
+        paths, _ = QFileDialog.getOpenFileNames(self, tr("添加照片"), last_directory("photos", self.settings.input_dir),
                                               tr("照片 (*.jpg *.jpeg *.png *.heic *.heif)"),
                                               options=QFileDialog.Option.DontUseNativeDialog)
+        if paths:
+            remember_directory("photos", Path(paths[0]).parent)
         self.add_paths(paths)
 
     def _pick_folder(self):
@@ -59,6 +62,7 @@ class WorkspaceLibrary:
             return
         self.files.paths[kind].setText(str(Path(folder).resolve()))
         self._directories_changed()
+        self._remember_workspace_dirs()
         self._scan_directory(kind, folder)
 
     def _scan_directory(self, kind, folder):

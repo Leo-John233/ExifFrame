@@ -4,6 +4,7 @@ import ctypes
 import subprocess
 import time
 from ctypes import wintypes
+from core.process_launch import hidden_process_kwargs
 
 
 class _MemoryStatus(ctypes.Structure):
@@ -140,7 +141,7 @@ def run(command, *, cwd, env, stage, timeout):
         process = subprocess.Popen(
             [command[0], '-c', _BOOTSTRAP, *command[1:]], cwd=cwd, env=child_env,
             stdin=subprocess.PIPE,
-            creationflags=subprocess.BELOW_NORMAL_PRIORITY_CLASS,
+            **hidden_process_kwargs(creationflags=subprocess.BELOW_NORMAL_PRIORITY_CLASS),
         )
         if not kernel.AssignProcessToJobObject(job, int(process._handle)):
             raise ctypes.WinError(ctypes.get_last_error())
