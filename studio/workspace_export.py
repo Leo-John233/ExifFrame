@@ -125,8 +125,9 @@ class WorkspaceExport:
             exporting=self._exporting,
             cancel_enabled=self.cancel_action.isEnabled(),
         )
-        for action in (self.add_action, self.directory_action, self.refresh_action, self.new_template_action,
-                       self.copy_template_action, self.edit_template_action, self.footer_action, self.lock_action):
+        for action in (self.add_action, self.directory_action, self.output_dir_action, self.refresh_action,
+                       self.new_template_action, self.copy_template_action, self.edit_template_action,
+                       self.footer_action, self.lock_action):
             action.setEnabled(not busy)
         self.metadata_action.setEnabled(current and not busy)
         self.metadata_batch_action.setEnabled(bool(selected) and not busy)
@@ -150,13 +151,25 @@ class WorkspaceExport:
         self.photo_view.set_empty_message(text)
 
     def _choose_output(self):
-        folder = QFileDialog.getExistingDirectory(self, tr("选择输出目录"), self.settings.output_dir,
-                                                  QFileDialog.Option.DontUseNativeDialog)
+        if self._exporting or self._closing:
+            return ""
+        start = self.settings.output_dir.strip() if self.settings.output_dir else ""
+        if start:
+            candidate = Path(start).expanduser()
+            if not candidate.is_dir():
+                candidate = candidate.parent if candidate.parent.is_dir() else Path.home()
+            start = str(candidate.resolve())
+        else:
+            start = str(Path.home())
+        folder = QFileDialog.getExistingDirectory(self, tr("选择输出目录"), start)
         if folder:
-            self.output_input.setText(folder)
+            resolved = str(Path(folder).resolve())
+            self.output_input.setText(resolved)
             self._directories_changed()
             self._remember_workspace_dirs()
-        return folder
+            self._scan_directory("output", resolved)
+            return resolved
+        return ""
 
     def _export(self):
         """固定本轮勾选和设置快照后交由后台逐张处理"""
@@ -214,6 +227,7 @@ class WorkspaceExport:
         self.inspector.tabs.setEnabled(not active)
         self.inspector.lock_button.setEnabled(not active)
         self.inspector.reset_button.setEnabled(not active)
+        self.inspector.output_bar_button.setEnabled(not active)
         self.files.setEnabled(not active)
         for editor in self._editors:
             editor.setEnabled(not active)

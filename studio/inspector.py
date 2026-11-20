@@ -221,6 +221,7 @@ class Inspector(QWidget):
         self._checked_count = 0
         self._total_count = 0
         self._selected_template = ''
+        self._output_dir = ''
         self._cards = {}
         self._presets = []
         self._style_values = {}
@@ -304,7 +305,18 @@ class Inspector(QWidget):
         aux.addWidget(self.lock_button)
         aux.addWidget(self.reset_button)
         outer.addLayout(aux)
-
+        # 导出目录快捷条（始终可改，不受锁定或预览只读影响）
+        output_row = QHBoxLayout()
+        output_row.setSpacing(4)
+        self.output_bar_label = QLabel()
+        self.output_bar_label.setObjectName('secondaryText')
+        self.output_bar_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.output_bar_button = self._button('更改', self.output_directory_requested.emit)
+        self.output_bar_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.output_bar_button.setStyleSheet('padding: 2px 8px;')
+        output_row.addWidget(self.output_bar_label, 1)
+        output_row.addWidget(self.output_bar_button)
+        outer.addLayout(output_row)
         # 右下角通栏主导出行（导出时自动显现取消按钮）
         export_row = QHBoxLayout()
         export_row.setSpacing(5)
@@ -1158,6 +1170,8 @@ class Inspector(QWidget):
             self.structure_check.setChecked(getattr(settings, 'preserve_structure', True))
             self._background_override = getattr(settings, 'background_override', False) and not self.template_styles_check.isChecked()
             self._update_inherited_labels()
+            self._output_dir = getattr(settings, 'output_dir', '') or ''
+            self._update_output_bar()
             self._update_values()
         finally:
             blockers.clear()
@@ -1370,6 +1384,19 @@ class Inspector(QWidget):
         self.export_button.setToolTip(tooltip)
         self.cancel_export_button.setVisible(exporting)
         self.cancel_export_button.setEnabled(cancel_enabled)
+    def _update_output_bar(self):
+        value = self._output_dir.strip()
+        if value:
+            path = Path(value).expanduser()
+            display = path.name or str(path)
+            self.output_bar_label.setText(tr('输出：{name}', name=display))
+            try:
+                self.output_bar_label.setToolTip(str(path.resolve()))
+            except OSError:
+                self.output_bar_label.setToolTip(str(path))
+        else:
+            self.output_bar_label.setText(tr('输出：未设置'))
+            self.output_bar_label.setToolTip(tr('点击“更改”指定导出文件夹'))
         
     def _update_actions(self, *args):
         current = self._photo_path is not None and not self._photo_read_only and not self._busy and not self._locked
@@ -1435,6 +1462,7 @@ class Inspector(QWidget):
         self._update_frame_options()
         self._update_inherited_labels()
         self._update_logo_position()
+        self._update_output_bar()
         self._update_values()
         self._update_actions()
 

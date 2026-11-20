@@ -24,6 +24,7 @@ class WorkspaceActions:
         icons = QStyle.StandardPixmap
         self.add_action = self._action("添加照片", self._pick_photos, "Ctrl+O", icons.SP_FileIcon)
         self.directory_action = self._action("输入目录", self._pick_folder, "Ctrl+Shift+O", icons.SP_DirOpenIcon)
+        self.output_dir_action = self._action("输出目录", self._choose_output, "Ctrl+Shift+D", icons.SP_DirIcon)
         self.refresh_action = self._action("刷新目录", self._refresh_directories, "F5", icons.SP_BrowserReload)
         self.export_action = self._action("导出照片", self._export, "Ctrl+R", icons.SP_ArrowDown)
         self.cancel_action = self._action("取消导出", self._cancel_export, "Escape", icons.SP_MediaStop)
@@ -41,7 +42,7 @@ class WorkspaceActions:
         self.footer_action.setToolTip("自由组合水印字段、顺序和分隔符（Ctrl+Shift+E）")
         self.edit_template_action.setToolTip("编辑完整 JSON / Jinja 模板（Ctrl+E）")
         file_menu = QMenu("文件(&F)", self)
-        for action in (self.add_action, self.directory_action, self.refresh_action):
+        for action in (self.add_action, self.directory_action, self.output_dir_action, self.refresh_action):
             file_menu.addAction(action)
         file_menu.addSeparator()
         file_menu.addAction(self.metadata_action)
@@ -102,7 +103,7 @@ class WorkspaceActions:
         self.redo_action = self._action("重做", self.history.stack.redo, "Ctrl+Y", icons.SP_ArrowForward)
         self.history.stack.canUndoChanged.connect(self._update_actions)
         self.history.stack.canRedoChanged.connect(self._update_actions)
-        for action in (self.add_action, self.directory_action):
+        for action in (self.add_action, self.directory_action, self.output_dir_action):
             self.toolbar.addAction(action)
         self.toolbar.addSeparator()
         for action in (self.undo_action, self.redo_action):
