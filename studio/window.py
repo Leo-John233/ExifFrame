@@ -172,7 +172,7 @@ class MainWindow(
         self.statusBar().hide()
         self._set_status("就绪")
 
-        def _sync_filmstrip_splitter(self, expanded):
+    def _sync_filmstrip_splitter(self, expanded):
         if not hasattr(self, 'preview_splitter'):
             return
         total = max(320, self.preview_splitter.height() or (self.height() - 40))

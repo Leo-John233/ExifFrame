@@ -450,12 +450,11 @@ class WorkspaceEditors:
             QMessageBox.warning(self, tr('无法导入模板'), localize_error(exc))
 
     def _edit_template(self):
-        from .source_panel import SourcePanel
+        from .source_panel import SourceDialog
         self._show_preset_sample()
-        self.inspector.tabs.setCurrentIndex(0)
-        if not hasattr(self, 'source_panel'):
-            self.source_panel = SourcePanel()
-            self.inspector.preset_tools_layout.insertWidget(0, self.source_panel)
+        if not hasattr(self, '_source_dialog'):
+            self._source_dialog = SourceDialog(self)
+            self.source_panel = self._source_dialog.panel
             self.source_panel.changed.connect(lambda value: self._edit_style('template_source', value))
             self.source_panel.save_requested.connect(self._save_inline_source)
         settings = self._photo_settings()
@@ -465,14 +464,12 @@ class WorkspaceEditors:
             self._record_errors('读取模板失败', [str(exc)])
             return
         self.source_panel.sync((self._editable_photo(), settings.template_name), source)
-        self.source_panel.show()
+        self._source_dialog.set_template_name(settings.template_name)
+        self._source_dialog.setWindowState(self._source_dialog.windowState() & ~Qt.WindowState.WindowMinimized)
+        self._source_dialog.show()
+        self._source_dialog.raise_()
+        self._source_dialog.activateWindow()
         self.source_panel.edit.setFocus()
-        from PySide6.QtWidgets import QScrollArea
-        scroll = self.source_panel.parentWidget()
-        while scroll is not None and not isinstance(scroll, QScrollArea):
-            scroll = scroll.parentWidget()
-        if scroll:
-            scroll.ensureWidgetVisible(self.source_panel)
 
     def _save_inline_source(self, source):
         name = self._photo_settings().template_name

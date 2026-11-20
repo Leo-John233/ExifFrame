@@ -392,15 +392,15 @@ class Inspector(QWidget):
         self.preset_tools_layout = QVBoxLayout()
         self.preset_tools_layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(self.preset_tools_layout)
-        # 1 行紧凑操作栏：另存为预设 + 导入 + 更多管理菜单
+       # 1 行紧凑操作栏：另存为预设 + 导入 + 统一风格的更多按钮
         action_row = QHBoxLayout()
         action_row.setSpacing(4)
         action_row.addWidget(self._button('另存为预设', self.copy_template_requested.emit), 1)
         action_row.addWidget(self._button('导入模板', self.import_style_requested.emit), 1)
-        self.preset_more_button = QToolButton()
-        self.preset_more_button.setText('⋯')
-        self.preset_more_button.setFixedWidth(28)
-        self.preset_more_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.preset_more_button = QPushButton('⋯')
+        self.preset_more_button.setAutoDefault(False)
+        self.preset_more_button.setFixedWidth(30)
+        self.preset_more_button.setStyleSheet('QPushButton::menu-indicator { image: none; width: 0px; }')
         bind(self.preset_more_button, '更多模板操作', 'setToolTip')
         self._preset_more_menu = QMenu(self)
         self._preset_more_actions = []
@@ -408,11 +408,14 @@ class Inspector(QWidget):
             ('新建空白预设', self.new_template_requested),
             ('设为默认模板', self.use_as_default_requested),
             ('导出模板', self.export_style_requested),
-            ('高级源码…', self.advanced_source_requested),
         ):
             act = self._preset_more_menu.addAction(tr(label))
             act.triggered.connect(signal.emit)
             self._preset_more_actions.append((act, label))
+        self._preset_more_menu.addSeparator()
+        act_source = self._preset_more_menu.addAction(tr('高级源码…'))
+        act_source.triggered.connect(self.advanced_source_requested.emit)
+        self._preset_more_actions.append((act_source, '高级源码…'))
         self.preset_more_button.setMenu(self._preset_more_menu)
         action_row.addWidget(self.preset_more_button)
         layout.addLayout(action_row)
