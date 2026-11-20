@@ -215,7 +215,7 @@ def _thumbnail(source, modified, file_size, bounds, cancelled=None):
     return image, width, height
 
 
-def photo_thumbnail(path: Path, bounds=(144, 112), cancelled=None):
+def photo_thumbnail(path: Path, bounds=(360, 270), cancelled=None):
     """返回独立缩略图和方向修正后的原始尺寸"""
     check_cancelled(cancelled)
     signature = _signature(path)

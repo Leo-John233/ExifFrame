@@ -51,9 +51,9 @@ QPushButton:pressed, QToolButton:pressed { background: #333333; border-color: #7
 QPushButton:checked { background: #48494B; border-color: #878787; }
 QPushButton:focus, QToolButton:focus { border-color: #8B8C8E; }
 QPushButton:disabled, QToolButton:disabled { color: #717274; background: #303030; border-color: #414141; }
-QPushButton#primaryButton, QToolButton#primaryButton { background: #515254; border-color: #707173; color: #F1F3F5; }
-QPushButton#primaryButton:hover, QToolButton#primaryButton:hover { background: #616264; border-color: #8D8E90; }
-QPushButton#primaryButton:pressed, QToolButton#primaryButton:pressed { background: #424345; }
+QPushButton#primaryButton, QToolButton#primaryButton { background: #2F6FED; border: 1px solid #4A84F5; color: #F1F3F5; font-weight: 600; }
+QPushButton#primaryButton:hover, QToolButton#primaryButton:hover { background: #3E7BF2; border-color: #6497F7; }
+QPushButton#primaryButton:pressed, QToolButton#primaryButton:pressed { background: #255BC9; }
 QPushButton#primaryButton:disabled, QToolButton#primaryButton:disabled { background: #2E2F31; color: #727375; border-color: #414244; }
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QDateTimeEdit, QPlainTextEdit { background: #2C2C2C; border: 1px solid #555555; border-radius: 4px; padding: 3px 6px; selection-background-color: #48494B; selection-color: #FFFFFF; }
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QDateTimeEdit { min-height: 22px; }
@@ -110,6 +110,11 @@ QToolButton#propertyReset:hover { background: #424242; border-color: #626262; }
 QToolButton#propertyReset:disabled { color: #717274; background: transparent; border-color: transparent; }
 QToolButton#colorSwatch { border: none; padding: 0; min-width: 0; min-height: 0; background: transparent; }
 QLabel#colorPropertyValue { color: #C3C3C3; }
+QPushButton#categoryCapsule { background: transparent; border: 1px solid transparent; border-radius: 10px; min-height: 20px; padding: 2px 4px; color: #A4A4A4; font-size: 11px; }
+QPushButton#categoryCapsule:hover { background: #303133; color: #DDDFE2; }
+QPushButton#categoryCapsule:checked { background: #3F4248; border-color: #62666E; color: #F0F2F4; font-weight: 600; }
+QSplitter#previewSplitter::handle:vertical { background: #2A2B2E; height: 5px; }
+QSplitter#previewSplitter::handle:vertical:hover { background: #6E737D; }
 """
 
 

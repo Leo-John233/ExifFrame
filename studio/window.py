@@ -8,7 +8,7 @@ from dataclasses import replace
 from PySide6.QtCore import Qt, QTimer, Slot
 from PySide6.QtWidgets import (
     QCheckBox, QHBoxLayout, QLabel, QMainWindow, QProgressBar, QPushButton,
-    QSizePolicy, QVBoxLayout, QWidget,
+    QSizePolicy, QSplitter, QVBoxLayout, QWidget,
 )
 
 from core.desktop_service import list_presets, load_settings, save_settings
@@ -102,6 +102,7 @@ class MainWindow(
     def _build_ui(self, progress):
         self.files = FilmBrowser()
         self.files.fold.toggled.connect(self.filmstrip_action.setChecked)
+        self.files.fold.toggled.connect(self._sync_filmstrip_splitter)
         self.filmstrip_action.setChecked(self.files.fold.isChecked())
         self.files.setObjectName("filesPanel")
         self.files.directory_requested.connect(self._directory_requested)
@@ -128,10 +129,19 @@ class MainWindow(
         self.photo_view.setObjectName("photoPreview")
         self.photo_view.zoom_changed.connect(self._preview_zoom_changed)
         self.photo_view.original_requested.connect(self._request_original)
-        layout.addWidget(self.photo_view, 1)
         self.preview_status = QLabel("未选择照片")
         self.preview_status.setObjectName("previewStatus")
-        layout.addWidget(self.files)
+        self._last_filmstrip_height = 148
+        self.preview_splitter = QSplitter(Qt.Orientation.Vertical, preview)
+        self.preview_splitter.setObjectName("previewSplitter")
+        self.preview_splitter.setChildrenCollapsible(False)
+        self.preview_splitter.setHandleWidth(5)
+        self.preview_splitter.addWidget(self.photo_view)
+        self.preview_splitter.addWidget(self.files)
+        self.preview_splitter.setStretchFactor(0, 1)
+        self.preview_splitter.setStretchFactor(1, 0)
+        self.preview_splitter.setSizes([720, self._last_filmstrip_height])
+        layout.addWidget(self.preview_splitter, 1)
         if progress:
             progress('正在构建工作台…', .74)
         self.inspector = Inspector(progress=progress)
@@ -162,6 +172,20 @@ class MainWindow(
         self.statusBar().hide()
         self._set_status("就绪")
 
+        def _sync_filmstrip_splitter(self, expanded):
+        if not hasattr(self, 'preview_splitter'):
+            return
+        total = max(320, self.preview_splitter.height() or (self.height() - 40))
+        if expanded:
+            film_h = max(112, min(getattr(self, '_last_filmstrip_height', 148), int(total * 0.45), 360))
+            self.preview_splitter.setSizes([max(200, total - film_h), film_h])
+        else:
+            current = self.preview_splitter.sizes()[1]
+            if current >= 100:
+                self._last_filmstrip_height = current
+            bar_h = self.files.collapsed_height()
+            self.preview_splitter.setSizes([max(200, total - bar_h), bar_h])
+
     def _toggle_filmstrip(self, checked):
         self.files.show()
         self.files._user_fold()
@@ -172,7 +196,6 @@ class MainWindow(
         if hasattr(self, 'inspector'):
             width = 340 if self.width() < 1250 else 348
             self.inspector.setFixedWidth(width)
-            self.files.fit_workspace(self.width(), self.height(), width, self.toolbar.height())
 
     def dragEnterEvent(self, event):
         if not self._exporting and event.mimeData().hasUrls() and any(url.isLocalFile() for url in event.mimeData().urls()):

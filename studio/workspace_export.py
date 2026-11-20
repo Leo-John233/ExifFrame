@@ -118,6 +118,13 @@ class WorkspaceExport:
                                              else "先添加照片，再勾选需要导出的照片"))
         self.cancel_action.setEnabled(self._exporting and not self._closing)
         self.cancel_action.setVisible(self._exporting)
+        self.inspector.set_export_state(
+            text=self.export_action.text(),
+            enabled=self.export_action.isEnabled(),
+            tooltip=self.export_action.toolTip(),
+            exporting=self._exporting,
+            cancel_enabled=self.cancel_action.isEnabled(),
+        )
         for action in (self.add_action, self.directory_action, self.refresh_action, self.new_template_action,
                        self.copy_template_action, self.edit_template_action, self.footer_action, self.lock_action):
             action.setEnabled(not busy)
@@ -203,7 +210,10 @@ class WorkspaceExport:
     def _set_exporting(self, active):
         self._exporting = active
         self.statusBar().show()
-        self.inspector.setEnabled(not active)
+        self.inspector.set_busy(active)
+        self.inspector.tabs.setEnabled(not active)
+        self.inspector.lock_button.setEnabled(not active)
+        self.inspector.reset_button.setEnabled(not active)
         self.files.setEnabled(not active)
         for editor in self._editors:
             editor.setEnabled(not active)

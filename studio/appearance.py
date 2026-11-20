@@ -76,7 +76,7 @@ class AppearanceDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         bind(self, '外观与主题设置', 'setWindowTitle')
-        self.resize(570, 555)
+        self.resize(570, 585)
         self.setMinimumWidth(500)
         self._loaded = load_splash_settings()
         self._image_path = self._loaded.image_path
@@ -138,6 +138,9 @@ class AppearanceDialog(QDialog):
         self.restore_button = bind(QPushButton(), '恢复默认背景')
         self.restore_button.clicked.connect(self._restore_background)
         choices.addWidget(self.restore_button)
+        self.open_folder_button = bind(QPushButton(), '打开启动图目录')
+        self.open_folder_button.clicked.connect(self._open_splash_folder)
+        choices.addWidget(self.open_folder_button)
         choices.addStretch()
         background_row.addLayout(choices, 1)
         outer.addLayout(background_row)
@@ -220,6 +223,14 @@ class AppearanceDialog(QDialog):
         self._image_path = ''
         self.background.setCurrentIndex(self.background.findData('follow'))
         self._background_changed()
+
+    def _open_splash_folder(self):
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        from core.runtime_paths import config_path
+        folder = config_path('splash')
+        folder.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder.resolve())))
 
     def _settings(self):
         return SplashSettings(enabled=self.enabled.isChecked(), background_mode=self.background.currentData(),

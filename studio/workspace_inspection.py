@@ -83,6 +83,8 @@ class WorkspaceInspection:
         panel.save_settings_requested.connect(self._save_config)
         panel.reset_settings_requested.connect(self._reset_config)
         panel.lock_settings_toggled.connect(self._set_locked)
+        panel.export_requested.connect(self._export)
+        panel.cancel_export_requested.connect(self._cancel_export)
         self.input_input.textEdited.connect(self._directories_changed)
         self.output_input.textEdited.connect(self._directories_changed)
         for editor in (self.input_input, self.output_input, panel.output_input):

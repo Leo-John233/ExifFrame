@@ -203,6 +203,8 @@ class Inspector(QWidget):
     save_settings_requested = Signal()
     reset_settings_requested = Signal()
     lock_settings_toggled = Signal(bool)
+    export_requested = Signal()
+    cancel_export_requested = Signal()
 
     def __init__(self, parent=None, *, progress=None):
         super().__init__(parent)
@@ -275,34 +277,48 @@ class Inspector(QWidget):
         pages.addLayout(rail)
         outer.addLayout(pages, 1)
 
+        # 兼容保留隐藏控件，不再占用视觉空间
         self.apply_current_button = self._button('仅应用到当前照片', self.apply_current_requested.emit)
+        self.apply_current_button.hide()
+        self.save_button = self._button('保存设置', self.save_settings_requested.emit)
+        self.save_button.hide()
+        self.saved_label = QLabel()
+        self.saved_label.hide()
+
+        # 紧凑辅助行：同步样式/EXIF + 锁定 + 重置
+        aux = QHBoxLayout()
+        aux.setSpacing(4)
         self.sync_style_button = self._button('同步样式到全部已勾选', self.sync_style_requested.emit)
-        scope = QHBoxLayout()
-        scope.setSpacing(4)
-        scope.addWidget(self.apply_current_button)
-        scope.addWidget(self.sync_style_button)
-        outer.addLayout(scope)
         self.sync_metadata_button = self._button('批量覆写已勾选 EXIF', self._apply_checked_metadata)
         self.sync_metadata_button.setVisible(False)
-        outer.addWidget(self.sync_metadata_button)
-
-        controls = QHBoxLayout()
-        controls.setSpacing(5)
         self.lock_button = QPushButton()
         self.lock_button.setCheckable(True)
+        self.lock_button.setMinimumWidth(0)
+        self.lock_button.setStyleSheet('padding: 3px 8px;')
         self.lock_button.toggled.connect(self._lock_changed)
-        self.save_button = self._button('保存设置', self.save_settings_requested.emit)
-        self.reset_button = self._button('重置设置', self.reset_settings_requested.emit)
-        for button in (self.lock_button, self.save_button, self.reset_button):
-            button.setStyleSheet('padding-left: 2px; padding-right: 2px;')
-        controls.addWidget(self.lock_button)
-        controls.addWidget(self.save_button)
-        controls.addWidget(self.reset_button)
-        outer.addLayout(controls)
-        self.saved_label = QLabel()
-        self.saved_label.setObjectName('secondaryText')
-        self.saved_label.setWordWrap(True)
-        outer.addWidget(self.saved_label)
+        self.reset_button = self._button('重置', self.reset_settings_requested.emit)
+        self.reset_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.reset_button.setStyleSheet('padding: 3px 8px;')
+        aux.addWidget(self.sync_style_button, 1)
+        aux.addWidget(self.sync_metadata_button, 1)
+        aux.addWidget(self.lock_button)
+        aux.addWidget(self.reset_button)
+        outer.addLayout(aux)
+
+        # 右下角通栏主导出行（导出时自动显现取消按钮）
+        export_row = QHBoxLayout()
+        export_row.setSpacing(5)
+        self.export_button = QPushButton()
+        self.export_button.setObjectName('primaryButton')
+        self.export_button.setMinimumHeight(32)
+        self.export_button.clicked.connect(self.export_requested.emit)
+        self.cancel_export_button = self._button('取消导出', self.cancel_export_requested.emit)
+        self.cancel_export_button.setMinimumHeight(32)
+        self.cancel_export_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.cancel_export_button.setVisible(False)
+        export_row.addWidget(self.export_button, 1)
+        export_row.addWidget(self.cancel_export_button)
+        outer.addLayout(export_row)
         translator.language_changed.connect(self._retranslate)
         theme_notifier.theme_changed.connect(self._update_navigation)
         self._retranslate()
@@ -376,21 +392,30 @@ class Inspector(QWidget):
         self.preset_tools_layout = QVBoxLayout()
         self.preset_tools_layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(self.preset_tools_layout)
-        row = QHBoxLayout()
-        row.setSpacing(5)
-        row.addWidget(self._button('新建', self.new_template_requested.emit))
-        row.addWidget(self._button('高级源码', self.advanced_source_requested.emit))
-        layout.addLayout(row)
-        row = QHBoxLayout()
-        row.setSpacing(5)
-        row.addWidget(self._button('另存为预设', self.copy_template_requested.emit))
-        row.addWidget(self._button('设为默认', self.use_as_default_requested.emit))
-        layout.addLayout(row)
-        row = QHBoxLayout()
-        row.setSpacing(5)
-        row.addWidget(self._button('导入模板', self.import_style_requested.emit))
-        row.addWidget(self._button('导出模板', self.export_style_requested.emit))
-        layout.addLayout(row)
+        # 1 行紧凑操作栏：另存为预设 + 导入 + 更多管理菜单
+        action_row = QHBoxLayout()
+        action_row.setSpacing(4)
+        action_row.addWidget(self._button('另存为预设', self.copy_template_requested.emit), 1)
+        action_row.addWidget(self._button('导入模板', self.import_style_requested.emit), 1)
+        self.preset_more_button = QToolButton()
+        self.preset_more_button.setText('⋯')
+        self.preset_more_button.setFixedWidth(28)
+        self.preset_more_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        bind(self.preset_more_button, '更多模板操作', 'setToolTip')
+        self._preset_more_menu = QMenu(self)
+        self._preset_more_actions = []
+        for label, signal in (
+            ('新建空白预设', self.new_template_requested),
+            ('设为默认模板', self.use_as_default_requested),
+            ('导出模板', self.export_style_requested),
+            ('高级源码…', self.advanced_source_requested),
+        ):
+            act = self._preset_more_menu.addAction(tr(label))
+            act.triggered.connect(signal.emit)
+            self._preset_more_actions.append((act, label))
+        self.preset_more_button.setMenu(self._preset_more_menu)
+        action_row.addWidget(self.preset_more_button)
+        layout.addLayout(action_row)
         self.preset_message = QLabel()
         self.preset_message.setObjectName('secondaryText')
         self.preset_message.setWordWrap(True)
@@ -400,11 +425,12 @@ class Inspector(QWidget):
         self._preset_message_timer.setInterval(5000)
         self._preset_message_timer.timeout.connect(self.preset_message.hide)
         layout.addWidget(self.preset_message)
+        # 2 行 × 3 列轻量分类胶囊，与上方操作按钮区分视觉层级
         self._preset_category = self._combo('templateCategory')
         self._categories = (('全部', 'all'), ('留白', 'white'), ('毛玻璃', 'glass'),
                             ('胶片', 'film'), ('无框', 'frameless'), ('我的模板', 'mine'))
         categories = QGridLayout()
-        categories.setSpacing(4)
+        categories.setSpacing(3)
         self._category_buttons = {}
         for index, (label, value) in enumerate(self._categories):
             self._preset_category.addItem(tr(label), value)
@@ -416,7 +442,7 @@ class Inspector(QWidget):
             bind(button, label)
             button.clicked.connect(lambda checked=False, key=value: self._select_category(key))
             self._category_buttons[value] = button
-            categories.addWidget(button, index // 2, index % 2)
+            categories.addWidget(button, index // 3, index % 3)
         self._preset_category.currentIndexChanged.connect(self._rebuild_template_cards)
         self._category_buttons['all'].setChecked(True)
         self._preset_category.hide()
@@ -1335,6 +1361,13 @@ class Inspector(QWidget):
         self._busy = bool(busy)
         self._update_actions()
 
+    def set_export_state(self, *, text: str, enabled: bool, tooltip: str, exporting: bool, cancel_enabled: bool):
+        self.export_button.setText(text)
+        self.export_button.setEnabled(enabled)
+        self.export_button.setToolTip(tooltip)
+        self.cancel_export_button.setVisible(exporting)
+        self.cancel_export_button.setEnabled(cancel_enabled)
+        
     def _update_actions(self, *args):
         current = self._photo_path is not None and not self._photo_read_only and not self._busy and not self._locked
         self.apply_current_button.setEnabled(current)
@@ -1362,9 +1395,9 @@ class Inspector(QWidget):
             self.tabs.setTabToolTip(index, tr(label))
             self.tabs.tabBar().setAccessibleTabName(index, tr(label))
         self._update_navigation()
-        self.lock_button.setText(tr('编辑设置' if self._locked else '锁定设置'))
-        for index, (label, _) in enumerate(self._categories):
-            self._preset_category.setItemText(index, tr(label))
+        self.lock_button.setText(tr('解锁' if self._locked else '锁定'))
+        for act, label in getattr(self, '_preset_more_actions', ()):
+            act.setText(tr(label))
         self._update_category_counts()
         if self._preset_message_source:
             self.preset_message.setText(tr(self._preset_message_source, **self._preset_message_values))

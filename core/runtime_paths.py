@@ -278,6 +278,6 @@ def initialize_user_config(migrate_legacy: bool = True) -> None:
                 for item in additions:
                     _copy_seed_file(item, target / 'templates' / item.name)
                 style_marker.touch(exist_ok=True)
-        # 保留目录存在，以便用户删除所有标识或模板后仍能启动
-        for name in _CONFIG_DIRS:
+        # 保留目录存在，单文件版首次启动即在程序旁提供 config/splash 目录
+        for name in (*_CONFIG_DIRS, 'splash'):
             (target / name).mkdir(parents=True, exist_ok=True)

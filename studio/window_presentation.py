@@ -27,6 +27,13 @@ def restore_layout(window):
     if preferences.contains('window/filmstrip'):
         window.files._manual_size = True
         window.files.fold.setChecked(preferences.value('window/filmstrip', True, type=bool))
+        splitter = getattr(window, 'preview_splitter', None)
+    film_height = preferences.value('window/filmstrip_height', 0, type=int)
+    if splitter is not None and 112 <= film_height <= 360:
+        window._last_filmstrip_height = film_height
+        total = max(400, window.height() - 40)
+        if window.files.fold.isChecked():
+            splitter.setSizes([max(200, total - film_height), film_height])
 
 
 def save_layout(window):
@@ -39,6 +46,13 @@ def save_layout(window):
         preferences.setValue('window/filmstrip', window.files.fold.isChecked())
     else:
         preferences.remove('window/filmstrip')
+    splitter = getattr(window, 'preview_splitter', None)
+    if splitter is not None:
+        sizes = splitter.sizes()
+        if len(sizes) == 2 and window.files.fold.isChecked() and sizes[1] >= 112:
+            preferences.setValue('window/filmstrip_height', sizes[1])
+        elif hasattr(window, '_last_filmstrip_height'):
+            preferences.setValue('window/filmstrip_height', int(window._last_filmstrip_height))
     preferences.sync()
 
 

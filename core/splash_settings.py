@@ -19,7 +19,7 @@ _MAX_IMAGE_BYTES = 32 * 1024 * 1024
 _MAX_IMAGE_PIXELS = 40_000_000
 _MAX_SAVED_IMAGES = 3
 _IMAGE_REFERENCE = re.compile(r'config/splash/([0-9a-f]{64}\.(?:png|jpg|webp))\Z')
-_IMAGE_NAME = re.compile(r'([0-9a-f]{64})\.(?:png|jpg|webp)\Z')
+_IMAGE_REFERENCE = re.compile(r'config/splash/([^/\\\x00]+\.(?:png|jpe?g|webp))\Z', re.I)
 
 
 @dataclass(frozen=True)
@@ -87,9 +87,14 @@ def resolve_splash_image(value) -> Path | None:
     text = str(value).replace('\\', '/')
     match = _IMAGE_REFERENCE.fullmatch(text)
     if match:
+        filename = match.group(1)
+        if filename in ('.', '..'):
+            return None
         folder = config_path('splash')
-        candidate = folder / match.group(1)
+        candidate = folder / filename
         if folder.is_symlink() or getattr(folder, 'is_junction', lambda: False)() or candidate.is_symlink():
+            return None
+        if candidate.parent.resolve() != folder.resolve():
             return None
         return candidate
     path = Path(value).expanduser()

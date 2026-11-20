@@ -71,6 +71,19 @@ class WorkspaceActions:
             group.addAction(action)
             self.language_menu.addAction(action)
             self.language_actions[code] = action
+        self.theme_menu = view_menu.addMenu("主题")
+        self.theme_actions = {}
+        themes = QActionGroup(self)
+        for code, title in (("dark", "深色"), ("light", "浅色")):
+            action = self._action(title, lambda checked=False, value=code: set_theme(value), checkable=True)
+            themes.addAction(action)
+            action.setChecked(theme() == code)
+            self.theme_menu.addAction(action)
+            self.theme_actions[code] = action
+        self.theme_menu.addSeparator()
+        self.appearance_action = self._action('外观与主题设置…', self._show_appearance_settings)
+        self.theme_menu.addAction(self.appearance_action)
+        theme_notifier.theme_changed.connect(self._theme_changed)
         view_menu.addSeparator()
         self.about_action = self._action("关于", self._show_about)
         view_menu.addAction(self.about_action)
@@ -89,35 +102,14 @@ class WorkspaceActions:
         self.redo_action = self._action("重做", self.history.stack.redo, "Ctrl+Y", icons.SP_ArrowForward)
         self.history.stack.canUndoChanged.connect(self._update_actions)
         self.history.stack.canRedoChanged.connect(self._update_actions)
-        for action in (self.add_action, self.directory_action, self.undo_action, self.redo_action, self.copy_template_action):
+        for action in (self.add_action, self.directory_action):
+            self.toolbar.addAction(action)
+        self.toolbar.addSeparator()
+        for action in (self.undo_action, self.redo_action):
             self.toolbar.addAction(action)
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.toolbar.addWidget(spacer)
-        self.theme_menu = view_menu.addMenu("主题")
-        self.theme_actions = {}
-        themes = QActionGroup(self)
-        for code, title in (("dark", "深色"), ("light", "浅色")):
-            action = self._action(title, lambda checked=False, value=code: set_theme(value), checkable=True)
-            themes.addAction(action)
-            action.setChecked(theme() == code)
-            self.theme_menu.addAction(action)
-            self.theme_actions[code] = action
-        self.theme_menu.addSeparator()
-        self.appearance_action = self._action('外观与主题设置…', self._show_appearance_settings)
-        self.theme_menu.addAction(self.appearance_action)
-        theme_notifier.theme_changed.connect(self._theme_changed)
-        self._menu_button(self.language_menu)
-        self.theme_button = bind(QToolButton(), '主题')
-        self.theme_button.setObjectName('themeQuickSwitch')
-        bind(self.theme_button, '点击切换深浅主题，菜单中设置外观', 'setToolTip')
-        self.theme_button.setMenu(self.theme_menu)
-        self.theme_button.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
-        self.theme_button.clicked.connect(self._toggle_theme)
-        self.toolbar.addWidget(self.theme_button)
-        self.toolbar.addAction(self.cancel_action)
-        self.toolbar.addAction(self.export_action)
-        self.toolbar.widgetForAction(self.export_action).setObjectName("primaryButton")
         self.addToolBar(self.toolbar)
 
     def _menu_button(self, menu):
