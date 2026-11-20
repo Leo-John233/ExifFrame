@@ -168,8 +168,9 @@ def _run_application(smoke_test: bool, startup_log: Path | None) -> int:
                 raise PermissionError(f'{message}\n{error}') from error
             stage('正在加载主题与字体…', .24)
             from studio.i18n import install_qt_translations, localize_error
-            from studio.theme import apply_theme
+            from studio.theme import apply_theme, reload_theme
             _startup_log(startup_log, 'stage: install translations and theme')
+            reload_theme()
             install_qt_translations()
             apply_theme(application)
             stage('正在初始化 EXIF 引擎…', .43)

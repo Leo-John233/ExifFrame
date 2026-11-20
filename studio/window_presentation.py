@@ -48,7 +48,13 @@ class _FirstPaint(QObject):
         self.window = window
         self.callback = callback
         self.native = native
+        self._revealed = False
         window.installEventFilter(self)
+        # 防止 Windows 在 opacity=0.0 时延后或跳过 WM_PAINT 导致启动画面卡死
+        self._fallback = QTimer(self)
+        self._fallback.setSingleShot(True)
+        self._fallback.timeout.connect(self.reveal)
+        self._fallback.start(350)
 
     def eventFilter(self, watched, event):
         if event.type() == QEvent.Type.Paint:
@@ -57,6 +63,11 @@ class _FirstPaint(QObject):
         return False
 
     def reveal(self):
+        if self._revealed:
+            return
+        self._revealed = True
+        self._fallback.stop()
+        self.window.removeEventFilter(self)
         if self.native:
             self.window.repaint()
             self.window.setWindowOpacity(1.0)

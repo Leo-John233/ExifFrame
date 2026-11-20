@@ -170,12 +170,16 @@ class AppearanceDialog(QDialog):
         self.buttons.rejected.connect(self.reject)
         outer.addWidget(self.buttons)
 
-        translator.language_changed.connect(self._retranslate)
+        # __init__ 末尾：忽略 language_changed 传入的语言字符串，避免误判为 initial=True
+        translator.language_changed.connect(self._on_language_changed)
         self._retranslate(initial=True)
 
     def _theme_changed(self, code):
         self.theme_buttons[code].setChecked(True)
         self.thumbnail.update()
+
+    def _on_language_changed(self, _code=''):
+        self._retranslate(initial=False)
 
     def _retranslate(self, initial=False):
         mode = self._loaded.background_mode if initial else self.background.currentData()
@@ -225,7 +229,8 @@ class AppearanceDialog(QDialog):
 
     def _preview_splash(self):
         from .splash import preview_splash
-        self._preview = preview_splash(self._settings(), parent=self)
+        # 挂到主窗口而非即将关闭销毁的对话框自身
+        self._preview = preview_splash(self._settings(), parent=self.parentWidget())
 
     def _save(self):
         try:
@@ -236,3 +241,21 @@ class AppearanceDialog(QDialog):
             QMessageBox.warning(self, tr('无法保存启动画面设置'), localize_error(error))
             return
         self.accept()
+
+    def done(self, result):
+        if self._preview is not None:
+            try:
+                self._preview.abort()
+            except RuntimeError:
+                pass
+            self._preview = None
+        for signal, slot in (
+            (theme_notifier.theme_changed, self._theme_changed),
+            (translator.language_changed, self._on_language_changed),
+            (theme_notifier.theme_changed, self.thumbnail.update),
+        ):
+            try:
+                signal.disconnect(slot)
+            except (RuntimeError, TypeError):
+                pass
+        super().done(result)

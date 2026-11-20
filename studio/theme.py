@@ -189,6 +189,16 @@ def theme() -> str:
     """返回当前明暗主题"""
     return _theme
 
+def reload_theme() -> str:
+    """配置首次迁移或初始化后重新读取主题偏好"""
+    global _theme
+    try:
+        stored = json.loads(PREFERENCES_PATH.read_text(encoding='utf-8'))
+        if stored.get('theme') in ('dark', 'light'):
+            _theme = stored['theme']
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    return _theme
 
 def set_theme(code: str, app=None) -> None:
     """保存并应用界面主题，不改变照片样式"""

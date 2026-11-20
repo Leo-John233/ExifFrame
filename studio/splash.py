@@ -405,7 +405,8 @@ class SplashScreen(QWidget):
             painter.setBrush(_color('#000000', 3 + (14 - spread) * .85))
             painter.drawRoundedRect(card.adjusted(-spread, -spread + 3, spread, spread + 3), 13 + spread, 13 + spread)
         painter.drawImage(card, self._background_image())
-        painter.setPen(QPen(_color('#FFFFFF' if self._photographic or self._theme == 'dark' else '#FFFFFF', 38), 1))
+        border = '#FFFFFF' if self._photographic or self._theme == 'dark' else '#1E2A2C'
+        painter.setPen(QPen(_color(border, 38 if border == '#FFFFFF' else 28), 1))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRoundedRect(card.adjusted(.5, .5, -.5, -.5), 12, 12)
         painter.save()
