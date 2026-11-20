@@ -27,7 +27,7 @@ def restore_layout(window):
     if preferences.contains('window/filmstrip'):
         window.files._manual_size = True
         window.files.fold.setChecked(preferences.value('window/filmstrip', True, type=bool))
-        splitter = getattr(window, 'preview_splitter', None)
+    splitter = getattr(window, 'preview_splitter', None)
     film_height = preferences.value('window/filmstrip_height', 0, type=int)
     if splitter is not None and 112 <= film_height <= 360:
         window._last_filmstrip_height = film_height
@@ -64,7 +64,6 @@ class _FirstPaint(QObject):
         self.native = native
         self._revealed = False
         window.installEventFilter(self)
-        # 防止 Windows 在 opacity=0.0 时延后或跳过 WM_PAINT 导致启动画面卡死
         self._fallback = QTimer(self)
         self._fallback.setSingleShot(True)
         self._fallback.timeout.connect(self.reveal)
